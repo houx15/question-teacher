@@ -156,6 +156,38 @@ def test_speech_client_rejects_missing_voice_configuration_before_request(
     run(scenario())
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        speech_settings(tts_api_key=" \t"),
+        speech_settings(tts_model="\n"),
+        speech_settings(tts_voice=" "),
+        speech_settings(tts_base_url="\t "),
+    ],
+)
+def test_speech_client_rejects_whitespace_voice_configuration_before_request(
+    settings,
+):
+    def unexpected_request(_request):
+        raise AssertionError("request must not be sent")
+
+    async def scenario():
+        client = OpenAISpeechClient(
+            settings,
+            transport=httpx.MockTransport(unexpected_request),
+        )
+        try:
+            with pytest.raises(
+                SpeechGenerationError,
+                match="not configured",
+            ):
+                await client.synthesize("有效讲解")
+        finally:
+            await client.close()
+
+    run(scenario())
+
+
 @pytest.mark.parametrize("text", ["", " ", "\t\n"])
 def test_speech_client_rejects_blank_text_before_request(text):
     def unexpected_request(_request):
@@ -169,6 +201,24 @@ def test_speech_client_rejects_blank_text_before_request(text):
         try:
             with pytest.raises(SpeechGenerationError, match="blank"):
                 await client.synthesize(text)
+        finally:
+            await client.close()
+
+    run(scenario())
+
+
+def test_speech_client_rejects_non_string_text_before_request():
+    def unexpected_request(_request):
+        raise AssertionError("request must not be sent")
+
+    async def scenario():
+        client = OpenAISpeechClient(
+            speech_settings(),
+            transport=httpx.MockTransport(unexpected_request),
+        )
+        try:
+            with pytest.raises(SpeechGenerationError, match="must be text"):
+                await client.synthesize(None)
         finally:
             await client.close()
 
@@ -200,6 +250,34 @@ def test_speech_client_http_error_exposes_status_only():
     assert message == "Speech generation failed with status 429"
     assert private_body not in message
     assert "voice-secret" not in message
+    assert "这是私密讲稿" not in message
+
+
+def test_speech_client_rejects_redirect_with_status_only():
+    private_body = "redirect body must remain private"
+
+    async def scenario():
+        client = OpenAISpeechClient(
+            speech_settings(),
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    302,
+                    headers={"Location": "https://redirect.test"},
+                    content=private_body.encode(),
+                )
+            ),
+        )
+        try:
+            with pytest.raises(SpeechGenerationError) as error:
+                await client.synthesize("这是私密讲稿")
+        finally:
+            await client.close()
+        return str(error.value)
+
+    message = run(scenario())
+
+    assert message == "Speech generation failed with status 302"
+    assert private_body not in message
     assert "这是私密讲稿" not in message
 
 
@@ -380,3 +458,25 @@ def test_audio_service_rejects_path_traversal_before_synthesis(
 
     assert client.texts == []
     assert list(tmp_path.iterdir()) == []
+
+
+def test_audio_service_refuses_symlink_destination(tmp_path):
+    lesson_dir = tmp_path / "lesson-001"
+    lesson_dir.mkdir()
+    outside = tmp_path / "outside.mp3"
+    outside.write_bytes(b"must-stay-unchanged")
+    (lesson_dir / "beat-001.mp3").symlink_to(outside)
+    client = FakeSpeechClient()
+
+    with pytest.raises(
+        SpeechGenerationError,
+        match="Invalid audio asset destination",
+    ):
+        run(
+            LessonAudioService(client, tmp_path).attach_audio(
+                runtime_lesson()
+            )
+        )
+
+    assert client.texts == []
+    assert outside.read_bytes() == b"must-stay-unchanged"

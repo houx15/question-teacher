@@ -1,5 +1,7 @@
 import inspect
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -28,11 +30,35 @@ class LessonAudioService:
         self._validate_identifier(lesson_id)
         root = self.audio_root.resolve()
         lesson_dir = root / lesson_id
+        if lesson_dir.is_symlink():
+            raise SpeechGenerationError(
+                "Invalid audio asset destination"
+            )
         if lesson_dir.resolve().parent != root:
             raise SpeechGenerationError(
                 "Invalid audio asset identifier"
             )
         return lesson_dir
+
+    def _asset_destination(
+        self,
+        lesson_id: str,
+        asset_id: str,
+    ):
+        self._validate_identifier(asset_id)
+        root = self.audio_root.resolve()
+        lesson_dir = self._lesson_directory(lesson_id)
+        resolved_lesson_dir = lesson_dir.resolve()
+        destination = lesson_dir / f"{asset_id}.mp3"
+        if (
+            destination.is_symlink()
+            or resolved_lesson_dir.parent != root
+            or destination.resolve().parent != resolved_lesson_dir
+        ):
+            raise SpeechGenerationError(
+                "Invalid audio asset destination"
+            )
+        return lesson_dir, destination
 
     async def _write(
         self,
@@ -40,7 +66,10 @@ class LessonAudioService:
         asset_id: str,
         text: str,
     ) -> str:
-        self._validate_identifier(asset_id)
+        lesson_dir, destination = self._asset_destination(
+            lesson_id,
+            asset_id,
+        )
         for _attempt in range(2):
             try:
                 data = await self.client.synthesize(text)
@@ -56,9 +85,23 @@ class LessonAudioService:
                 f"Audio generation failed for {asset_id}"
             ) from None
 
-        lesson_dir = self._lesson_directory(lesson_id)
         filename = f"{asset_id}.mp3"
-        (lesson_dir / filename).write_bytes(data)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=lesson_dir,
+            prefix=f".{asset_id}-",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "wb") as temporary_file:
+                temporary_file.write(data)
+            _, checked_destination = self._asset_destination(
+                lesson_id,
+                asset_id,
+            )
+            os.replace(temporary_path, checked_destination)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         return f"/audio/{lesson_id}/{filename}"
 
     async def attach_audio(
