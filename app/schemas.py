@@ -123,7 +123,7 @@ class RuntimeBeat(BaseModel):
 
 class RuntimeLesson(BaseModel):
     lesson_id: str
-    problem: str
+    problem: ProblemInput
     title: str
     learning_goal: str
     beats: List[RuntimeBeat]

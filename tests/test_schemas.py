@@ -142,6 +142,27 @@ def test_runtime_beat_and_interaction_accept_audio_urls():
     )
 
 
+def test_runtime_lesson_rejects_invalid_problem_payload():
+    with pytest.raises(ValidationError):
+        RuntimeLesson(
+            lesson_id="lesson-invalid-problem",
+            problem={
+                "problem_text": "x",
+                "reference_answer": "",
+            },
+            title="无效题目",
+            learning_goal="验证题目输入",
+            beats=[],
+            summary="无",
+            transfer_item=TransferItem(
+                problem_text="解方程 x + 1 = 0",
+                expected_answer="x = -1",
+                method_signal="移项",
+            ),
+            validation_report={},
+        )
+
+
 def test_lesson_and_job_contracts_support_nested_runtime_data():
     math_step = MathStep(
         purpose="得到两个一次因式",
@@ -178,7 +199,11 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
     )
     runtime = RuntimeLesson(
         lesson_id="lesson-factor-001",
-        problem="x² - 5x + 6 = 0",
+        problem=ProblemInput(
+            problem_text="解方程 x² - 5x + 6 = 0",
+            reference_answer="x = 2 或 x = 3",
+            required_method="factor",
+        ),
         title=draft.title,
         learning_goal=draft.learning_goal,
         beats=[
@@ -202,5 +227,7 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
     )
 
     assert draft.math_steps[0].operation == "factor"
+    assert runtime.problem.required_method == "factor"
+    assert runtime.problem.reference_answer == "x = 2 或 x = 3"
     assert runtime.validation_report == {"math_valid": True}
     assert job.status == "completed"
