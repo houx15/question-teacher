@@ -191,6 +191,145 @@ def test_invalid_math_step_stops_before_review_with_safe_error():
     assert len(client.calls) == 1
 
 
+def test_math_route_rejects_unrelated_first_step_with_safe_error():
+    draft = valid_draft()
+    draft["math_steps"][0]["state_before"] = ["x^2-9=0"]
+    draft["math_steps"][0]["state_after"] = ["(x-3)(x+3)=0"]
+    client = FakeClient([draft])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert "数学路线" in str(exc_info.value)
+    assert "x^2-9" not in str(exc_info.value)
+    assert len(client.calls) == 1
+
+
+def test_math_route_rejects_disconnected_consecutive_steps():
+    draft = valid_draft()
+    draft["math_steps"].append(
+        {
+            "purpose": "插入无关但同解集的变形",
+            "operation": "multiply_both_sides",
+            "operands": ["2"],
+            "state_before": ["x^2-5x+6=0"],
+            "state_after": ["2*x^2-10*x+12=0"],
+            "reason": "等式两边同时乘二。",
+        }
+    )
+    client = FakeClient([draft])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError, match="数学路线"):
+        asyncio.run(service.generate(problem()))
+
+    assert len(client.calls) == 1
+
+
+def test_math_route_rejects_final_solution_mismatch():
+    class PermissiveStepMathEngine(MathEngine):
+        def validate_step(self, step):
+            return None
+
+    draft = valid_draft()
+    draft["math_steps"][0]["state_after"] = ["x=99"]
+    client = FakeClient([draft])
+    service = LessonGenerationService(
+        client,
+        PermissiveStepMathEngine(),
+    )
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert "数学路线" in str(exc_info.value)
+    assert "x=99" not in str(exc_info.value)
+    assert len(client.calls) == 1
+
+
+def test_math_route_accepts_contiguous_normalized_steps():
+    draft = valid_draft()
+    draft["math_steps"] = [
+        {
+            "purpose": "两边减六",
+            "operation": "subtract_both_sides",
+            "operands": ["6"],
+            "state_before": ["x^2 - 5*x + 6 = 0"],
+            "state_after": ["x^2-5x=-6"],
+            "reason": "等式两边同时减六。",
+        },
+        {
+            "purpose": "两边加六",
+            "operation": "add_both_sides",
+            "operands": ["6"],
+            "state_before": ["x² − 5x = -6"],
+            "state_after": ["x^2-5x+6=0"],
+            "reason": "等式两边同时加六。",
+        },
+        valid_draft()["math_steps"][0],
+    ]
+    client = FakeClient([draft, approved_review()])
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["math_status"] == "verified"
+    assert len(client.calls) == 2
+
+
+def test_math_route_preserves_valid_multi_branch_final_state():
+    draft = valid_draft()
+    draft["math_steps"] = [
+        {
+            "purpose": "使用求根公式",
+            "operation": "quadratic_formula",
+            "operands": [],
+            "state_before": ["x^2-5x+6=0"],
+            "state_after": ["x=3", "x=2"],
+            "reason": "代入求根公式并分别计算两个根。",
+        }
+    ]
+    client = FakeClient([draft, approved_review()])
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(
+        service.generate(problem("quadratic_formula"))
+    )
+
+    assert lesson.validation_report["math_status"] == "verified"
+
+
+def test_math_route_preserves_valid_no_real_solution_state():
+    no_real_problem = ProblemInput(
+        problem_text="用求根公式解方程：x^2+1=0",
+        reference_answer="无实数解",
+        required_method="quadratic_formula",
+    )
+    draft = valid_draft()
+    draft["math_steps"] = [
+        {
+            "purpose": "使用求根公式",
+            "operation": "quadratic_formula",
+            "operands": [],
+            "state_before": ["x^2+1=0"],
+            "state_after": ["无实数解"],
+            "reason": "判别式小于零，所以没有实数根。",
+        }
+    ]
+    draft["transfer_item"] = {
+        "problem_text": "用求根公式解方程：x^2+4=0",
+        "expected_answer": "无实数解",
+        "method_signal": "先判断判别式的符号。",
+    }
+    client = FakeClient([draft, approved_review()])
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(no_real_problem))
+
+    assert lesson.validation_report["independent_solutions"] == []
+
+
 def test_required_method_must_be_used_as_an_operation():
     client = FakeClient([valid_draft()])
     service = LessonGenerationService(client, MathEngine())

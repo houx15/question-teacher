@@ -169,6 +169,8 @@ class LessonGenerationService:
                     "讲解中的数学步骤未通过验证。"
                 ) from None
 
+        self._validate_math_route(problem, draft)
+
         try:
             self.math_engine.validate_problem(
                 draft.transfer_item.problem_text,
@@ -197,6 +199,60 @@ class LessonGenerationService:
             step.operation for step in draft.math_steps
         }:
             raise LessonQualityError("讲解没有真正使用指定方法。")
+
+    def _validate_math_route(
+        self,
+        problem: ProblemInput,
+        draft: LessonDraft,
+    ) -> None:
+        first_state = draft.math_steps[0].state_before
+        try:
+            if len(first_state) != 1:
+                raise MathValidationError(
+                    "The route must begin from one original equation."
+                )
+            self.math_engine.validate_problem(
+                first_state[0],
+                problem.reference_answer,
+            )
+            original_solutions = self.math_engine.solution_set(first_state)
+
+            for previous, current in zip(
+                draft.math_steps,
+                draft.math_steps[1:],
+            ):
+                if self._normalized_state(previous.state_after) != (
+                    self._normalized_state(current.state_before)
+                ):
+                    raise MathValidationError(
+                        "Consecutive route states do not connect."
+                    )
+
+            final_solutions = self.math_engine.solution_set(
+                draft.math_steps[-1].state_after
+            )
+            if final_solutions != original_solutions:
+                raise MathValidationError(
+                    "The final route does not preserve the original solutions."
+                )
+        except MathValidationError:
+            raise LessonQualityError(
+                "讲解中的数学路线未通过验证。"
+            ) from None
+
+    def _normalized_state(self, state: Any) -> Any:
+        if (
+            len(state) == 1
+            and isinstance(state[0], str)
+            and state[0].strip() == "无实数解"
+        ):
+            return (("empty-real-solution-set",),)
+
+        equations = []
+        for equation_text in state:
+            equation = self.math_engine.parse_equation(equation_text)
+            equations.append((str(equation.lhs), str(equation.rhs)))
+        return tuple(sorted(equations))
 
     @staticmethod
     async def _emit(
