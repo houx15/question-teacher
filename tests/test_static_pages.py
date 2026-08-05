@@ -75,3 +75,25 @@ def test_interaction_submission_uses_server_authoritative_contract():
     assert "lesson_id: lesson.lesson_id" in source
     assert "interaction_id: interaction.interaction_id" in source
     assert "expected: interaction.expected_answer" not in source
+
+
+def test_point_select_prompt_does_not_block_board_pointer_or_keyboard_access():
+    client = page_client()
+    source = client.get("/static/lesson.js").text
+    styles = client.get("/static/styles.css").text
+
+    assert 'classList.toggle("is-point-select"' in source
+    assert ".interaction-stage.is-point-select" in styles
+    assert "pointer-events: none" in styles
+    assert ".interaction-stage.is-point-select .interaction-card" in styles
+    assert "pointer-events: auto" in styles
+    assert 'node.setAttribute("role", "button")' in source
+    assert 'event.key === "Enter" || event.key === " "' in source
+
+
+def test_primary_control_uses_runtime_intent_for_ended_pause_beats():
+    source = page_client().get("/static/lesson.js").text
+
+    assert "runtime.primaryControlIntent(paused)" in source
+    assert 'if (intent === "advance")' in source
+    assert 'if (action.type === "pause") setPaused(true)' not in source

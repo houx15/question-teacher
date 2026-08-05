@@ -1172,6 +1172,34 @@ button {
   animation: interaction-enter 260ms ease-out;
 }
 
+.interaction-stage.is-point-select {
+  inset: auto 6% 3%;
+  min-height: 0;
+  padding: 0;
+  pointer-events: none;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.interaction-stage.is-point-select .interaction-card {
+  width: min(620px, 100%);
+  padding: 14px 22px;
+  pointer-events: auto;
+  background: rgba(9, 33, 27, 0.97);
+  border: 1px solid rgba(242, 200, 75, 0.48);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+}
+
+.interaction-stage.is-point-select .interaction-card h2 {
+  margin-bottom: 8px;
+  font-size: clamp(18px, 2.2vw, 28px);
+}
+
+.interaction-stage.is-point-select .point-instruction {
+  margin: 0;
+}
+
 @keyframes interaction-enter {
   from {
     opacity: 0;

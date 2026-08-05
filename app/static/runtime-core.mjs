@@ -284,6 +284,32 @@ export class LessonRuntime {
     return this.answers.get(key)?.canContinue === true;
   }
 
+  requiresManualAdvance() {
+    const actions = this.current()?.board_actions;
+    return (
+      Array.isArray(actions)
+      && actions.some((action) => action?.type === "pause")
+    );
+  }
+
+  completionDisposition() {
+    if (this.audioState !== "ended") return "wait";
+    if (this.current()?.interaction) return "interaction";
+    if (this.requiresManualAdvance()) return "manual_advance";
+    return "auto_advance";
+  }
+
+  canAutoAdvance() {
+    return this.completionDisposition() === "auto_advance";
+  }
+
+  primaryControlIntent(isPaused) {
+    if (this.audioState === "ended") {
+      return this.requiresManualAdvance() ? "advance" : "idle";
+    }
+    return isPaused ? "resume" : "pause";
+  }
+
   markAudioStarted() {
     this.audioState = "playing";
   }

@@ -337,9 +337,21 @@ function updateControls() {
     return;
   }
   const beat = runtime.current();
+  const primaryIntent = runtime.primaryControlIntent(paused);
   dom.previous.disabled = runtime.currentIndex === 0 || !started;
   dom.replay.disabled = !started;
-  dom.pause.disabled = !started || interactionVisible;
+  dom.pause.disabled = (
+    !started
+    || interactionVisible
+    || primaryIntent === "idle"
+  );
+  dom.pause.classList.toggle(
+    "is-paused",
+    primaryIntent === "resume" || primaryIntent === "advance",
+  );
+  dom.pauseLabel.textContent = primaryIntent === "advance"
+    ? "继续"
+    : (paused ? "继续" : "暂停");
   dom.next.disabled = (
     !started
     || runtime.audioState === "playing"
@@ -351,7 +363,11 @@ function updateControls() {
 
 
 function setPaused(nextPaused) {
-  if (!started || interactionVisible) return;
+  if (
+    !started
+    || interactionVisible
+    || runtime.audioState === "ended"
+  ) return;
   paused = nextPaused;
   dom.pause.classList.toggle("is-paused", paused);
   dom.pauseLabel.textContent = paused ? "继续" : "暂停";
@@ -375,7 +391,6 @@ function executeBoardAction(action, actionIndex, token) {
   renderActiveBoards();
   dom.announcer.textContent = action.content
     || `${action.type} ${humanizeTarget(action.target)}`;
-  if (action.type === "pause") setPaused(true);
 }
 
 
@@ -495,6 +510,7 @@ function playCurrentBeat() {
   dom.pause.classList.remove("is-paused");
   dom.pauseLabel.textContent = "暂停";
   dom.interactionStage.hidden = true;
+  dom.interactionStage.classList.remove("is-point-select");
   clearPointSelection();
 
   if (!beatSnapshots.has(beat.beat_id)) {
@@ -516,16 +532,19 @@ function finishBeat(token) {
   paused = false;
   updateControls();
   const beat = runtime.current();
-  if (beat?.interaction) {
+  const disposition = runtime.completionDisposition();
+  if (disposition === "interaction") {
     showInteraction(beat.interaction);
     return;
   }
-  if (beat?.board_actions?.some((action) => action.type === "pause")) {
-    setPaused(true);
+  if (disposition === "manual_advance") {
     dom.next.disabled = false;
+    updateControls();
     return;
   }
-  timeline?.schedule(() => advanceBeat(), AUTO_ADVANCE_DELAY_MS);
+  if (disposition === "auto_advance") {
+    timeline?.schedule(() => advanceBeat(), AUTO_ADVANCE_DELAY_MS);
+  }
 }
 
 
@@ -541,6 +560,7 @@ function advanceBeat() {
   clearPointSelection();
   interactionVisible = false;
   dom.interactionStage.hidden = true;
+  dom.interactionStage.classList.remove("is-point-select");
   leaveTemporaryLayer();
   runtime.markAudioEnded();
   if (runtime.next()) {
@@ -579,6 +599,19 @@ function previousBeat() {
   if (!runtime.previous()) return;
   restoreSnapshotForCurrentBeat();
   playCurrentBeat();
+}
+
+
+function activatePrimaryControl() {
+  if (!runtime || !started) return;
+  const intent = runtime.primaryControlIntent(paused);
+  if (intent === "advance") {
+    advanceBeat();
+  } else if (intent === "resume") {
+    setPaused(false);
+  } else if (intent === "pause") {
+    setPaused(true);
+  }
 }
 
 
@@ -631,6 +664,8 @@ function showInteraction(interaction) {
   dom.interactionStage.hidden = false;
   dom.interactionStage.replaceChildren();
   updateControls();
+  const controlType = classifyInteractionControl(interaction);
+  dom.interactionStage.classList.toggle("is-point-select", controlType === "board");
 
   const card = element("div", "interaction-card");
   const kicker = element(
@@ -652,7 +687,6 @@ function showInteraction(interaction) {
   card.append(kicker, heading, controls, feedback, hint, continueButton);
   dom.interactionStage.append(card);
 
-  const controlType = classifyInteractionControl(interaction);
   if (controlType === "options") {
     const optionGrid = element("div", "interaction-options");
     for (const option of interaction.options || []) {
@@ -774,6 +808,12 @@ async function submitInteraction(interaction, answer, ui) {
         : interaction.hint_audio_urls?.[outcome.hintIndex];
       await playFeedbackAudio(hintAudio);
       interactiveNodes.forEach((node) => { node.disabled = false; });
+      if (interaction.kind === "point_select") {
+        enablePointSelection((retryAnswer) => {
+          clearPointSelection();
+          submitInteraction(interaction, retryAnswer, ui);
+        });
+      }
       ui.controls.querySelector("input, button")?.focus();
       return;
     }
@@ -828,7 +868,7 @@ dom.startButton.addEventListener("click", () => {
 });
 dom.previous.addEventListener("click", previousBeat);
 dom.replay.addEventListener("click", replayCurrentBeat);
-dom.pause.addEventListener("click", () => setPaused(!paused));
+dom.pause.addEventListener("click", activatePrimaryControl);
 dom.next.addEventListener("click", advanceBeat);
 dom.fullscreen.addEventListener("click", toggleFullscreen);
 
@@ -844,7 +884,7 @@ document.addEventListener("keydown", (event) => {
   if (activeTag === "INPUT" || activeTag === "TEXTAREA") return;
   if (event.key === " ") {
     event.preventDefault();
-    setPaused(!paused);
+    activatePrimaryControl();
   } else if (event.key === "ArrowLeft") {
     previousBeat();
   } else if (event.key === "ArrowRight") {

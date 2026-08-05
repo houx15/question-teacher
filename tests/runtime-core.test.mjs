@@ -208,3 +208,57 @@ test("interaction kinds route to deterministic controls", () => {
   assert.equal(classifyInteractionControl({ kind: "free_text" }), "text-input");
   assert.equal(classifyInteractionControl(null), "none");
 });
+
+
+test("ended pause action makes primary control advance without replay", () => {
+  const runtime = new LessonRuntime([
+    {
+      beat_id: "pause-beat",
+      next_beat_id: "next-beat",
+      board_actions: [{ type: "pause" }],
+      narration: "先停在这里想一想。",
+    },
+    {
+      beat_id: "next-beat",
+      next_beat_id: null,
+      board_actions: [],
+      narration: "继续。",
+    },
+  ]);
+
+  runtime.markAudioStarted();
+  assert.equal(runtime.primaryControlIntent(false), "pause");
+  runtime.markAudioEnded();
+
+  assert.equal(runtime.requiresManualAdvance(), true);
+  assert.equal(runtime.canAutoAdvance(), false);
+  assert.equal(runtime.primaryControlIntent(false), "advance");
+  assert.equal(runtime.next(), true);
+  assert.equal(runtime.current().beat_id, "next-beat");
+});
+
+
+test("interaction takes priority over pause when beat audio ends", () => {
+  const runtime = new LessonRuntime([
+    {
+      beat_id: "interactive-pause",
+      next_beat_id: null,
+      board_actions: [
+        { type: "transform", target: "equation", content: "x=1" },
+        { type: "pause" },
+      ],
+      narration: "现在轮到你回答。",
+      interaction: {
+        interaction_id: "answer-now",
+        kind: "expression",
+      },
+    },
+  ]);
+
+  runtime.markAudioStarted();
+  assert.equal(runtime.completionDisposition(), "wait");
+  runtime.markAudioEnded();
+
+  assert.equal(runtime.completionDisposition(), "interaction");
+  assert.equal(runtime.canAutoAdvance(), false);
+});
