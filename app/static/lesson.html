@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#091d19">
+    <title>拾光讲题 · 课堂</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body class="lesson-body">
+    <div id="rotate-state" class="rotate-state" role="status">
+      <span class="rotate-device" aria-hidden="true"></span>
+      <strong>请把设备横过来</strong>
+      <small>这块黑板需要更宽的视野</small>
+    </div>
+
+    <main id="classroom-shell" class="classroom-shell" data-state="loading">
+      <header id="lesson-topbar" class="lesson-topbar">
+        <a class="classroom-exit" href="/" aria-label="退出课堂">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7"/>
+          </svg>
+          <span>退出</span>
+        </a>
+        <div class="lesson-heading">
+          <p id="lesson-title">正在准备课堂</p>
+          <div class="lesson-progress" aria-label="课程进度">
+            <span id="progress-current">0</span>
+            <i aria-hidden="true"></i>
+            <span id="progress-total">0</span>
+          </div>
+        </div>
+        <button
+          id="fullscreen-button"
+          class="icon-button"
+          type="button"
+          aria-label="进入全屏"
+          title="进入全屏（F）"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/>
+          </svg>
+        </button>
+      </header>
+
+      <section id="route-strip" class="route-strip" aria-live="polite">
+        <p class="route-goal">
+          <span>本课目标</span>
+          <strong id="learning-goal">载入中</strong>
+        </p>
+        <p class="route-now">
+          <span class="route-pulse" aria-hidden="true"></span>
+          <span id="current-purpose">准备开始</span>
+        </p>
+      </section>
+
+      <section class="chalkboard-frame" aria-label="课堂黑板">
+        <div id="problem-display" class="problem-display">
+          <span>原题</span>
+          <strong id="problem-text">正在读取题目…</strong>
+        </div>
+
+        <div id="board-stage" class="board-stage">
+          <section
+            id="base-board"
+            class="board-region base-board"
+            aria-label="主板书"
+          ></section>
+          <section
+            id="layer-stage"
+            class="board-region layer-stage"
+            aria-label="临时讲解图层"
+            hidden
+          ></section>
+          <section
+            id="interaction-stage"
+            class="interaction-stage"
+            aria-live="polite"
+            aria-label="课堂互动"
+            hidden
+          ></section>
+
+          <div id="teacher-presence" class="teacher-presence" aria-hidden="true">
+            <span class="voice-orbit"><i></i><i></i><i></i></span>
+            <span>讲题老师</span>
+          </div>
+        </div>
+
+        <p id="narration-line" class="narration-line" aria-live="polite">
+          准备好后，我们从题目本身开始。
+        </p>
+      </section>
+
+      <section
+        id="loading-state"
+        class="classroom-state"
+        aria-live="polite"
+      >
+        <span class="chalk-loader" aria-hidden="true"></span>
+        <strong>正在擦亮黑板</strong>
+        <small>读取课堂结构与语音片段</small>
+      </section>
+
+      <section id="error-state" class="classroom-state" role="alert" hidden>
+        <span class="state-glyph" aria-hidden="true">!</span>
+        <strong>课堂暂时没有打开</strong>
+        <small id="error-message">请返回后稍晚再试。</small>
+        <a href="/" class="state-link">返回题目页</a>
+      </section>
+
+      <section id="empty-state" class="classroom-state" hidden>
+        <span class="state-glyph" aria-hidden="true">○</span>
+        <strong>这节课还没有教学片段</strong>
+        <small>返回题目页重新生成一节课堂。</small>
+        <a href="/" class="state-link">重新生成</a>
+      </section>
+
+      <section id="start-overlay" class="start-overlay" hidden>
+        <div class="start-copy">
+          <p>横屏课堂 · 约 3–5 分钟</p>
+          <h1 id="start-title">一题一课</h1>
+          <span>语音会带着板书逐步出现，中途会停下来等你思考。</span>
+        </div>
+        <button id="start-button" type="button">
+          <span class="play-triangle" aria-hidden="true"></span>
+          <span>开始讲解</span>
+        </button>
+        <small>点击后开启本节课语音</small>
+      </section>
+
+      <nav id="lesson-controls" class="lesson-controls" aria-label="课堂控制">
+        <button
+          id="previous-button"
+          type="button"
+          aria-label="上一讲解片段"
+          title="上一段（←）"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M14 7l-5 5 5 5"/>
+          </svg>
+          <span>上一段</span>
+        </button>
+        <button
+          id="replay-button"
+          type="button"
+          aria-label="重播当前片段"
+          title="重播（R）"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 8V4m0 0h4M5 4l3 3a7 7 0 11-1.5 8"/>
+          </svg>
+          <span>重播</span>
+        </button>
+        <button
+          id="pause-button"
+          class="primary-control"
+          type="button"
+          aria-label="暂停或继续"
+          title="暂停或继续（空格）"
+        >
+          <span class="pause-icon" aria-hidden="true"></span>
+          <span id="pause-label">暂停</span>
+        </button>
+        <button
+          id="next-button"
+          type="button"
+          aria-label="下一讲解片段"
+          title="下一段（→）"
+        >
+          <span>下一段</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10 7l5 5-5 5"/>
+          </svg>
+        </button>
+      </nav>
+
+      <div id="runtime-announcer" class="sr-only" aria-live="polite"></div>
+    </main>
+
+    <script type="module" src="/static/lesson.js"></script>
+  </body>
+</html>

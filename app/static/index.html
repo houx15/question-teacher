@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f2ecdf">
+    <title>拾光讲题 · 把一道题讲明白</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body class="entry-body">
+    <main class="entry-page">
+      <header class="entry-masthead">
+        <a class="wordmark" href="/" aria-label="拾光讲题首页">
+          <span class="wordmark-seal" aria-hidden="true">拾</span>
+          <span>拾光讲题</span>
+        </a>
+        <div class="service-status" aria-label="服务连接状态">
+          <span class="status-chip" id="model-status" data-state="checking">
+            <i aria-hidden="true"></i>讲解模型检测中
+          </span>
+          <span class="status-chip" id="voice-status" data-state="checking">
+            <i aria-hidden="true"></i>语音服务检测中
+          </span>
+        </div>
+      </header>
+
+      <section class="entry-intro" aria-labelledby="entry-title">
+        <p class="folio-kicker">ONE PROBLEM · ONE CLEAR PATH</p>
+        <h1 id="entry-title">把一道题，<br><em>真正讲明白。</em></h1>
+        <p class="entry-deck">
+          输入题目与参考答案。系统会先核验数学路线，再组织一节能听、能看、
+          也会停下来等你思考的短课。
+        </p>
+      </section>
+
+      <section class="authoring-sheet" aria-label="创建讲解">
+        <form id="lesson-form" novalidate>
+          <div class="field-block field-problem">
+            <label for="problem_text">
+              <span class="field-index">01</span>
+              <span>题目</span>
+            </label>
+            <textarea
+              id="problem_text"
+              name="problem_text"
+              rows="4"
+              minlength="3"
+              required
+              autocomplete="off"
+              placeholder="例如：用配方法解方程 x² − 6x + 5 = 0"
+            ></textarea>
+            <p class="field-note">请包含完整方程与题目要求。</p>
+          </div>
+
+          <div class="field-row">
+            <div class="field-block">
+              <label for="reference_answer">
+                <span class="field-index">02</span>
+                <span>参考答案</span>
+              </label>
+              <input
+                id="reference_answer"
+                name="reference_answer"
+                type="text"
+                required
+                autocomplete="off"
+                placeholder="例如：x=1 或 x=5"
+              >
+            </div>
+
+            <div class="field-block">
+              <label for="required_method">
+                <span class="field-index">03</span>
+                <span>指定方法 <small>可选</small></span>
+              </label>
+              <select id="required_method" name="required_method">
+                <option value="">让课堂自主选择</option>
+                <option value="factor">因式分解法</option>
+                <option value="quadratic_formula">公式法</option>
+                <option value="complete_the_square">配方法</option>
+              </select>
+            </div>
+          </div>
+
+          <fieldset class="length-field">
+            <legend>
+              <span class="field-index">04</span>
+              <span>讲解长度</span>
+            </legend>
+            <div class="length-options">
+              <label>
+                <input type="radio" name="lesson_length" value="concise">
+                <span><b>精讲</b><small>更快抵达关键转折</small></span>
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="lesson_length"
+                  value="standard"
+                  checked
+                >
+                <span><b>标准</b><small>完整观察、推导与迁移</small></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="form-footer">
+            <p class="privacy-note">
+              题目只用于生成本次课堂，不在页面中暴露服务密钥。
+            </p>
+            <button class="generate-button" type="submit">
+              <span>开始生成讲解</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h13M14 7l5 5-5 5"/>
+              </svg>
+            </button>
+          </div>
+          <p id="form-error" class="inline-error" role="alert" hidden></p>
+        </form>
+
+        <section
+          id="generation-progress"
+          class="generation-progress"
+          aria-live="polite"
+          aria-labelledby="progress-title"
+          hidden
+        >
+          <div class="progress-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <p class="progress-eyebrow">LESSON IN THE MAKING</p>
+          <h2 id="progress-title">正在理解题目</h2>
+          <p id="progress-detail">先核对题目与参考答案，再决定从哪里讲起。</p>
+          <ol id="progress-steps" class="progress-steps">
+            <li data-stage="正在理解题目">理解题意</li>
+            <li data-stage="正在验证数学路线">验证数学</li>
+            <li data-stage="正在设计完整讲解">设计讲解</li>
+            <li data-stage="正在进行整篇审稿">整篇审稿</li>
+            <li data-stage="正在修订并编译课堂">编译课堂</li>
+            <li data-stage="正在生成讲解语音">生成语音</li>
+          </ol>
+          <button id="return-to-form" class="text-button" type="button" hidden>
+            返回修改题目
+          </button>
+        </section>
+      </section>
+
+      <footer class="entry-footer">
+        <span>AI MATH STUDIO · 2026</span>
+        <span>先验证，再讲解</span>
+      </footer>
+    </main>
+
+    <script type="module" src="/static/generate.js"></script>
+  </body>
+</html>
