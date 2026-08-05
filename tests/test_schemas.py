@@ -5,6 +5,7 @@ from app.schemas import (
     BoardAction,
     GenerationJob,
     Interaction,
+    InteractionOption,
     LessonDraft,
     LessonMoment,
     MathStep,
@@ -18,13 +19,15 @@ from app.schemas import (
 
 def test_problem_input_accepts_valid_example_and_defaults_to_standard():
     problem = ProblemInput(
-        problem_text="解方程 x² - 5x + 6 = 0",
-        reference_answer="x = 2 或 x = 3",
+        problem_text="  解方程 x² - 5x + 6 = 0  ",
+        reference_answer="  x = 2 或 x = 3  ",
         required_method="factor",
     )
 
     assert problem.lesson_length == "standard"
     assert problem.required_method == "factor"
+    assert problem.problem_text == "解方程 x² - 5x + 6 = 0"
+    assert problem.reference_answer == "x = 2 或 x = 3"
 
 
 def test_board_action_uses_semantic_target_without_coordinates():
@@ -39,6 +42,200 @@ def test_board_action_uses_semantic_target_without_coordinates():
     assert dumped["target"] == "factorized_equation"
     assert "x" not in dumped
     assert "y" not in dumped
+
+
+@pytest.mark.parametrize("coordinate", ("x", "y"))
+def test_board_action_rejects_unknown_coordinate_fields(coordinate):
+    with pytest.raises(ValidationError):
+        BoardAction.model_validate(
+            {
+                "type": "focus",
+                "target": "factorized_equation",
+                coordinate: 20,
+            }
+        )
+
+
+def test_top_level_and_nested_unknown_fields_are_rejected():
+    with pytest.raises(ValidationError):
+        ProblemInput(
+            problem_text="解方程 x + 1 = 0",
+            reference_answer="x = -1",
+            lesson_lenght="concise",
+        )
+
+    with pytest.raises(ValidationError):
+        LessonMoment(
+            purpose="停顿",
+            narration="先想一想。",
+            board_actions=[
+                {
+                    "type": "pause",
+                    "unexpected_duration": 2,
+                }
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (
+            ProblemInput,
+            {
+                "problem_text": "  x  ",
+                "reference_answer": "x = 1",
+            },
+        ),
+        (
+            ProblemInput,
+            {
+                "problem_text": "解方程 x = 1",
+                "reference_answer": "   ",
+            },
+        ),
+        (
+            InteractionOption,
+            {
+                "option_id": "   ",
+                "label": "选项一",
+            },
+        ),
+        (
+            RuntimeBeat,
+            {
+                "beat_id": "   ",
+                "purpose": "停顿",
+                "narration": "先想一想。",
+                "board_actions": [],
+                "layer": "base",
+            },
+        ),
+        (
+            GenerationJob,
+            {
+                "job_id": "job-001",
+                "status": "queued",
+                "stage": "   ",
+            },
+        ),
+    ],
+)
+def test_required_strings_reject_whitespace_only_values(model, payload):
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+def test_optional_board_content_is_stripped_and_rejects_whitespace():
+    action = BoardAction(
+        type="write",
+        target="  solution_line  ",
+        content="  x = 2  ",
+    )
+
+    assert action.target == "solution_line"
+    assert action.content == "x = 2"
+
+    with pytest.raises(ValidationError):
+        BoardAction(type="focus", target="   ")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "write", "target": "line_1", "content": "x + 1 = 0"},
+        {
+            "type": "transform",
+            "target": "line_2",
+            "content": "x = -1",
+        },
+        {"type": "focus", "target": "line_2"},
+        {"type": "mask", "target": "answer"},
+        {"type": "reveal", "target": "answer"},
+        {"type": "fade", "target": "line_1"},
+        {
+            "type": "annotate",
+            "target": "coefficient",
+            "annotation": "circle",
+        },
+        {
+            "type": "annotate",
+            "target": "root",
+            "annotation": "label",
+            "content": "方程的根",
+        },
+        {
+            "type": "annotate",
+            "target": "term_left",
+            "annotation": "arrow",
+            "relation_target": "term_right",
+        },
+        {
+            "type": "compare",
+            "target": "method_factor",
+            "relation_target": "method_formula",
+        },
+        {"type": "pause"},
+        {"type": "clear"},
+        {"type": "clear", "target": "scratch_area"},
+    ],
+)
+def test_board_action_accepts_executable_payloads(payload):
+    action = BoardAction.model_validate(payload)
+
+    assert action.type == payload["type"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "write", "content": "x = 1"},
+        {"type": "write", "target": "line_1"},
+        {"type": "transform", "content": "x = 1"},
+        {"type": "transform", "target": "line_1"},
+        {"type": "focus"},
+        {"type": "mask"},
+        {"type": "reveal"},
+        {"type": "fade"},
+        {"type": "annotate", "annotation": "circle"},
+        {"type": "annotate", "target": "term"},
+        {
+            "type": "annotate",
+            "target": "term",
+            "annotation": "label",
+        },
+        {
+            "type": "annotate",
+            "target": "term",
+            "annotation": "arrow",
+        },
+        {"type": "compare", "relation_target": "method_formula"},
+        {"type": "compare", "target": "method_factor"},
+    ],
+)
+def test_board_action_rejects_non_executable_payloads(payload):
+    with pytest.raises(ValidationError):
+        BoardAction.model_validate(payload)
+
+
+def test_math_operation_and_lesson_layer_are_restricted():
+    with pytest.raises(ValidationError):
+        MathStep(
+            purpose="求解",
+            operation="solve",
+            state_before=["x + 1 = 0"],
+            state_after=["x = -1"],
+            reason="移项",
+        )
+
+    with pytest.raises(ValidationError):
+        RuntimeBeat(
+            beat_id="beat-001",
+            purpose="讲解",
+            narration="把一移到等号右边。",
+            board_actions=[],
+            layer="custom_layer",
+        )
 
 
 def test_interaction_requires_expected_answer():
@@ -97,13 +294,37 @@ def test_review_decision_requires_fixes_only_when_revision_is_required():
             status="revision_required",
             overall_assessment="需要补充方法选择的说明。",
         )
+    with pytest.raises(ValidationError):
+        ReviewDecision(
+            status="revision_required",
+            overall_assessment="需要补充方法选择的说明。",
+            must_fix=["   "],
+        )
+    with pytest.raises(ValidationError):
+        ReviewDecision(
+            status="approved",
+            overall_assessment="数学过程与讲解结构一致。",
+            must_fix=["补充一个步骤"],
+        )
+    with pytest.raises(ValidationError):
+        ReviewDecision(
+            status="approved",
+            overall_assessment="数学过程与讲解结构一致。",
+            evidence=["   "],
+        )
 
     approved = ReviewDecision(
         status="approved",
         overall_assessment="数学过程与讲解结构一致。",
     )
+    revision = ReviewDecision(
+        status="revision_required",
+        overall_assessment="需要补充方法选择的说明。",
+        must_fix=["  解释为何选择因式分解法  "],
+    )
 
     assert approved.must_fix == []
+    assert revision.must_fix == ["解释为何选择因式分解法"]
 
 
 def test_runtime_beat_and_interaction_accept_audio_urls():
@@ -114,10 +335,10 @@ def test_runtime_beat_and_interaction_accept_audio_urls():
         expected_answer="both",
         explanation_after_correct="两个根代回原方程都成立。",
         hint_audio_urls=[
-            "https://media.example/hints/check-one.mp3",
-            "https://media.example/hints/check-two.mp3",
+            "/audio/hints/check-one.mp3",
+            "/audio/hints/check-two.mp3",
         ],
-        correct_audio_url="https://media.example/feedback/correct.mp3",
+        correct_audio_url="/audio/feedback/correct.mp3",
     )
     beat = RuntimeBeat(
         beat_id="beat-check-roots",
@@ -128,18 +349,36 @@ def test_runtime_beat_and_interaction_accept_audio_urls():
         ],
         layer="interaction",
         interaction=interaction,
-        audio_url="https://media.example/narration/check-roots.mp3",
+        audio_url="/audio/narration/check-roots.mp3",
     )
 
-    assert beat.audio_url == "https://media.example/narration/check-roots.mp3"
+    assert beat.audio_url == "/audio/narration/check-roots.mp3"
     assert interaction.hint_audio_urls == [
-        "https://media.example/hints/check-one.mp3",
-        "https://media.example/hints/check-two.mp3",
+        "/audio/hints/check-one.mp3",
+        "/audio/hints/check-two.mp3",
     ]
-    assert (
-        interaction.correct_audio_url
-        == "https://media.example/feedback/correct.mp3"
+    assert interaction.correct_audio_url == "/audio/feedback/correct.mp3"
+
+
+def test_optional_interaction_feedback_is_normalized_when_provided():
+    interaction = Interaction(
+        interaction_id="feedback-normalization",
+        kind="free_text",
+        prompt="请说明理由。",
+        expected_answer="等式两边做相同运算。",
+        explanation_after_correct="  对，两边必须做相同运算。  ",
     )
+
+    assert interaction.explanation_after_correct == "对，两边必须做相同运算。"
+
+    with pytest.raises(ValidationError):
+        Interaction(
+            interaction_id="blank-feedback",
+            kind="free_text",
+            prompt="请说明理由。",
+            expected_answer="等式两边做相同运算。",
+            explanation_after_correct="   ",
+        )
 
 
 def test_runtime_lesson_rejects_invalid_problem_payload():
@@ -163,6 +402,98 @@ def test_runtime_lesson_rejects_invalid_problem_payload():
         )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "job_id": "job-completed",
+            "status": "completed",
+            "stage": "runtime_compiled",
+        },
+        {
+            "job_id": "job-failed",
+            "status": "failed",
+            "stage": "generation",
+        },
+        {
+            "job_id": "job-queued-lesson",
+            "status": "queued",
+            "stage": "queued",
+            "lesson_id": "lesson-001",
+        },
+        {
+            "job_id": "job-queued-error",
+            "status": "queued",
+            "stage": "queued",
+            "error": "not started",
+        },
+        {
+            "job_id": "job-running-lesson",
+            "status": "running",
+            "stage": "drafting",
+            "lesson_id": "lesson-001",
+        },
+        {
+            "job_id": "job-running-error",
+            "status": "running",
+            "stage": "drafting",
+            "error": "still running",
+        },
+    ],
+)
+def test_generation_job_rejects_state_inconsistent_payloads(payload):
+    with pytest.raises(ValidationError):
+        GenerationJob.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"job_id": "job-queued", "status": "queued", "stage": "queued"},
+        {"job_id": "job-running", "status": "running", "stage": "drafting"},
+        {
+            "job_id": "job-completed",
+            "status": "completed",
+            "stage": "runtime_compiled",
+            "lesson_id": "lesson-001",
+        },
+        {
+            "job_id": "job-failed",
+            "status": "failed",
+            "stage": "generation",
+            "error": "model unavailable",
+        },
+    ],
+)
+def test_generation_job_accepts_state_consistent_payloads(payload):
+    job = GenerationJob.model_validate(payload)
+
+    assert job.status == payload["status"]
+
+
+def test_mutable_defaults_are_isolated_between_models():
+    first = Interaction(
+        interaction_id="interaction-first",
+        kind="free_text",
+        prompt="请说明理由。",
+        expected_answer="移项后等式仍然成立。",
+    )
+    second = Interaction(
+        interaction_id="interaction-second",
+        kind="free_text",
+        prompt="请说明理由。",
+        expected_answer="等式两边做相同运算。",
+    )
+
+    first.hints.append("观察等号两边。")
+    first.options.append(
+        InteractionOption(option_id="option-1", label="同时减一")
+    )
+
+    assert second.hints == []
+    assert second.options == []
+
+
 def test_lesson_and_job_contracts_support_nested_runtime_data():
     math_step = MathStep(
         purpose="得到两个一次因式",
@@ -179,6 +510,7 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
                 type="transform",
                 source="original_equation",
                 target="factorized_equation",
+                content="(x - 2)(x - 3) = 0",
             ),
         ],
     )
