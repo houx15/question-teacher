@@ -1,0 +1,210 @@
+import inspect
+from typing import Any, Awaitable, Callable, Optional, Union
+
+from pydantic import ValidationError
+
+from app.compiler import LessonCompileError, LessonCompiler
+from app.math_engine import MathValidationError
+from app.prompts import (
+    DIRECTOR_SYSTEM,
+    REVIEWER_SYSTEM,
+    REVISION_SYSTEM,
+    director_prompt,
+    reviewer_prompt,
+    revision_prompt,
+)
+from app.schemas import (
+    LessonDraft,
+    ProblemInput,
+    ReviewDecision,
+    RuntimeLesson,
+)
+
+
+StageCallback = Callable[
+    [str],
+    Union[None, Awaitable[None]],
+]
+
+
+class LessonQualityError(RuntimeError):
+    """Raised when a generated lesson cannot pass safe quality gates."""
+
+
+class LessonGenerationService:
+    MAX_REVISIONS = 2
+
+    def __init__(
+        self,
+        client: Any,
+        math_engine: Any,
+        compiler: Optional[LessonCompiler] = None,
+    ) -> None:
+        self.client = client
+        self.math_engine = math_engine
+        self.compiler = compiler or LessonCompiler()
+
+    async def generate(
+        self,
+        problem: ProblemInput,
+        on_stage: Optional[StageCallback] = None,
+    ) -> RuntimeLesson:
+        await self._emit(on_stage, "正在验证数学路线")
+        try:
+            problem_report = self.math_engine.validate_problem(
+                problem.problem_text,
+                problem.reference_answer,
+            )
+        except MathValidationError:
+            raise LessonQualityError(
+                "题目或参考答案未通过数学验证。"
+            ) from None
+
+        await self._emit(on_stage, "正在设计完整讲解")
+        draft = await self._create_draft(problem, problem_report.solution_strings)
+        revision_count = 0
+
+        while True:
+            self._validate_draft(problem, draft)
+            await self._emit(on_stage, "正在进行整篇审稿")
+            review = await self._review(problem, draft)
+            if review.status == "approved":
+                break
+            if revision_count >= self.MAX_REVISIONS:
+                raise LessonQualityError("整篇讲稿在两轮修订后仍未通过。")
+
+            await self._emit(on_stage, "正在修订完整讲解")
+            draft = await self._revise(problem, draft, review)
+            revision_count += 1
+
+        await self._emit(on_stage, "正在编译课堂")
+        validation_report = {
+            "math_status": "verified",
+            "review_status": review.status,
+            "revision_count": revision_count,
+            "independent_solutions": problem_report.solution_strings,
+            "review_assessment": review.overall_assessment,
+        }
+        try:
+            return self.compiler.compile(
+                problem,
+                draft,
+                validation_report,
+            )
+        except LessonCompileError:
+            raise
+        except Exception:
+            raise LessonQualityError("课堂编译失败。") from None
+
+    async def _create_draft(
+        self,
+        problem: ProblemInput,
+        solution_strings: Any,
+    ) -> LessonDraft:
+        payload = await self._complete_json(
+            DIRECTOR_SYSTEM,
+            director_prompt(problem, list(solution_strings)),
+            "完整讲解生成失败。",
+        )
+        try:
+            return LessonDraft.model_validate(payload)
+        except ValidationError:
+            raise LessonQualityError("模型生成的讲解结构无效。") from None
+
+    async def _review(
+        self,
+        problem: ProblemInput,
+        draft: LessonDraft,
+    ) -> ReviewDecision:
+        payload = await self._complete_json(
+            REVIEWER_SYSTEM,
+            reviewer_prompt(problem, draft),
+            "整篇审稿失败。",
+        )
+        try:
+            return ReviewDecision.model_validate(payload)
+        except ValidationError:
+            raise LessonQualityError("模型返回的审稿结构无效。") from None
+
+    async def _revise(
+        self,
+        problem: ProblemInput,
+        draft: LessonDraft,
+        review: ReviewDecision,
+    ) -> LessonDraft:
+        payload = await self._complete_json(
+            REVISION_SYSTEM,
+            revision_prompt(problem, draft, review),
+            "完整讲解修订失败。",
+        )
+        try:
+            return LessonDraft.model_validate(payload)
+        except ValidationError:
+            raise LessonQualityError("模型修订的讲解结构无效。") from None
+
+    async def _complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        safe_error: str,
+    ) -> Any:
+        try:
+            return await self.client.complete_json(
+                system_prompt,
+                user_prompt,
+            )
+        except Exception:
+            raise LessonQualityError(safe_error) from None
+
+    def _validate_draft(
+        self,
+        problem: ProblemInput,
+        draft: LessonDraft,
+    ) -> None:
+        for step in draft.math_steps:
+            try:
+                self.math_engine.validate_step(step)
+            except MathValidationError:
+                raise LessonQualityError(
+                    "讲解中的数学步骤未通过验证。"
+                ) from None
+
+        try:
+            self.math_engine.validate_problem(
+                draft.transfer_item.problem_text,
+                draft.transfer_item.expected_answer,
+            )
+        except MathValidationError:
+            raise LessonQualityError(
+                "近迁移题未通过数学验证。"
+            ) from None
+
+        interactions = [
+            moment.interaction
+            for moment in draft.moments
+            if moment.interaction is not None
+        ]
+        if not interactions:
+            raise LessonQualityError("讲解没有设置学生互动。")
+
+        required_operations = {
+            "factor": "factor",
+            "quadratic_formula": "quadratic_formula",
+            "complete_the_square": "complete_the_square",
+        }
+        expected_operation = required_operations.get(problem.required_method)
+        if expected_operation and expected_operation not in {
+            step.operation for step in draft.math_steps
+        }:
+            raise LessonQualityError("讲解没有真正使用指定方法。")
+
+    @staticmethod
+    async def _emit(
+        callback: Optional[StageCallback],
+        stage: str,
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(stage)
+        if inspect.isawaitable(result):
+            await result
