@@ -327,7 +327,7 @@ AI 可以从以下模态中自由选择，单题不需要全部使用：
 
 ### 8.1 技术栈
 
-- Python 3.11 或更高版本；
+- Python 3.9 或更高版本；
 - FastAPI；
 - Pydantic；
 - SymPy；
