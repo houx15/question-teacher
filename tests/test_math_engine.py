@@ -255,6 +255,29 @@ def test_complete_square_accepts_positive_operand_and_new_square(engine):
     engine.validate_step(step)
 
 
+def test_complete_square_accepts_scaled_squared_binomial(engine):
+    step = make_step(
+        "complete_the_square",
+        ["2x^2-12x=7"],
+        ["2(x-3)^2=25"],
+        ["18"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_complete_square_rejects_preexisting_scaled_square(engine):
+    step = make_step(
+        "complete_the_square",
+        ["2(x-3)^2-18=7"],
+        ["2(x-3)^2=25"],
+        ["18"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_complete_square_rejects_negative_operand(engine):
     step = make_step(
         "complete_the_square",

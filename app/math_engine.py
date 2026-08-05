@@ -642,7 +642,7 @@ class MathEngine:
         after: _EquationParts,
     ) -> bool:
         return any(
-            self._is_squared_binomial(factor(after_side))
+            self._is_scaled_squared_binomial(factor(after_side))
             and not self._contains_or_factors_to_squared_binomial(
                 before_raw,
                 before_side,
@@ -658,9 +658,21 @@ class MathEngine:
         raw_expression: Expr,
         expression: Expr,
     ) -> bool:
-        return self._is_squared_binomial(factor(expression)) or any(
-            self._is_squared_binomial(node)
+        return self._is_scaled_squared_binomial(factor(expression)) or any(
+            self._is_scaled_squared_binomial(node)
             for node in preorder_traversal(raw_expression)
+        )
+
+    def _is_scaled_squared_binomial(self, expression: Expr) -> bool:
+        scalar, dependent = expression.as_independent(
+            self.x,
+            as_Add=False,
+        )
+        return (
+            scalar != 0
+            and not scalar.has(self.x)
+            and scalar.is_real is True
+            and self._is_squared_binomial(dependent)
         )
 
     def _is_squared_binomial(self, expression: Expr) -> bool:
