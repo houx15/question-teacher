@@ -348,7 +348,11 @@ class MathEngine:
             "split_plus_minus",
             "take_square_root_both_sides",
         }:
-            valid = self._is_square_root_branch_transition(before, after)
+            valid = self._is_square_root_branch_transition(
+                operation,
+                before,
+                after,
+            )
         elif operation in {
             "add_both_sides",
             "subtract_both_sides",
@@ -499,10 +503,11 @@ class MathEngine:
 
     def _is_square_root_branch_transition(
         self,
+        operation: str,
         before: List[_EquationParts],
         after: List[_EquationParts],
     ) -> bool:
-        if len(before) != 1 or len(after) != 2:
+        if len(before) != 1:
             return False
 
         square_parts = self._explicit_square_and_constant(before[0])
@@ -512,7 +517,14 @@ class MathEngine:
 
         root = sqrt(constant)
         expected_values = FiniteSet(root, -root)
-        if len(expected_values) != 2:
+        expected_count = len(expected_values)
+        if operation == "split_plus_minus":
+            required_count = 2
+            if expected_count != required_count:
+                return False
+        else:
+            required_count = expected_count
+        if len(after) != required_count:
             return False
 
         actual_values = []
@@ -523,7 +535,7 @@ class MathEngine:
             actual_values.append(value)
 
         return (
-            len(FiniteSet(*actual_values)) == 2
+            len(FiniteSet(*actual_values)) == required_count
             and FiniteSet(*actual_values) == expected_values
             and all(
                 not (

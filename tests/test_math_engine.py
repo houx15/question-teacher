@@ -89,6 +89,17 @@ def test_split_plus_minus_rejects_equivalent_duplicate_branches(engine):
         engine.validate_step(step)
 
 
+def test_split_plus_minus_rejects_duplicate_zero_root_branches(engine):
+    step = make_step(
+        "split_plus_minus",
+        ["x^2=0"],
+        ["x=0", "x=0"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_validate_step_rejects_changed_solution_set(engine):
     step = MathStep(
         purpose="移项",
@@ -201,6 +212,16 @@ def test_take_square_root_accepts_shifted_square_and_swapped_branches(engine):
         "take_square_root_both_sides",
         ["(x-3)^2=4"],
         ["x-3=-2", "x-3=2"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_take_square_root_accepts_single_zero_root_branch(engine):
+    step = make_step(
+        "take_square_root_both_sides",
+        ["x^2=0"],
+        ["x=0"],
     )
 
     engine.validate_step(step)
