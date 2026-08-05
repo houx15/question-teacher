@@ -189,6 +189,25 @@ class LessonGenerationService:
         if not interactions:
             raise LessonQualityError("讲解没有设置学生互动。")
 
+        for interaction in interactions:
+            try:
+                if interaction.kind == "expression":
+                    self.math_engine.parse_expression(
+                        interaction.expected_answer
+                    )
+                elif interaction.kind == "transfer":
+                    if not self.math_engine.answers_equivalent(
+                        interaction.expected_answer,
+                        interaction.expected_answer,
+                    ):
+                        raise MathValidationError(
+                            "Transfer answer is not self-equivalent."
+                        )
+            except MathValidationError:
+                raise LessonQualityError(
+                    "讲解中的互动答案未通过数学验证。"
+                ) from None
+
         required_operations = {
             "factor": "factor",
             "quadratic_formula": "quadratic_formula",

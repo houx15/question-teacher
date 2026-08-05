@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -234,6 +235,121 @@ def test_missing_job_and_lesson_return_404():
 
     assert job_response.status_code == 404
     assert lesson_response.status_code == 404
+
+
+def test_public_lesson_payload_redacts_answers_and_review_internals():
+    lesson = RuntimeLesson.model_validate(
+        {
+            "lesson_id": "lesson-public",
+            "problem": {
+                "problem_text": "解方程 x^2-6x+9=0",
+                "reference_answer": "x=271828",
+            },
+            "title": "公开课程",
+            "learning_goal": "理解完全平方结构。",
+            "beats": [
+                {
+                    "beat_id": "beat-expression",
+                    "purpose": "识别结构",
+                    "narration": "请写出对应的完全平方。",
+                    "board_actions": [],
+                    "layer": "interaction",
+                    "audio_url": "/audio/lesson-public/beat-expression.mp3",
+                    "interaction": {
+                        "interaction_id": "expression-check",
+                        "kind": "expression",
+                        "prompt": "写出完全平方。",
+                        "expected_answer": "x^2-6*x+9",
+                        "hints": ["观察中间项。"],
+                        "hint_audio_urls": [
+                            "/audio/lesson-public/hint-1.mp3",
+                        ],
+                        "correct_audio_url": (
+                            "/audio/lesson-public/correct.mp3"
+                        ),
+                    },
+                    "next_beat_id": "beat-choice",
+                },
+                {
+                    "beat_id": "beat-choice",
+                    "purpose": "选择方法",
+                    "narration": "请选择下一步。",
+                    "board_actions": [],
+                    "layer": "interaction",
+                    "interaction": {
+                        "interaction_id": "choice-check",
+                        "kind": "choice",
+                        "prompt": "选择方法。",
+                        "expected_answer": "correct-option",
+                        "options": [
+                            {
+                                "option_id": "correct-option",
+                                "label": "配方法",
+                            },
+                            {
+                                "option_id": "other-option",
+                                "label": "其他方法",
+                            },
+                        ],
+                    },
+                },
+            ],
+            "summary": "识别完全平方。",
+            "transfer_item": {
+                "problem_text": "解方程 x^2-8x+16=0",
+                "expected_answer": "x=314159",
+                "method_signal": "观察完全平方。",
+            },
+            "validation_report": {
+                "independent_solutions": ["validation-secret"],
+                "review_assessment": "private-review",
+            },
+        }
+    )
+    store = MemoryStore()
+    store.save_lesson(lesson)
+    client, _, _ = build_client(store=store)
+
+    response = client.get("/api/lessons/lesson-public")
+
+    assert response.status_code == 200
+    payload = response.json()
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "reference_answer" not in payload["problem"]
+    assert "expected_answer" not in payload["transfer_item"]
+    assert "validation_report" not in payload
+    assert all(
+        "expected_answer" not in beat["interaction"]
+        for beat in payload["beats"]
+    )
+    assert "x=271828" not in serialized
+    assert "x^2-6*x+9" not in serialized
+    assert "x=314159" not in serialized
+    assert "validation-secret" not in serialized
+    assert "private-review" not in serialized
+    assert payload["problem"]["problem_text"] == "解方程 x^2-6x+9=0"
+    assert payload["beats"][0]["audio_url"].endswith(
+        "beat-expression.mp3"
+    )
+    assert payload["beats"][0]["interaction"]["hints"] == [
+        "观察中间项。"
+    ]
+    assert payload["beats"][0]["interaction"]["hint_audio_urls"]
+    assert payload["beats"][0]["interaction"]["correct_audio_url"]
+    assert payload["beats"][1]["interaction"]["options"] == [
+        {"option_id": "correct-option", "label": "配方法"},
+        {"option_id": "other-option", "label": "其他方法"},
+    ]
+
+    evaluation = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": "lesson-public",
+            "interaction_id": "expression-check",
+            "answer": "(x-3)^2",
+        },
+    )
+    assert evaluation.json() == {"classification": "correct"}
 
 
 @pytest.mark.parametrize("kind", ["choice", "point_select"])

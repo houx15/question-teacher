@@ -384,6 +384,58 @@ def test_draft_rejects_unexecutable_choice_before_review():
     assert len(client.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("kind", "invalid_expected"),
+    [
+        ("expression", "not a supported expression"),
+        ("transfer", "not a supported answer"),
+    ],
+)
+def test_draft_rejects_invalid_auto_graded_answer_before_review(
+    kind,
+    invalid_expected,
+):
+    draft = valid_draft()
+    draft["moments"][0]["interaction"].update(
+        {
+            "kind": kind,
+            "expected_answer": invalid_expected,
+        }
+    )
+    client = FakeClient([draft])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert "互动答案" in str(exc_info.value)
+    assert invalid_expected not in str(exc_info.value)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("expression", "(x-2)*(x-3)"),
+        ("transfer", "x=2 或 x=3"),
+    ],
+)
+def test_draft_accepts_valid_auto_graded_answers(kind, expected):
+    draft = valid_draft()
+    draft["moments"][0]["interaction"].update(
+        {
+            "kind": kind,
+            "expected_answer": expected,
+        }
+    )
+    client = FakeClient([draft, approved_review()])
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+
+
 def test_invalid_director_schema_is_reported_without_model_payload():
     private_payload = {
         "title": "private-model-output",

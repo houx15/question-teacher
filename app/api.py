@@ -46,6 +46,18 @@ def safe_generation_error(_error: Exception) -> str:
     return "课程生成失败，请稍后重试。"
 
 
+def public_lesson_payload(lesson: RuntimeLesson) -> dict:
+    payload = lesson.model_dump()
+    payload["problem"].pop("reference_answer", None)
+    payload["transfer_item"].pop("expected_answer", None)
+    payload.pop("validation_report", None)
+    for beat in payload["beats"]:
+        interaction = beat.get("interaction")
+        if interaction is not None:
+            interaction.pop("expected_answer", None)
+    return payload
+
+
 async def run_generation(
     job_id: str,
     problem: ProblemInput,
@@ -124,12 +136,12 @@ def create_api_router(services: ApiServices) -> APIRouter:
             raise HTTPException(status_code=404, detail="生成任务不存在。")
         return job
 
-    @router.get("/lessons/{lesson_id}", response_model=RuntimeLesson)
-    async def get_lesson(lesson_id: str) -> RuntimeLesson:
+    @router.get("/lessons/{lesson_id}")
+    async def get_lesson(lesson_id: str) -> dict:
         lesson = services.store.get_lesson(lesson_id)
         if lesson is None:
             raise HTTPException(status_code=404, detail="课程不存在。")
-        return lesson
+        return public_lesson_payload(lesson)
 
     @router.post("/interactions/evaluate")
     async def evaluate_interaction(
