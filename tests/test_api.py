@@ -588,6 +588,24 @@ def test_production_lifespan_constructs_services_and_closes_owned_clients():
     assert speech_client.http.is_closed is True
 
 
+def test_production_lifespan_selects_and_closes_volcengine_client():
+    application = create_app(
+        settings=Settings(
+            tts_provider="volcengine",
+            volcengine_tts_api_key="voice-secret",
+            volcengine_tts_resource_id="seed-tts-2.0",
+            volcengine_tts_voice="teacher",
+        )
+    )
+
+    with TestClient(application):
+        speech_client = application.state.services.audio_service.client
+        assert speech_client.__class__.__name__ == "VolcengineSpeechClient"
+        assert speech_client.http.is_closed is False
+
+    assert speech_client.http.is_closed is True
+
+
 def test_static_and_audio_mounts_and_page_routes_are_registered():
     app = create_app(
         generator=FakeGenerator(),

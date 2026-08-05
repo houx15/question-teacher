@@ -13,10 +13,20 @@ MODEL_ENV_NAMES = (
     "OPENAI_MODEL",
 )
 TTS_ENV_NAMES = (
+    "TTS_PROVIDER",
     "TTS_BASE_URL",
     "TTS_API_KEY",
     "TTS_MODEL",
     "TTS_VOICE",
+    "VOLCENGINE_TTS_ENDPOINT",
+    "VOLCENGINE_TTS_API_KEY",
+    "VOLCENGINE_TTS_APP_ID",
+    "VOLCENGINE_TTS_ACCESS_KEY",
+    "VOLCENGINE_TTS_RESOURCE_ID",
+    "VOLCENGINE_TTS_VOICE",
+    "VOLCENGINE_TTS_SPEED_RATIO",
+    "VOLCENGINE_TTS_SAMPLE_RATE",
+    "VOLCENGINE_TTS_UID",
 )
 
 
@@ -208,3 +218,73 @@ def test_cross_origin_tts_without_key_never_sends_model_credential(
     asyncio.run(scenario())
 
     assert requests == []
+
+
+def test_volcengine_new_key_configuration_never_inherits_openai_key(
+    monkeypatch,
+):
+    clear_settings_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "model-secret")
+    monkeypatch.setenv("TTS_PROVIDER", "volcengine")
+    monkeypatch.setenv("VOLCENGINE_TTS_API_KEY", " voice-secret ")
+    monkeypatch.setenv("VOLCENGINE_TTS_RESOURCE_ID", " seed-tts-2.0 ")
+    monkeypatch.setenv("VOLCENGINE_TTS_VOICE", " teacher ")
+
+    settings = Settings.from_env()
+
+    assert settings.tts_provider == "volcengine"
+    assert settings.volcengine_tts_endpoint == (
+        "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    )
+    assert settings.volcengine_tts_api_key == "voice-secret"
+    assert settings.volcengine_tts_resource_id == "seed-tts-2.0"
+    assert settings.volcengine_tts_voice == "teacher"
+    assert settings.voice_configured is True
+
+
+def test_volcengine_legacy_auth_requires_both_credentials(monkeypatch):
+    clear_settings_env(monkeypatch)
+    monkeypatch.setenv("TTS_PROVIDER", "volcengine")
+    monkeypatch.setenv("VOLCENGINE_TTS_APP_ID", "app-id")
+    monkeypatch.setenv("VOLCENGINE_TTS_ACCESS_KEY", "access-key")
+    monkeypatch.setenv("VOLCENGINE_TTS_RESOURCE_ID", "seed-tts-2.0")
+    monkeypatch.setenv("VOLCENGINE_TTS_VOICE", "teacher")
+
+    assert Settings.from_env().voice_configured is True
+
+    monkeypatch.delenv("VOLCENGINE_TTS_ACCESS_KEY")
+
+    assert Settings.from_env().voice_configured is False
+
+
+@pytest.mark.parametrize("provider", ["unknown", "VOLCENGINE"])
+def test_tts_provider_rejects_unsupported_values(monkeypatch, provider):
+    clear_settings_env(monkeypatch)
+    monkeypatch.setenv("TTS_PROVIDER", provider)
+
+    with pytest.raises(ValueError, match="TTS_PROVIDER"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("VOLCENGINE_TTS_SPEED_RATIO", "0.49"),
+        ("VOLCENGINE_TTS_SPEED_RATIO", "2.01"),
+        ("VOLCENGINE_TTS_SPEED_RATIO", "nan"),
+        ("VOLCENGINE_TTS_SAMPLE_RATE", "44100"),
+        ("VOLCENGINE_TTS_SAMPLE_RATE", "not-a-number"),
+        ("VOLCENGINE_TTS_UID", " "),
+    ],
+)
+def test_volcengine_rejects_invalid_audio_settings(
+    monkeypatch,
+    name,
+    value,
+):
+    clear_settings_env(monkeypatch)
+    monkeypatch.setenv("TTS_PROVIDER", "volcengine")
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        Settings.from_env()

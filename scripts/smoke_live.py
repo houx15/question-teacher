@@ -16,10 +16,37 @@ from app.llm_client import OpenAICompatibleClient
 from app.math_engine import MathEngine
 from app.schemas import ProblemInput
 from app.tts_client import OpenAISpeechClient
+from app.volcengine_tts_client import VolcengineSpeechClient
 
 
 def missing_environment(settings: Settings) -> List[str]:
     missing = list(settings.missing_model_settings)
+    if settings.tts_provider == "volcengine":
+        voice_settings = (
+            ("VOLCENGINE_TTS_ENDPOINT", settings.volcengine_tts_endpoint),
+            (
+                "VOLCENGINE_TTS_RESOURCE_ID",
+                settings.volcengine_tts_resource_id,
+            ),
+            ("VOLCENGINE_TTS_VOICE", settings.volcengine_tts_voice),
+            ("VOLCENGINE_TTS_UID", settings.volcengine_tts_uid),
+        )
+        missing.extend(
+            name
+            for name, value in voice_settings
+            if not isinstance(value, str) or not value.strip()
+        )
+        if not settings.volcengine_tts_api_key:
+            if not settings.volcengine_tts_app_id:
+                missing.append(
+                    "VOLCENGINE_TTS_API_KEY 或 VOLCENGINE_TTS_APP_ID"
+                )
+            if not settings.volcengine_tts_access_key:
+                missing.append(
+                    "VOLCENGINE_TTS_API_KEY 或 VOLCENGINE_TTS_ACCESS_KEY"
+                )
+        return missing
+
     voice_settings = (
         ("TTS_BASE_URL 或 OPENAI_BASE_URL", settings.tts_base_url),
         ("TTS_API_KEY 或 OPENAI_API_KEY", settings.tts_api_key),
@@ -34,12 +61,22 @@ def missing_environment(settings: Settings) -> List[str]:
     return missing
 
 
+def create_speech_client(settings: Settings):
+    if settings.tts_provider == "volcengine":
+        return VolcengineSpeechClient(settings)
+    return OpenAISpeechClient(settings)
+
+
 async def main() -> None:
     try:
         settings = Settings.from_env()
-    except ValueError:
+    except ValueError as error:
+        if str(error).startswith("OPENAI_TIMEOUT_SECONDS"):
+            message = "OPENAI_TIMEOUT_SECONDS 配置无效。"
+        else:
+            message = "TTS 环境变量配置无效。"
         raise SystemExit(
-            "OPENAI_TIMEOUT_SECONDS 配置无效。未发起网络请求。"
+            message + "未发起网络请求。"
         ) from None
     missing = missing_environment(settings)
     if missing:
@@ -48,7 +85,7 @@ async def main() -> None:
         )
 
     model_client = OpenAICompatibleClient(settings)
-    speech_client = OpenAISpeechClient(settings)
+    speech_client = create_speech_client(settings)
     try:
         lesson = await LessonGenerationService(
             model_client,

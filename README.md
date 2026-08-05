@@ -37,7 +37,7 @@ python -m uvicorn app.main:app --reload
 
 打开 [http://127.0.0.1:8000/](http://127.0.0.1:8000/)。`.env` 只用于本机配置，不要提交真实密钥。
 
-## OpenAI 兼容接口配置
+## 文本与语音服务配置
 
 | 变量 | 必需 | 用途 |
 | --- | --- | --- |
@@ -45,8 +45,34 @@ python -m uvicorn app.main:app --reload
 | `OPENAI_API_KEY` | 是 | 文本模型鉴权密钥 |
 | `OPENAI_MODEL` | 是 | 生成与整篇审稿使用的模型名 |
 | `OPENAI_TIMEOUT_SECONDS` | 否 | 正数超时秒数，默认 `90` |
+| `TTS_PROVIDER` | 否 | `volcengine` 或 `openai_compatible`；未设置时兼容原有 OpenAI 语音配置，`.env.example` 默认使用 `volcengine` |
+
+### 火山引擎豆包语音 V3
+
+Demo 使用 HTTP Chunked 单向流式 V3 接口。先在豆包语音控制台开通对应资源并取得有权限的音色 ID；`.env.example` 中的音色只是占位符，不代表已经授权。
+
+| 变量 | 必需 | 用途 |
+| --- | --- | --- |
+| `VOLCENGINE_TTS_ENDPOINT` | 否 | 默认 `https://openspeech.bytedance.com/api/v3/tts/unidirectional` |
+| `VOLCENGINE_TTS_API_KEY` | 新版鉴权是 | 新版控制台生成的 API Key；设置后优先使用，绝不会继承 `OPENAI_API_KEY` |
+| `VOLCENGINE_TTS_APP_ID` | 旧版鉴权是 | 旧版 App ID，必须与 Access Key 成对提供 |
+| `VOLCENGINE_TTS_ACCESS_KEY` | 旧版鉴权是 | 旧版 Access Key，必须与 App ID 成对提供 |
+| `VOLCENGINE_TTS_RESOURCE_ID` | 是 | 已开通的资源 ID；示例为 `seed-tts-2.0` |
+| `VOLCENGINE_TTS_VOICE` | 是 | 该资源下已授权的音色 ID |
+| `VOLCENGINE_TTS_SPEED_RATIO` | 否 | 语速，范围 `0.5`–`2.0`，默认 `1.0` |
+| `VOLCENGINE_TTS_SAMPLE_RATE` | 否 | MP3 采样率，只支持 `8000`、`16000`、`24000`，默认 `24000` |
+| `VOLCENGINE_TTS_UID` | 否 | 非空请求用户标识，默认 `ai-math-demo`；生产环境应改为可追踪且不含敏感信息的标识 |
+
+参考火山引擎官方的[语音合成大模型 API 列表](https://www.volcengine.com/docs/6561/2228192?lang=zh)确认 V3 接口，并通过[大模型音色列表 API](https://api.volcengine.com/api-docs/view?action=ListSpeakers&serviceCode=speech_saas_prod&version=2025-05-20)核对资源与音色。开通资源、鉴权信息和音色授权需要在当前火山引擎账号下完成。
+
+### OpenAI 兼容语音回退
+
+将 `TTS_PROVIDER=openai_compatible` 后使用以下变量：
+
+| 变量 | 必需 | 用途 |
+| --- | --- | --- |
 | `TTS_BASE_URL` | 否 | OpenAI 兼容语音服务根地址；为空时继承 `OPENAI_BASE_URL`，程序追加 `/audio/speech` |
-| `TTS_API_KEY` | 否 | 语音服务密钥；为空时继承 `OPENAI_API_KEY` |
+| `TTS_API_KEY` | 否 | 语音服务密钥；只有语音与文本端点相同时才允许继承 `OPENAI_API_KEY` |
 | `TTS_MODEL` | 是 | 语音模型名 |
 | `TTS_VOICE` | 是 | 语音音色名 |
 

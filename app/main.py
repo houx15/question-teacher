@@ -13,6 +13,7 @@ from app.llm_client import OpenAICompatibleClient
 from app.math_engine import MathEngine
 from app.store import MemoryStore
 from app.tts_client import OpenAISpeechClient
+from app.volcengine_tts_client import VolcengineSpeechClient
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -55,7 +56,10 @@ def create_app(
             owns_generator = True
 
         if services.audio_service is None:
-            speech_client = OpenAISpeechClient(resolved_settings)
+            if resolved_settings.tts_provider == "volcengine":
+                speech_client = VolcengineSpeechClient(resolved_settings)
+            else:
+                speech_client = OpenAISpeechClient(resolved_settings)
             owned_clients.append(speech_client)
             services.audio_service = LessonAudioService(
                 speech_client,
