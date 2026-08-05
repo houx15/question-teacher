@@ -60,8 +60,8 @@ class ProblemInput(SchemaModel):
 class MathStep(SchemaModel):
     purpose: NonEmptyString
     operation: MathOperation
-    state_before: List[NonEmptyString]
-    state_after: List[NonEmptyString]
+    state_before: List[NonEmptyString] = Field(min_length=1)
+    state_after: List[NonEmptyString] = Field(min_length=1)
     reason: NonEmptyString
 
 
@@ -165,8 +165,8 @@ class LessonDraft(SchemaModel):
     learning_goal: NonEmptyString
     opening: NonEmptyString
     method_rationale: NonEmptyString
-    math_steps: List[MathStep]
-    moments: List[LessonMoment]
+    math_steps: List[MathStep] = Field(min_length=1)
+    moments: List[LessonMoment] = Field(min_length=1)
     summary: NonEmptyString
     transfer_item: TransferItem
 
@@ -204,7 +204,7 @@ class RuntimeLesson(SchemaModel):
     problem: ProblemInput
     title: NonEmptyString
     learning_goal: NonEmptyString
-    beats: List[RuntimeBeat]
+    beats: List[RuntimeBeat] = Field(min_length=1)
     summary: NonEmptyString
     transfer_item: TransferItem
     validation_report: Dict[str, object]
@@ -221,11 +221,17 @@ class GenerationJob(SchemaModel):
 
     @model_validator(mode="after")
     def validate_status_payload(self) -> "GenerationJob":
-        if self.status == "completed" and not self.lesson_id:
-            raise ValueError("completed jobs require lesson_id")
-        if self.status == "failed" and not self.error:
-            raise ValueError("failed jobs require error")
-        if self.status in {"queued", "running"}:
+        if self.status == "completed":
+            if not self.lesson_id:
+                raise ValueError("completed jobs require lesson_id")
+            if self.error:
+                raise ValueError("completed jobs must not include error")
+        elif self.status == "failed":
+            if not self.error:
+                raise ValueError("failed jobs require error")
+            if self.lesson_id:
+                raise ValueError("failed jobs must not include lesson_id")
+        else:
             if self.lesson_id or self.error:
                 raise ValueError(
                     f"{self.status} jobs must not include lesson_id or error"

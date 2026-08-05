@@ -238,6 +238,92 @@ def test_math_operation_and_lesson_layer_are_restricted():
         )
 
 
+@pytest.mark.parametrize("empty_field", ("state_before", "state_after"))
+def test_math_step_rejects_empty_state_lists(empty_field):
+    payload = {
+        "purpose": "移项",
+        "operation": "subtract_both_sides",
+        "state_before": ["x + 1 = 0"],
+        "state_after": ["x = -1"],
+        "reason": "等式两边同时减一。",
+    }
+    payload[empty_field] = []
+
+    with pytest.raises(ValidationError):
+        MathStep.model_validate(payload)
+
+
+@pytest.mark.parametrize("empty_field", ("math_steps", "moments"))
+def test_lesson_draft_rejects_empty_execution_collections(empty_field):
+    payload = {
+        "title": "移项解方程",
+        "learning_goal": "能用等式性质完成移项。",
+        "opening": "观察未知数所在的位置。",
+        "method_rationale": "通过等式两边同减一来隔离未知数。",
+        "math_steps": [
+            {
+                "purpose": "移项",
+                "operation": "subtract_both_sides",
+                "state_before": ["x + 1 = 0"],
+                "state_after": ["x = -1"],
+                "reason": "等式两边同时减一。",
+            }
+        ],
+        "moments": [
+            {
+                "purpose": "解释移项",
+                "narration": "等式两边同时减一。",
+            }
+        ],
+        "summary": "对等式两边做相同运算。",
+        "transfer_item": {
+            "problem_text": "解方程 x + 2 = 0",
+            "expected_answer": "x = -2",
+            "method_signal": "等式两边同时减二。",
+        },
+    }
+    payload[empty_field] = []
+
+    with pytest.raises(ValidationError):
+        LessonDraft.model_validate(payload)
+
+
+def test_runtime_lesson_requires_beats_but_beat_action_lists_may_be_empty():
+    moment = LessonMoment(
+        purpose="口头总结",
+        narration="等式两边必须做相同运算。",
+    )
+    beat = RuntimeBeat(
+        beat_id="beat-summary",
+        purpose="口头总结",
+        narration="等式两边必须做相同运算。",
+        board_actions=[],
+        layer="base",
+    )
+
+    assert moment.board_actions == []
+    assert beat.board_actions == []
+
+    with pytest.raises(ValidationError):
+        RuntimeLesson(
+            lesson_id="lesson-empty-beats",
+            problem=ProblemInput(
+                problem_text="解方程 x + 1 = 0",
+                reference_answer="x = -1",
+            ),
+            title="移项解方程",
+            learning_goal="能用等式性质完成移项。",
+            beats=[],
+            summary="对等式两边做相同运算。",
+            transfer_item=TransferItem(
+                problem_text="解方程 x + 2 = 0",
+                expected_answer="x = -2",
+                method_signal="等式两边同时减二。",
+            ),
+            validation_report={},
+        )
+
+
 def test_interaction_requires_expected_answer():
     with pytest.raises(ValidationError):
         Interaction(
@@ -438,6 +524,20 @@ def test_runtime_lesson_rejects_invalid_problem_payload():
             "status": "running",
             "stage": "drafting",
             "error": "still running",
+        },
+        {
+            "job_id": "job-completed-error",
+            "status": "completed",
+            "stage": "runtime_compiled",
+            "lesson_id": "lesson-001",
+            "error": "stale error",
+        },
+        {
+            "job_id": "job-failed-lesson",
+            "status": "failed",
+            "stage": "generation",
+            "lesson_id": "lesson-001",
+            "error": "model unavailable",
         },
     ],
 )
