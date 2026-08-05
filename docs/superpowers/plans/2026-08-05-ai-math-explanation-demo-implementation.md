@@ -2,9 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a live OpenAI-compatible, mathematically validated, full-screen interactive junior-math explanation Demo for linear and quadratic equations.
+**Goal:** Build a live OpenAI-compatible, mathematically validated, voiced,
+full-screen interactive junior-math explanation Demo whose narration drives
+progressive board writing and emphasis.
 
-**Architecture:** A FastAPI service coordinates one Lesson Director role, one independent Reviewer role, a deterministic SymPy math engine, and an in-memory lesson runtime. The Director creates a coherent whole lesson, the Reviewer evaluates the whole lesson, the Director revises when required, and a deterministic compiler turns the approved manuscript into semantic board actions and interactive beats for a horizontal Pad classroom.
+**Architecture:** A FastAPI service coordinates one Lesson Director role, one
+independent Reviewer role, a deterministic SymPy math engine, an OpenAI-style
+TTS adapter, and an in-memory lesson runtime. The Director creates a coherent
+whole lesson as short voiced beats with bound board actions, the Reviewer
+evaluates the whole lesson, the Director revises when required, and the runtime
+plays each audio beat while writing, circling, highlighting, masking, or marking
+its current mathematical focus.
 
 **Tech Stack:** Python 3.9, FastAPI, Pydantic 2, SymPy, httpx, pytest, native HTML/CSS/JavaScript, Node 20 built-in test runner.
 
@@ -26,6 +34,8 @@
 │   ├── schemas.py                       # Problem, manuscript, review, runtime schemas
 │   ├── math_engine.py                   # Parsing, solving, equivalence and answer checks
 │   ├── llm_client.py                    # OpenAI-compatible JSON client
+│   ├── tts_client.py                    # OpenAI-style /audio/speech client
+│   ├── audio_service.py                 # Per-beat, feedback and hint audio assets
 │   ├── prompts.py                       # Director, Reviewer and revision prompts
 │   ├── generation.py                    # Two-role orchestration and quality loop
 │   ├── compiler.py                      # Manuscript to runtime beats
@@ -37,6 +47,8 @@
 │       ├── generate.js                  # Form submission and progress polling
 │       ├── runtime-core.mjs             # Pure lesson state machine
 │       └── lesson.js                    # Board, layers, interactions and controls
+├── var/
+│   └── audio/                           # Generated runtime audio, gitignored
 ├── scripts/
 │   └── smoke_live.py                    # Optional real-endpoint smoke test
 └── tests/
@@ -48,6 +60,7 @@
     ├── test_config.py
     ├── test_generation.py
     ├── test_llm_client.py
+    ├── test_tts_client.py
     ├── test_math_engine.py
     ├── test_schemas.py
     ├── test_static_pages.py
@@ -96,6 +109,22 @@ def test_settings_normalizes_base_url(monkeypatch):
 
     assert settings.chat_completions_url == "https://example.test/v1/chat/completions"
     assert settings.model_configured is True
+
+
+def test_tts_can_reuse_base_url_and_api_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("OPENAI_MODEL", "demo-model")
+    monkeypatch.setenv("TTS_MODEL", "demo-tts")
+    monkeypatch.setenv("TTS_VOICE", "teacher")
+    monkeypatch.delenv("TTS_BASE_URL", raising=False)
+    monkeypatch.delenv("TTS_API_KEY", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.speech_url == "https://example.test/v1/audio/speech"
+    assert settings.tts_api_key == "secret"
+    assert settings.voice_configured is True
 ```
 
 - [ ] **Step 2: Run the tests and verify they fail**
@@ -127,6 +156,10 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_API_KEY=replace-me
 OPENAI_MODEL=replace-me
 OPENAI_TIMEOUT_SECONDS=90
+TTS_BASE_URL=
+TTS_API_KEY=
+TTS_MODEL=replace-me
+TTS_VOICE=replace-me
 ```
 
 ```python
@@ -142,6 +175,10 @@ class Settings:
     openai_api_key: Optional[str]
     openai_model: Optional[str]
     openai_timeout_seconds: float = 90.0
+    tts_base_url: Optional[str] = None
+    tts_api_key: Optional[str] = None
+    tts_model: Optional[str] = None
+    tts_voice: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -150,6 +187,10 @@ class Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             openai_model=os.getenv("OPENAI_MODEL"),
             openai_timeout_seconds=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90")),
+            tts_base_url=os.getenv("TTS_BASE_URL") or os.getenv("OPENAI_BASE_URL"),
+            tts_api_key=os.getenv("TTS_API_KEY") or os.getenv("OPENAI_API_KEY"),
+            tts_model=os.getenv("TTS_MODEL"),
+            tts_voice=os.getenv("TTS_VOICE"),
         )
 
     @property
@@ -170,9 +211,26 @@ class Settings:
         if not self.openai_base_url:
             return ""
         return f"{self.openai_base_url.rstrip('/')}/chat/completions"
+
+    @property
+    def voice_configured(self) -> bool:
+        return bool(
+            self.tts_base_url
+            and self.tts_api_key
+            and self.tts_model
+            and self.tts_voice
+        )
+
+    @property
+    def speech_url(self) -> str:
+        if not self.tts_base_url:
+            return ""
+        return f"{self.tts_base_url.rstrip('/')}/audio/speech"
 ```
 
-Create empty `app/__init__.py` and `tests/__init__.py`, a FastAPI instance in `app/main.py`, and ignore `.env`, `__pycache__/`, `.pytest_cache/`, `.DS_Store`, and `*.pyc`.
+Create empty `app/__init__.py` and `tests/__init__.py`, a FastAPI instance in
+`app/main.py`, and ignore `.env`, `__pycache__/`, `.pytest_cache/`, `.DS_Store`,
+`*.pyc`, and `var/audio/`.
 
 - [ ] **Step 4: Install the one missing runtime package**
 
@@ -196,7 +254,7 @@ conda activate general
 pytest -q tests/test_config.py
 ```
 
-Expected: `2 passed`.
+Expected: `3 passed`.
 
 - [ ] **Step 6: Commit**
 
@@ -273,6 +331,7 @@ def test_moment_can_freely_combine_board_layer_and_interaction():
         ),
     )
     assert moment.layer == "micro_explanation"
+    assert len(moment.narration) <= 90
 ```
 
 - [ ] **Step 2: Run and verify failure**
@@ -341,11 +400,13 @@ class Interaction(BaseModel):
     options: List[InteractionOption] = Field(default_factory=list)
     hints: List[str] = Field(default_factory=list)
     explanation_after_correct: str = ""
+    hint_audio_urls: List[str] = Field(default_factory=list)
+    correct_audio_url: Optional[str] = None
 
 
 class LessonMoment(BaseModel):
     purpose: str
-    narration: str
+    narration: str = Field(min_length=1, max_length=90)
     board_actions: List[BoardAction] = Field(default_factory=list)
     layer: Literal["base", "micro_explanation", "comparison", "interaction"] = "base"
     interaction: Optional[Interaction] = None
@@ -388,6 +449,7 @@ class RuntimeBeat(BaseModel):
     board_actions: List[BoardAction]
     layer: str
     interaction: Optional[Interaction] = None
+    audio_url: Optional[str] = None
     next_beat_id: Optional[str] = None
 
 
@@ -960,11 +1022,14 @@ DIRECTOR_SYSTEM = """
 教学表达可以自由设计，不要机械填充固定七段模板。你必须：
 1. 围绕一个清楚的教学主线创作整节课；
 2. 只在真实认知转折点安排 1-3 个互动；
-3. 使用语义 target，不输出坐标、字号或动画参数；
-4. 在 math_steps 中列出所有结论关键的数学状态；
-5. 互动发生前不得在 narration 或 board_actions 中泄露 expected_answer；
-6. 生成一道同结构、不同表面的近迁移题；
-7. 只返回符合给定 JSON Schema 的 JSON，不返回 Markdown。
+3. 每个 moment 的 narration 是可独立生成语音的短片段，最多 90 个字符；
+4. 每个短片段只承担一个主要认知动作，并绑定此刻发生的板书动作；
+5. 说到某个数学对象时，在同一 moment 中书写、圈注、高亮、遮罩或标记它；
+6. 使用语义 target，不输出坐标、字号或动画参数；
+7. 在 math_steps 中列出所有结论关键的数学状态；
+8. 互动发生前不得在 narration 或 board_actions 中泄露 expected_answer；
+9. 生成一道同结构、不同表面的近迁移题；
+10. 只返回符合给定 JSON Schema 的 JSON，不返回 Markdown。
 """
 
 REVIEWER_SYSTEM = """
@@ -1210,7 +1275,233 @@ git add app/prompts.py app/compiler.py app/generation.py tests/test_generation.p
 git commit -m "feat: generate and review whole lessons"
 ```
 
-## Task 6: Add in-memory jobs, lesson APIs and answer evaluation
+## Task 6: Generate TTS audio for narration, hints and feedback
+
+**Files:**
+- Create: `app/tts_client.py`
+- Create: `app/audio_service.py`
+- Create: `tests/test_tts_client.py`
+- Modify: `app/schemas.py`
+
+- [ ] **Step 1: Write failing TTS tests**
+
+```python
+# tests/test_tts_client.py
+import asyncio
+import json
+
+import httpx
+
+from app.config import Settings
+from app.tts_client import OpenAISpeechClient
+
+
+def test_speech_client_calls_audio_speech():
+    async def run():
+        def handler(request):
+            payload = json.loads(request.content)
+            assert request.url.path == "/v1/audio/speech"
+            assert payload["input"] == "先看一次项系数负六。"
+            assert payload["voice"] == "teacher"
+            return httpx.Response(200, content=b"fake-mp3")
+
+        settings = Settings(
+            "https://example.test/v1",
+            "text-key",
+            "text-model",
+            tts_base_url="https://example.test/v1",
+            tts_api_key="voice-key",
+            tts_model="demo-tts",
+            tts_voice="teacher",
+        )
+        client = OpenAISpeechClient(
+            settings,
+            transport=httpx.MockTransport(handler),
+        )
+        audio = await client.synthesize("先看一次项系数负六。")
+        await client.close()
+        return audio
+
+    assert asyncio.run(run()) == b"fake-mp3"
+```
+
+```python
+class FakeSpeechClient:
+    async def synthesize(self, text):
+        return b"fake-mp3"
+
+
+def test_audio_service_attaches_narration_hint_and_feedback(tmp_path):
+    from app.audio_service import LessonAudioService
+    from app.compiler import LessonCompiler
+    from app.schemas import LessonDraft, ProblemInput
+    from tests.test_generation import valid_draft
+
+    lesson = LessonCompiler().compile(
+        ProblemInput(
+            problem_text="x^2-6x+5=0",
+            reference_answer="x=1 或 x=5",
+        ),
+        LessonDraft.model_validate(valid_draft()),
+        {"review_status": "approved"},
+    )
+    voiced = asyncio.run(
+        LessonAudioService(
+            FakeSpeechClient(),
+            tmp_path,
+        ).attach_audio(lesson)
+    )
+    assert voiced.beats[0].audio_url == (
+        f"/audio/{voiced.lesson_id}/beat-001.mp3"
+    )
+    interaction_beat = next(beat for beat in voiced.beats if beat.interaction)
+    assert interaction_beat.interaction.correct_audio_url.endswith(
+        f"/{interaction_beat.beat_id}-correct.mp3"
+    )
+    assert len(interaction_beat.interaction.hint_audio_urls) == 1
+    assert (
+        tmp_path / voiced.lesson_id / "beat-001.mp3"
+    ).read_bytes() == b"fake-mp3"
+```
+
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest -q tests/test_tts_client.py` after activating `general`.
+
+Expected: imports fail because the TTS modules do not exist.
+
+- [ ] **Step 3: Implement the OpenAI-style speech client**
+
+```python
+# app/tts_client.py
+from typing import Optional
+
+import httpx
+
+
+class SpeechGenerationError(RuntimeError):
+    pass
+
+
+class OpenAISpeechClient:
+    def __init__(self, settings, transport: Optional[httpx.AsyncBaseTransport] = None):
+        self.settings = settings
+        self.http = httpx.AsyncClient(
+            timeout=settings.openai_timeout_seconds,
+            transport=transport,
+        )
+
+    async def synthesize(self, text: str) -> bytes:
+        response = await self.http.post(
+            self.settings.speech_url,
+            headers={
+                "Authorization": f"Bearer {self.settings.tts_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.settings.tts_model,
+                "voice": self.settings.tts_voice,
+                "input": text,
+                "response_format": "mp3",
+            },
+        )
+        if response.status_code >= 400:
+            raise SpeechGenerationError(
+                f"TTS 请求失败：HTTP {response.status_code}"
+            )
+        if not response.content:
+            raise SpeechGenerationError("TTS 返回了空音频")
+        return response.content
+
+    async def close(self):
+        await self.http.aclose()
+```
+
+- [ ] **Step 4: Implement per-beat audio attachment**
+
+```python
+# app/audio_service.py
+from pathlib import Path
+
+from app.tts_client import SpeechGenerationError
+
+
+class LessonAudioService:
+    def __init__(self, client, audio_root: Path):
+        self.client = client
+        self.audio_root = audio_root
+
+    async def _write(self, lesson_id, filename, text):
+        last_error = None
+        for attempt in range(2):
+            try:
+                data = await self.client.synthesize(text)
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise SpeechGenerationError(
+                f"语音片段生成失败：{filename}"
+            ) from last_error
+        lesson_dir = self.audio_root / lesson_id
+        lesson_dir.mkdir(parents=True, exist_ok=True)
+        path = lesson_dir / filename
+        path.write_bytes(data)
+        return f"/audio/{lesson_id}/{filename}"
+
+    async def attach_audio(self, lesson, on_stage=None):
+        if on_stage:
+            result = on_stage("正在生成讲解语音")
+            if hasattr(result, "__await__"):
+                await result
+        voiced_beats = []
+        for beat in lesson.beats:
+            audio_url = await self._write(
+                lesson.lesson_id,
+                f"{beat.beat_id}.mp3",
+                beat.narration,
+            )
+            interaction = beat.interaction
+            if interaction:
+                hint_urls = []
+                for index, hint in enumerate(interaction.hints, start=1):
+                    hint_urls.append(await self._write(
+                        lesson.lesson_id,
+                        f"{beat.beat_id}-hint-{index}.mp3",
+                        hint,
+                    ))
+                correct_url = None
+                if interaction.explanation_after_correct:
+                    correct_url = await self._write(
+                        lesson.lesson_id,
+                        f"{beat.beat_id}-correct.mp3",
+                        interaction.explanation_after_correct,
+                    )
+                interaction = interaction.model_copy(update={
+                    "hint_audio_urls": hint_urls,
+                    "correct_audio_url": correct_url,
+                })
+            voiced_beats.append(beat.model_copy(update={
+                "audio_url": audio_url,
+                "interaction": interaction,
+            }))
+        return lesson.model_copy(update={"beats": voiced_beats})
+```
+
+- [ ] **Step 5: Run TTS tests**
+
+Run: `pytest -q tests/test_tts_client.py` after activating `general`.
+
+Expected: both TTS tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/tts_client.py app/audio_service.py app/schemas.py tests/test_tts_client.py
+git commit -m "feat: generate synchronized lesson audio"
+```
+
+## Task 7: Add in-memory jobs, lesson APIs and answer evaluation
 
 **Files:**
 - Create: `app/store.py`
@@ -1248,16 +1539,29 @@ class FakeGenerator:
         )
 
 
+class FakeAudioService:
+    async def attach_audio(self, lesson, on_stage=None):
+        if on_stage:
+            on_stage("正在生成讲解语音")
+        return lesson
+
+
 def test_health_does_not_expose_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
-    client = TestClient(create_app(generator=FakeGenerator()))
+    client = TestClient(create_app(
+        generator=FakeGenerator(),
+        audio_service=FakeAudioService(),
+    ))
     response = client.get("/api/health")
     assert response.status_code == 200
     assert "must-not-leak" not in response.text
 
 
 def test_generation_job_completes_and_returns_lesson():
-    client = TestClient(create_app(generator=FakeGenerator()))
+    client = TestClient(create_app(
+        generator=FakeGenerator(),
+        audio_service=FakeAudioService(),
+    ))
     response = client.post(
         "/api/lessons/generate",
         json={
@@ -1275,7 +1579,10 @@ def test_generation_job_completes_and_returns_lesson():
 
 
 def test_expression_interaction_uses_math_equivalence():
-    client = TestClient(create_app(generator=FakeGenerator()))
+    client = TestClient(create_app(
+        generator=FakeGenerator(),
+        audio_service=FakeAudioService(),
+    ))
     response = client.post(
         "/api/interactions/evaluate",
         json={"kind": "expression", "answer": "x^2-6x+9", "expected": "(x-3)^2"},
@@ -1341,13 +1648,14 @@ class MemoryStore:
 正在设计完整讲解
 正在进行整篇审稿
 正在修订并编译课堂
+正在生成讲解语音
 已完成
 ```
 
 Implement the job route and background task with:
 
 ```python
-async def run_generation(job_id, problem, store, generator):
+async def run_generation(job_id, problem, store, generator, audio_service):
     store.update_job(job_id, status="running", stage="正在理解题目")
 
     def report_stage(stage):
@@ -1355,6 +1663,10 @@ async def run_generation(job_id, problem, store, generator):
 
     try:
         lesson = await generator.generate(problem, on_stage=report_stage)
+        lesson = await audio_service.attach_audio(
+            lesson,
+            on_stage=report_stage,
+        )
         store.save_lesson(lesson)
         store.update_job(
             job_id,
@@ -1380,6 +1692,7 @@ async def generate_lesson(problem: ProblemInput, background_tasks: BackgroundTas
         problem,
         store,
         generator,
+        audio_service,
     )
     return {"job_id": job.job_id}
 ```
@@ -1417,17 +1730,18 @@ async def evaluate_interaction(submission: InteractionSubmission):
     }
 ```
 
-Do not send free-text answers to the model in Task 6. Add that only after a
+Do not send free-text answers to the model in Task 7. Add that only after a
 separate privacy and prompt-injection test; the v0.1 fallback is always
 `needs_review`, never `incorrect`.
 
 - [ ] **Step 4: Build the app factory**
 
-`create_app(settings=None, generator=None)` mounts `/static` with
-`StaticFiles(..., check_dir=False)`, includes the API router, and serves
-`index.html` at `/` and `lesson.html` at `/lesson/{lesson_id}`. Production
-construction creates `Settings`, `OpenAICompatibleClient`, `MathEngine`,
-`LessonGenerationService`, and one shared `MemoryStore`.
+`create_app(settings=None, generator=None, audio_service=None)` mounts `/static`
+with `StaticFiles(..., check_dir=False)` and `var/audio` at `/audio`, includes
+the API router, and serves `index.html` at `/` and `lesson.html` at
+`/lesson/{lesson_id}`. Production construction creates `Settings`,
+`OpenAICompatibleClient`, `OpenAISpeechClient`, `MathEngine`,
+`LessonGenerationService`, `LessonAudioService`, and one shared `MemoryStore`.
 
 - [ ] **Step 5: Run API tests**
 
@@ -1442,7 +1756,7 @@ git add app/store.py app/api.py app/main.py tests/test_api.py
 git commit -m "feat: expose lesson generation APIs"
 ```
 
-## Task 7: Build the generation page
+## Task 8: Build the generation page
 
 **Files:**
 - Create: `app/static/index.html`
@@ -1529,7 +1843,7 @@ git add app/static/index.html app/static/styles.css app/static/generate.js tests
 git commit -m "feat: add focused lesson generation page"
 ```
 
-## Task 8: Build the full-screen classroom runtime
+## Task 9: Build the full-screen classroom runtime
 
 **Files:**
 - Create: `app/static/lesson.html`
@@ -1546,7 +1860,13 @@ import assert from "node:assert/strict";
 import { LessonRuntime } from "../app/static/runtime-core.mjs";
 
 const beats = [
-  { beat_id: "beat-001", layer: "base", board_actions: [], narration: "开始" },
+  {
+    beat_id: "beat-001",
+    layer: "base",
+    board_actions: [{ type: "focus", target: "linear_coefficient" }],
+    narration: "先看一次项系数负六。",
+    audio_url: "/audio/lesson-1/beat-001.mp3",
+  },
   {
     beat_id: "beat-002",
     layer: "micro_explanation",
@@ -1576,6 +1896,15 @@ test("incorrect answers reveal one hint and require retry", () => {
   assert.equal(result.canContinue, false);
   assert.equal(result.hint, "先求一次项系数的一半。");
 });
+
+test("audio playback gates automatic board progression", () => {
+  const runtime = new LessonRuntime(beats);
+  runtime.markAudioStarted();
+  assert.equal(runtime.next(), false);
+  runtime.markAudioEnded();
+  assert.equal(runtime.next(), true);
+  assert.equal(runtime.current().beat_id, "beat-002");
+});
 ```
 
 - [ ] **Step 2: Run and verify failure**
@@ -1598,6 +1927,7 @@ Expected: import fails because `runtime-core.mjs` does not exist.
 - `layerStack` containing cloned temporary Maps;
 - `answers`;
 - `hintLevel`.
+- `audioState` with `idle`, `playing`, and `ended`.
 
 It exposes:
 
@@ -1608,10 +1938,14 @@ previous()
 pushLayer(layerName)
 popLayer()
 recordAnswer(result)
+markAudioStarted()
+markAudioEnded()
 get activeBoard()
 ```
 
-`next()` refuses to advance while the current interaction has not been answered correctly. `popLayer()` discards the temporary board and restores the unchanged base board.
+`next()` refuses to advance while audio is playing or while the current
+interaction has not been answered correctly. `popLayer()` discards the
+temporary board and restores the unchanged base board.
 
 - [ ] **Step 4: Implement the classroom DOM**
 
@@ -1623,9 +1957,26 @@ get activeBoard()
 - narration strip;
 - hidden interaction stage that appears inside the teaching flow;
 - layer stage that covers the board without destroying it;
+- a first-tap “开始讲解” control that unlocks browser audio autoplay;
 - previous, replay, pause/continue controls.
 
-`lesson.js` loads the lesson ID from the path, creates `LessonRuntime`, and interprets board actions:
+`lesson.js` loads the lesson ID from the path, creates `LessonRuntime`, and
+plays the current Beat in this fixed order:
+
+```text
+加载该 Beat 的 audio_url
+→ 音频开始时执行该 Beat 的板书动作
+→ 语音播放期间保持当前焦点
+→ 音频结束后，如果没有互动则短暂停顿并进入下一 Beat
+→ 如果有互动则显示题目并停止自动推进
+```
+
+Because every Beat contains at most 90 characters and one main cognitive
+action, saying “一次项系数是负六” and circling `-6` occur in the same short
+audio unit; the runtime does not estimate word timestamps across a long
+paragraph.
+
+The board interpreter supports:
 
 ```text
 write       → create a semantic board object
@@ -1650,7 +2001,11 @@ For `micro_explanation`, `comparison`, or `interaction` layers, call `pushLayer`
 - `free_text`: short explanation input;
 - `transfer`: new problem shown only after the summary.
 
-All submissions call `/api/interactions/evaluate`. Correct responses reveal `explanation_after_correct` and enable continue. Incorrect responses show one hint and keep continue disabled.
+All submissions call `/api/interactions/evaluate`. Correct responses play
+`correct_audio_url`, reveal `explanation_after_correct`, and then enable
+continue. Incorrect responses play the next `hint_audio_urls` item and keep
+continue disabled. The primary narration audio must never continue underneath
+an interaction.
 
 - [ ] **Step 6: Run runtime and page tests**
 
@@ -1672,7 +2027,7 @@ git add app/static/lesson.html app/static/runtime-core.mjs app/static/lesson.js 
 git commit -m "feat: add full-screen interactive classroom"
 ```
 
-## Task 9: Add regression cases, live smoke script and operating guide
+## Task 10: Add regression cases, live smoke script and operating guide
 
 **Files:**
 - Create: `tests/fixtures/demo_cases.json`
@@ -1704,12 +2059,15 @@ Add a parametrized math-engine test that loads all six cases and verifies each r
 ```python
 import asyncio
 import json
+from pathlib import Path
 
+from app.audio_service import LessonAudioService
 from app.config import Settings
 from app.generation import LessonGenerationService
 from app.llm_client import OpenAICompatibleClient
 from app.math_engine import MathEngine
 from app.schemas import ProblemInput
+from app.tts_client import OpenAISpeechClient
 
 
 async def main():
@@ -1718,7 +2076,10 @@ async def main():
         raise SystemExit(
             "缺少环境变量：" + ", ".join(settings.missing_model_settings)
         )
+    if not settings.voice_configured:
+        raise SystemExit("缺少 TTS_MODEL 或 TTS_VOICE")
     client = OpenAICompatibleClient(settings)
+    speech_client = OpenAISpeechClient(settings)
     try:
         lesson = await LessonGenerationService(
             client,
@@ -1730,11 +2091,16 @@ async def main():
                 required_method="complete_the_square",
             )
         )
+        lesson = await LessonAudioService(
+            speech_client,
+            Path("var/audio"),
+        ).attach_audio(lesson)
         print(json.dumps(
             {
                 "lesson_id": lesson.lesson_id,
                 "title": lesson.title,
                 "beats": len(lesson.beats),
+                "audio_ready": all(beat.audio_url for beat in lesson.beats),
                 "validation_report": lesson.validation_report,
             },
             ensure_ascii=False,
@@ -1742,6 +2108,7 @@ async def main():
         ))
     finally:
         await client.close()
+        await speech_client.close()
 
 
 if __name__ == "__main__":
@@ -1772,6 +2139,7 @@ It includes:
 - optional `python scripts/smoke_live.py`;
 - supported question types;
 - the full-screen classroom walkthrough;
+- TTS configuration and per-Beat narration synchronization;
 - known v0.1 limitations;
 - the evidence boundary between schema checks, symbolic math checks, visual verification and actual learning effectiveness.
 
@@ -1799,7 +2167,7 @@ git add README.md scripts/smoke_live.py tests/fixtures/demo_cases.json tests/tes
 git commit -m "docs: add demo operation and regression cases"
 ```
 
-## Task 10: Run live and browser verification
+## Task 11: Run live and browser verification
 
 **Files:**
 - Modify only files implicated by failures.
@@ -1832,7 +2200,9 @@ set +a
 python scripts/smoke_live.py
 ```
 
-Expected: a lesson ID, title, beat count and `math_status: verified`. If credentials have not been provided, record live generation as unverified rather than substituting mock output.
+Expected: a lesson ID, title, beat count, `math_status: verified`, and
+`audio_ready: true`. If text-model or TTS credentials have not been provided,
+record live generation as unverified rather than substituting mock output.
 
 - [ ] **Step 3: Verify the complete browser story**
 
@@ -1843,12 +2213,16 @@ At a 1280×800 viewport:
 3. Confirm generation progress is visible.
 4. Confirm the result replaces the authoring page with a full-screen classroom.
 5. Verify board text is legible without scrolling.
-6. Verify focus, annotation, masking and reveal.
-7. Submit one wrong answer, receive a hint and remain blocked.
-8. Submit the correct answer and continue.
-9. Enter a temporary micro-explanation layer and return to the identical base board.
-10. Complete the near-transfer item.
-11. Check browser console and server logs for errors.
+6. Tap “开始讲解” and confirm real TTS audio plays.
+7. Confirm each short spoken segment triggers its bound writing, circle,
+   highlight, mask, or marker at segment start.
+8. Confirm no later derivation is visible before its spoken segment.
+9. Submit one wrong answer; confirm narration remains paused, the hint audio
+   plays, and progression remains blocked.
+10. Submit the correct answer; confirm feedback audio plays before continuing.
+11. Enter a temporary micro-explanation layer and return to the identical base board.
+12. Complete the near-transfer item.
+13. Check browser console and server logs for errors.
 
 - [ ] **Step 4: Run final verification**
 
