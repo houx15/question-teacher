@@ -244,6 +244,51 @@ def test_validate_step_accepts_completing_the_square(engine):
     engine.validate_step(step)
 
 
+def test_complete_square_accepts_positive_operand_and_new_square(engine):
+    step = make_step(
+        "complete_the_square",
+        ["x^2-6x=-5"],
+        ["(x-3)^2=4"],
+        ["9"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_complete_square_rejects_negative_operand(engine):
+    step = make_step(
+        "complete_the_square",
+        ["(x-3)^2+1=16"],
+        ["(x-3)^2=15"],
+        ["-1"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+@pytest.mark.parametrize(
+    "before",
+    (
+        "(x-3)^2=15",
+        "x^2-6x+9=15",
+    ),
+)
+def test_complete_square_rejects_preexisting_squared_binomial(
+    engine,
+    before,
+):
+    step = make_step(
+        "complete_the_square",
+        [before],
+        ["(x-3)^2+1=16"],
+        ["1"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_complete_square_rejects_wrong_declared_operand(engine):
     step = make_step(
         "complete_the_square",
@@ -382,6 +427,27 @@ def test_validate_step_accepts_quadratic_formula_branches(engine):
         "quadratic_formula",
         ["x^2-5x+6=0"],
         ["x=2", "x=3"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_quadratic_formula_rejects_duplicate_solution_branches(engine):
+    step = make_step(
+        "quadratic_formula",
+        ["x^2-5x+6=0"],
+        ["x=2", "x=3", "x=2"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_quadratic_formula_accepts_one_repeated_root_branch(engine):
+    step = make_step(
+        "quadratic_formula",
+        ["(x-2)^2=0"],
+        ["x=2"],
     )
 
     engine.validate_step(step)

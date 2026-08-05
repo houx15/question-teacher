@@ -417,6 +417,11 @@ class MathEngine:
             "complete_the_square",
         } and operand.has(self.x):
             return False
+        if (
+            operation == "complete_the_square"
+            and operand.is_positive is not True
+        ):
+            return False
 
         if operation in {"add_both_sides", "complete_the_square"}:
             expected_left = before[0].left + operand
@@ -438,7 +443,10 @@ class MathEngine:
         ):
             return False
         if operation == "complete_the_square":
-            return self._has_squared_binomial(after[0])
+            return self._newly_introduces_squared_binomial(
+                before[0],
+                after[0],
+            )
         return True
 
     def _is_canonical_operation(
@@ -507,11 +515,34 @@ class MathEngine:
             ).degree()
         except PolynomialError:
             return False
-        return degree == 2 and all(
-            equation.left == self.x
-            and not equation.right.has(self.x)
-            and equation.right.is_real is True
-            for equation in after
+        if degree != 2:
+            return False
+
+        try:
+            expected_solutions = solveset(
+                before[0].left - before[0].right,
+                self.x,
+                domain=S.Reals,
+            )
+        except Exception:
+            return False
+        if expected_solutions.is_finite_set is not True:
+            return False
+
+        actual_values: List[Expr] = []
+        for equation in after:
+            if (
+                equation.left != self.x
+                or equation.right.has(self.x)
+                or equation.right.is_real is not True
+            ):
+                return False
+            actual_values.append(equation.right)
+        unique_values = FiniteSet(*actual_values)
+        return (
+            len(actual_values) == len(unique_values)
+            and len(actual_values) == len(expected_solutions)
+            and unique_values == expected_solutions
         )
 
     def _is_square_root_branch_transition(
@@ -605,11 +636,31 @@ class MathEngine:
             and simplify(before.right - after.right) == 0
         )
 
-    def _has_squared_binomial(self, equation: _EquationParts) -> bool:
+    def _newly_introduces_squared_binomial(
+        self,
+        before: _EquationParts,
+        after: _EquationParts,
+    ) -> bool:
         return any(
+            self._is_squared_binomial(factor(after_side))
+            and not self._contains_or_factors_to_squared_binomial(
+                before_raw,
+                before_side,
+            )
+            for before_raw, before_side, after_side in (
+                (before.left_raw, before.left, after.left),
+                (before.right_raw, before.right, after.right),
+            )
+        )
+
+    def _contains_or_factors_to_squared_binomial(
+        self,
+        raw_expression: Expr,
+        expression: Expr,
+    ) -> bool:
+        return self._is_squared_binomial(factor(expression)) or any(
             self._is_squared_binomial(node)
-            for expression in (equation.left_raw, equation.right_raw)
-            for node in preorder_traversal(expression)
+            for node in preorder_traversal(raw_expression)
         )
 
     def _is_squared_binomial(self, expression: Expr) -> bool:
