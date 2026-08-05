@@ -2,6 +2,7 @@ from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
+from sympy import S
 
 from app.math_engine import MathEngine, MathValidationError
 from app.schemas import MathStep
@@ -44,6 +45,15 @@ def test_problem_validation_is_immutable(engine):
 def test_validate_problem_rejects_conflicting_reference_answer(engine):
     with pytest.raises(MathValidationError, match="参考答案"):
         engine.validate_problem("2x+3=7", "x=3")
+
+
+def test_validate_problem_accepts_canonical_no_real_solution_answer(engine):
+    validation = engine.validate_problem(
+        "x^2+1=0",
+        "  无实数解  ",
+    )
+
+    assert validation.solution_strings == []
 
 
 def test_validate_step_accepts_equivalent_split_branches(engine):
@@ -434,6 +444,27 @@ def test_take_square_root_accepts_single_zero_root_branch(engine):
     engine.validate_step(step)
 
 
+def test_take_square_root_accepts_no_real_solution_state(engine):
+    step = make_step(
+        "take_square_root_both_sides",
+        ["(x)^2=-1"],
+        ["无实数解"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_take_square_root_rejects_no_real_solution_when_roots_exist(engine):
+    step = make_step(
+        "take_square_root_both_sides",
+        ["x^2=4"],
+        ["无实数解"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_take_square_root_rejects_no_op_equation(engine):
     step = make_step(
         "take_square_root_both_sides",
@@ -476,6 +507,27 @@ def test_quadratic_formula_accepts_one_repeated_root_branch(engine):
     engine.validate_step(step)
 
 
+def test_quadratic_formula_accepts_no_real_solution_state(engine):
+    step = make_step(
+        "quadratic_formula",
+        ["x^2+1=0"],
+        ["无实数解"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_quadratic_formula_rejects_root_branch_for_empty_solution_set(engine):
+    step = make_step(
+        "quadratic_formula",
+        ["x^2+1=0"],
+        ["x=0"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_validate_step_rejects_quadratic_formula_without_solved_branches(
     engine,
 ):
@@ -501,6 +553,11 @@ def test_answers_equivalent_ignores_branch_order(engine):
         "x=5 or x=1",
         "x=1 or x=5",
     )
+
+
+def test_answers_equivalent_handles_no_real_solution_token(engine):
+    assert engine.answers_equivalent("无实数解", "  无实数解  ")
+    assert not engine.answers_equivalent("无实数解", "x=1")
 
 
 def test_decimal_coefficients_are_solved_exactly(engine):
@@ -579,6 +636,11 @@ def test_parse_expression_rejects_unsafe_or_unknown_syntax(
         engine.parse_expression(unsafe_expression)
 
 
+def test_parse_expression_does_not_accept_no_real_solution_token(engine):
+    with pytest.raises(MathValidationError):
+        engine.parse_expression("无实数解")
+
+
 @pytest.mark.parametrize(
     "malformed_equation",
     (
@@ -637,6 +699,40 @@ def test_solution_set_rejects_empty_raw_state_list(engine):
 
 def test_solution_set_accepts_an_equation_with_no_real_solutions(engine):
     assert engine.solution_set(["x^2+1=0"]).is_empty
+
+
+def test_solution_set_accepts_canonical_no_real_solution_state(engine):
+    assert engine.solution_set(["  无实数解  "]) == S.EmptySet
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ["无实数解", "x=1"],
+        ["无实数解", "无实数解"],
+    ),
+)
+def test_solution_set_rejects_mixed_or_duplicate_no_real_solution_state(
+    engine,
+    state,
+):
+    with pytest.raises(MathValidationError):
+        engine.solution_set(state)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    (
+        "无实数解 或 x=1",
+        "无实数解 or 无实数解",
+    ),
+)
+def test_answer_solution_set_rejects_mixed_or_duplicate_no_real_solution(
+    engine,
+    answer,
+):
+    with pytest.raises(MathValidationError):
+        engine.answers_equivalent(answer, "无实数解")
 
 
 def test_solution_set_rejects_more_than_four_branches(engine):

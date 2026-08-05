@@ -83,6 +83,7 @@ class _EquationParts:
 
 
 class MathEngine:
+    _NO_REAL_SOLUTION = "无实数解"
     _MAX_EXPRESSION_LENGTH = 256
     _MAX_BRANCHES = 4
     _MAX_NESTING = 12
@@ -141,6 +142,14 @@ class MathEngine:
             raise MathValidationError("方程状态不能为空。")
         if len(equations) > self._MAX_BRANCHES:
             raise MathValidationError("方程分支不能超过四个。")
+
+        empty_state_flags = [
+            self._is_no_real_solution_token(text) for text in equations
+        ]
+        if any(empty_state_flags):
+            if len(equations) == 1 and empty_state_flags[0]:
+                return S.EmptySet
+            raise MathValidationError("无实数解状态不能与其他方程混用。")
 
         combined = S.EmptySet
         for equation_text in equations:
@@ -259,14 +268,20 @@ class MathEngine:
             raise MathValidationError("数学表达式中只能使用未知数 x。")
         return unevaluated, expression
 
-    def _answer_solution_set(self, answer: str) -> FiniteSet:
+    def _answer_solution_set(self, answer: str) -> Set:
         if not isinstance(answer, str) or not answer.strip():
             raise MathValidationError("参考答案不能为空。")
-        branches = self._ANSWER_SEPARATOR.split(answer.strip())
+        normalized = answer.strip()
+        if self._is_no_real_solution_token(normalized):
+            return S.EmptySet
+
+        branches = self._ANSWER_SEPARATOR.split(normalized)
         if not branches or any(not branch for branch in branches):
             raise MathValidationError("参考答案格式不正确。")
         if len(branches) > self._MAX_BRANCHES:
             raise MathValidationError("参考答案分支不能超过四个。")
+        if any(self._is_no_real_solution_token(branch) for branch in branches):
+            raise MathValidationError("无实数解不能与其他答案分支混用。")
 
         values: List[Expr] = []
         for branch in branches:
@@ -280,6 +295,9 @@ class MathEngine:
                 raise MathValidationError("参考答案右侧必须是实数常量。")
             values.append(value)
         return FiniteSet(*values)
+
+    def _is_no_real_solution_token(self, text: object) -> bool:
+        return isinstance(text, str) and text.strip() == self._NO_REAL_SOLUTION
 
     def _normalize_expression(self, text: str) -> str:
         if not isinstance(text, str):
@@ -352,10 +370,30 @@ class MathEngine:
         before_texts: List[str],
         after_texts: List[str],
     ) -> None:
+        if any(
+            self._is_no_real_solution_token(text) for text in before_texts
+        ):
+            raise MathValidationError("操作前必须提供方程状态。")
+
+        empty_after_flags = [
+            self._is_no_real_solution_token(text) for text in after_texts
+        ]
+        after_is_empty_state = (
+            len(after_texts) == 1 and empty_after_flags[0]
+        )
+        if any(empty_after_flags) and not after_is_empty_state:
+            raise MathValidationError("无实数解状态不能与其他方程混用。")
+
         before = [
             self._parse_equation_parts(text) for text in before_texts
         ]
-        after = [self._parse_equation_parts(text) for text in after_texts]
+        after = (
+            []
+            if after_is_empty_state
+            else [
+                self._parse_equation_parts(text) for text in after_texts
+            ]
+        )
 
         valid = False
         if operation in {
@@ -366,6 +404,7 @@ class MathEngine:
                 operation,
                 before,
                 after,
+                after_is_empty_state,
             )
         elif operation in {
             "add_both_sides",
@@ -388,7 +427,11 @@ class MathEngine:
         }:
             valid = self._is_canonical_operation(operation, before, after)
         elif operation == "quadratic_formula":
-            valid = self._is_quadratic_formula_result(before, after)
+            valid = self._is_quadratic_formula_result(
+                before,
+                after,
+                after_is_empty_state,
+            )
 
         if not valid:
             raise MathValidationError("操作标签与代数变形结构不一致。")
@@ -505,8 +548,9 @@ class MathEngine:
         self,
         before: List[_EquationParts],
         after: List[_EquationParts],
+        after_is_empty_state: bool = False,
     ) -> bool:
-        if len(before) != 1 or not after:
+        if len(before) != 1:
             return False
         try:
             degree = Poly(
@@ -527,6 +571,10 @@ class MathEngine:
         except Exception:
             return False
         if expected_solutions.is_finite_set is not True:
+            return False
+        if expected_solutions == S.EmptySet:
+            return after_is_empty_state
+        if after_is_empty_state or not after:
             return False
 
         actual_values: List[Expr] = []
@@ -550,6 +598,7 @@ class MathEngine:
         operation: str,
         before: List[_EquationParts],
         after: List[_EquationParts],
+        after_is_empty_state: bool = False,
     ) -> bool:
         if len(before) != 1:
             return False
@@ -558,6 +607,13 @@ class MathEngine:
         if square_parts is None:
             return False
         base, constant = square_parts
+        if constant.is_negative is True:
+            return (
+                operation == "take_square_root_both_sides"
+                and after_is_empty_state
+            )
+        if constant.is_nonnegative is not True or after_is_empty_state:
+            return False
 
         root = sqrt(constant)
         expected_values = FiniteSet(root, -root)
@@ -604,7 +660,6 @@ class MathEngine:
                 and square_side.base.has(self.x)
                 and not constant_side.has(self.x)
                 and constant_side.is_real is True
-                and constant_side.is_nonnegative is True
             ):
                 return square_side.base, constant_side
         return None
