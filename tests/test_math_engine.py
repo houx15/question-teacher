@@ -57,6 +57,38 @@ def test_validate_step_accepts_equivalent_split_branches(engine):
     engine.validate_step(step)
 
 
+def test_split_plus_minus_accepts_swapped_algebraic_base_branches(engine):
+    step = make_step(
+        "split_plus_minus",
+        ["(x-3)^2=4"],
+        ["x-1-2=-2", "x-1-2=2"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_split_plus_minus_rejects_non_square_source(engine):
+    step = make_step(
+        "split_plus_minus",
+        ["x=1"],
+        ["x=1", "2x=2"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_split_plus_minus_rejects_equivalent_duplicate_branches(engine):
+    step = make_step(
+        "split_plus_minus",
+        ["(x-1)^2=0"],
+        ["x-1=0", "2x-2=0"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_validate_step_rejects_changed_solution_set(engine):
     step = MathStep(
         purpose="移项",
@@ -162,6 +194,27 @@ def test_validate_step_accepts_taking_square_roots(engine):
     )
 
     engine.validate_step(step)
+
+
+def test_take_square_root_accepts_shifted_square_and_swapped_branches(engine):
+    step = make_step(
+        "take_square_root_both_sides",
+        ["(x-3)^2=4"],
+        ["x-3=-2", "x-3=2"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_take_square_root_rejects_no_op_equation(engine):
+    step = make_step(
+        "take_square_root_both_sides",
+        ["x^2+2x=3"],
+        ["x^2+2x=3"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
 
 
 def test_validate_step_accepts_quadratic_formula_branches(engine):

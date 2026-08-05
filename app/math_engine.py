@@ -344,8 +344,11 @@ class MathEngine:
         after = [self._parse_equation_parts(text) for text in after_texts]
 
         valid = False
-        if operation == "split_plus_minus":
-            valid = len(before) == 1 and len(after) >= 2
+        if operation in {
+            "split_plus_minus",
+            "take_square_root_both_sides",
+        }:
+            valid = self._is_square_root_branch_transition(before, after)
         elif operation in {
             "add_both_sides",
             "subtract_both_sides",
@@ -365,12 +368,6 @@ class MathEngine:
             valid = self._is_factorization(before, after)
         elif operation in {"simplify", "combine_like_terms"}:
             valid = self._is_nonincreasing_simplification(before, after)
-        elif operation == "take_square_root_both_sides":
-            valid = (
-                len(before) == 1
-                and bool(after)
-                and self._equation_contains_square(before[0])
-            )
         elif operation == "quadratic_formula":
             valid = self._is_quadratic_formula_result(before, after)
 
@@ -500,6 +497,76 @@ class MathEngine:
             for equation in after
         )
 
+    def _is_square_root_branch_transition(
+        self,
+        before: List[_EquationParts],
+        after: List[_EquationParts],
+    ) -> bool:
+        if len(before) != 1 or len(after) != 2:
+            return False
+
+        square_parts = self._explicit_square_and_constant(before[0])
+        if square_parts is None:
+            return False
+        base, constant = square_parts
+
+        root = sqrt(constant)
+        expected_values = FiniteSet(root, -root)
+        if len(expected_values) != 2:
+            return False
+
+        actual_values = []
+        for equation in after:
+            value = self._assigned_value_for_base(equation, base)
+            if value is None:
+                return False
+            actual_values.append(value)
+
+        return (
+            len(FiniteSet(*actual_values)) == 2
+            and FiniteSet(*actual_values) == expected_values
+            and all(
+                not (
+                    equation.left_raw == before[0].left_raw
+                    and equation.right_raw == before[0].right_raw
+                )
+                for equation in after
+            )
+        )
+
+    def _explicit_square_and_constant(self, equation: _EquationParts):
+        for square_side, constant_side in (
+            (equation.left_raw, equation.right),
+            (equation.right_raw, equation.left),
+        ):
+            if (
+                isinstance(square_side, Pow)
+                and square_side.exp == 2
+                and square_side.base.has(self.x)
+                and not constant_side.has(self.x)
+                and constant_side.is_real is True
+                and constant_side.is_nonnegative is True
+            ):
+                return square_side.base, constant_side
+        return None
+
+    def _assigned_value_for_base(
+        self,
+        equation: _EquationParts,
+        base: Expr,
+    ):
+        for candidate_base, candidate_value in (
+            (equation.left, equation.right),
+            (equation.right, equation.left),
+        ):
+            if (
+                simplify(candidate_base - base) == 0
+                and not candidate_value.has(self.x)
+                and candidate_value.is_real is True
+            ):
+                return candidate_value
+        return None
+
     def _corresponding_sides_equal(
         self,
         before: _EquationParts,
@@ -528,15 +595,6 @@ class MathEngine:
             )
         except PolynomialError:
             return False
-
-    def _equation_contains_square(self, equation: _EquationParts) -> bool:
-        return any(
-            isinstance(node, Pow)
-            and node.exp == 2
-            and node.base.has(self.x)
-            for expression in (equation.left_raw, equation.right_raw)
-            for node in preorder_traversal(expression)
-        )
 
     def _has_factored_structure(self, expression: Expr) -> bool:
         if isinstance(expression, Pow):
