@@ -1,0 +1,32 @@
+[
+  {
+    "problem_text": "2x+3=7",
+    "reference_answer": "x=2",
+    "required_method": null
+  },
+  {
+    "problem_text": "3(x-2)+4=10",
+    "reference_answer": "x=4",
+    "required_method": null
+  },
+  {
+    "problem_text": "x^2-5x+6=0",
+    "reference_answer": "x=2 或 x=3",
+    "required_method": "factor"
+  },
+  {
+    "problem_text": "2x^2-3x-2=0",
+    "reference_answer": "x=2 或 x=-1/2",
+    "required_method": "quadratic_formula"
+  },
+  {
+    "problem_text": "x^2-6x+5=0",
+    "reference_answer": "x=1 或 x=5",
+    "required_method": "complete_the_square"
+  },
+  {
+    "problem_text": "x^2+x-1=0",
+    "reference_answer": "x=(-1+sqrt(5))/2 或 x=(-1-sqrt(5))/2",
+    "required_method": "complete_the_square"
+  }
+]

@@ -1,5 +1,9 @@
 import asyncio
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 import httpx
 import pytest
@@ -70,13 +74,19 @@ def test_parse_json_content_accepts_optional_code_fence(content):
     assert OpenAICompatibleClient.parse_json_content(content) == {"answer": 7}
 
 
-def test_complete_json_retries_400_without_response_format():
+@pytest.mark.parametrize("unsupported_status", [400, 422])
+def test_complete_json_retries_without_response_format(
+    unsupported_status,
+):
     request_bodies = []
 
     def handler(request):
         request_bodies.append(json.loads(request.content))
         if len(request_bodies) == 1:
-            return httpx.Response(400, json={"error": "unsupported response_format"})
+            return httpx.Response(
+                unsupported_status,
+                json={"error": "unsupported response_format"},
+            )
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": '{"answer": "ok"}'}}]},
@@ -93,6 +103,106 @@ def test_complete_json_retries_400_without_response_format():
     assert len(request_bodies) == 2
     assert request_bodies[0]["response_format"] == {"type": "json_object"}
     assert "response_format" not in request_bodies[1]
+
+
+@pytest.mark.parametrize("second_status", [400, 422])
+def test_complete_json_stops_after_one_fallback_attempt(second_status):
+    request_bodies = []
+
+    def handler(request):
+        request_bodies.append(json.loads(request.content))
+        status_code = 400 if len(request_bodies) == 1 else second_status
+        return httpx.Response(
+            status_code,
+            text="provider body that must not leak",
+        )
+
+    client = OpenAICompatibleClient(
+        configured_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(
+        ModelResponseError,
+        match=f"HTTP status {second_status}",
+    ) as exc_info:
+        asyncio.run(client.complete_json("private system", "private user"))
+    asyncio.run(client.close())
+
+    assert len(request_bodies) == 2
+    assert "response_format" in request_bodies[0]
+    assert "response_format" not in request_bodies[1]
+    assert "provider body" not in str(exc_info.value)
+    assert "private system" not in str(exc_info.value)
+    assert "private user" not in str(exc_info.value)
+
+
+def test_live_smoke_validates_environment_before_network_access():
+    repository_root = Path(__file__).resolve().parents[1]
+    script = repository_root / "scripts" / "smoke_live.py"
+    environment = os.environ.copy()
+    for name in (
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_TIMEOUT_SECONDS",
+        "TTS_BASE_URL",
+        "TTS_API_KEY",
+        "TTS_MODEL",
+        "TTS_VOICE",
+    ):
+        environment.pop(name, None)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=repository_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "缺少环境变量" in result.stderr
+    assert "OPENAI_API_KEY" in result.stderr
+    assert "TTS_MODEL" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_live_smoke_sanitizes_invalid_timeout_configuration():
+    repository_root = Path(__file__).resolve().parents[1]
+    script = repository_root / "scripts" / "smoke_live.py"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "OPENAI_BASE_URL": "https://model.example/v1",
+            "OPENAI_API_KEY": "model-secret",
+            "OPENAI_MODEL": "demo-model",
+            "OPENAI_TIMEOUT_SECONDS": "private-invalid-timeout",
+            "TTS_BASE_URL": "https://speech.example/v1",
+            "TTS_API_KEY": "speech-secret",
+            "TTS_MODEL": "demo-tts",
+            "TTS_VOICE": "demo-voice",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=repository_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "OPENAI_TIMEOUT_SECONDS 配置无效。未发起网络请求。"
+    )
+    assert "private-invalid-timeout" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_parse_json_content_rejects_malformed_json_safely():

@@ -1,11 +1,16 @@
+import json
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from sympy import S
 
 from app.math_engine import MathEngine, MathValidationError
-from app.schemas import MathStep
+from app.schemas import MathStep, ProblemInput
+
+
+DEMO_CASES_PATH = Path(__file__).parent / "fixtures" / "demo_cases.json"
 
 
 @pytest.fixture
@@ -22,6 +27,24 @@ def make_step(operation, before, after, operands=None):
         state_after=after,
         reason="测试操作标签与变形结构一致。",
     )
+
+
+@pytest.mark.parametrize("case_index", range(6))
+def test_demo_regression_case_reference_answer_is_valid(
+    engine,
+    case_index,
+):
+    assert DEMO_CASES_PATH.is_file(), "demo regression fixture is missing"
+    cases = json.loads(DEMO_CASES_PATH.read_text(encoding="utf-8"))
+    assert len(cases) == 6
+    problem = ProblemInput.model_validate(cases[case_index])
+
+    validation = engine.validate_problem(
+        problem.problem_text,
+        problem.reference_answer,
+    )
+
+    assert validation.solution_strings
 
 
 def test_validate_problem_returns_sorted_quadratic_solutions(engine):
