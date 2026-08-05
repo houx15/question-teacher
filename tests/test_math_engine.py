@@ -111,7 +111,7 @@ def test_validate_step_rejects_changed_solution_set(engine):
         reason="错误示例。",
     )
 
-    with pytest.raises(MathValidationError, match="解集不一致"):
+    with pytest.raises(MathValidationError):
         engine.validate_step(step)
 
 
@@ -146,6 +146,7 @@ def test_validate_step_accepts_expansion(engine):
     ("operation", "operand", "before", "after"),
     (
         ("add_both_sides", "3", ["x=1"], ["x+3=4"]),
+        ("subtract_both_sides", "3", ["x+3=4"], ["x=1"]),
         ("multiply_both_sides", "2", ["x+1=2"], ["2(x+1)=4"]),
         ("divide_both_sides", "2", ["2x+2=4"], ["x+1=2"]),
     ),
@@ -160,8 +161,73 @@ def test_validate_step_accepts_same_operation_on_both_sides(
     engine.validate_step(make_step(operation, before, after, [operand]))
 
 
+def test_validate_step_accepts_variable_subtraction_operand(engine):
+    step = make_step(
+        "subtract_both_sides",
+        ["2x+3=x+7"],
+        ["x+3=7"],
+        ["x"],
+    )
+
+    engine.validate_step(step)
+
+
+@pytest.mark.parametrize(
+    ("operation", "operand", "before", "reversed_after"),
+    (
+        ("add_both_sides", "3", ["x=1"], ["x-3=-2"]),
+        ("subtract_both_sides", "3", ["x=1"], ["x+3=4"]),
+        ("multiply_both_sides", "2", ["x=1"], ["x/2=1/2"]),
+        ("divide_both_sides", "2", ["x=1"], ["2x=2"]),
+    ),
+)
+def test_validate_step_rejects_reversed_declared_operation(
+    engine,
+    operation,
+    operand,
+    before,
+    reversed_after,
+):
+    step = make_step(operation, before, reversed_after, [operand])
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_validate_step_rejects_different_changes_on_equation_sides(engine):
     step = make_step("add_both_sides", ["x=1"], ["2x=2"], ["x"])
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+@pytest.mark.parametrize(
+    ("operation", "operand"),
+    (
+        ("add_both_sides", "0"),
+        ("subtract_both_sides", "0"),
+        ("multiply_both_sides", "1"),
+        ("divide_both_sides", "1"),
+    ),
+)
+def test_validate_step_rejects_zero_or_identity_no_op(
+    engine,
+    operation,
+    operand,
+):
+    step = make_step(operation, ["x=1"], ["x=1"], [operand])
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_validate_step_rejects_variable_multiplication_operand(engine):
+    step = make_step(
+        "multiply_both_sides",
+        ["x=0"],
+        ["x^2=0"],
+        ["x"],
+    )
 
     with pytest.raises(MathValidationError):
         engine.validate_step(step)
@@ -178,6 +244,46 @@ def test_validate_step_accepts_completing_the_square(engine):
     engine.validate_step(step)
 
 
+def test_complete_square_rejects_wrong_declared_operand(engine):
+    step = make_step(
+        "complete_the_square",
+        ["x^2-6x=7"],
+        ["(x-3)^2=16"],
+        ["8"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_validate_step_accepts_genuine_simplification(engine):
+    step = make_step(
+        "simplify",
+        ["(x+0)+0=1+0"],
+        ["x=1"],
+    )
+
+    engine.validate_step(step)
+
+
+def test_validate_step_rejects_simplify_no_op(engine):
+    step = make_step("simplify", ["x=1"], ["x=1"])
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_validate_step_rejects_unchanged_unsimplified_text(engine):
+    step = make_step(
+        "simplify",
+        ["(x+0)+0=1+0"],
+        ["(x+0)+0=1+0"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_validate_step_accepts_combining_like_terms(engine):
     step = make_step(
         "combine_like_terms",
@@ -188,6 +294,13 @@ def test_validate_step_accepts_combining_like_terms(engine):
     engine.validate_step(step)
 
 
+def test_validate_step_rejects_combine_like_terms_no_op(engine):
+    step = make_step("combine_like_terms", ["2x=2"], ["2x=2"])
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_validate_step_rejects_simplification_that_increases_operations(
     engine,
 ):
@@ -195,6 +308,28 @@ def test_validate_step_rejects_simplification_that_increases_operations(
         "simplify",
         ["2x=2"],
         ["x+x=1+1"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_validate_step_rejects_expand_reordering_no_op(engine):
+    step = make_step(
+        "expand",
+        ["x^2-5x+6=0"],
+        ["6-5x+x^2=0"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
+def test_validate_step_rejects_factor_reordering_no_op(engine):
+    step = make_step(
+        "factor",
+        ["(x-2)(x-3)=0"],
+        ["(x-3)(x-2)=0"],
     )
 
     with pytest.raises(MathValidationError):
@@ -401,6 +536,11 @@ def test_reference_answers_require_anchored_solved_x_branches(
         engine.answers_equivalent(reference, "x=1")
 
 
+def test_reference_rhs_rejects_x_even_when_it_simplifies_away(engine):
+    with pytest.raises(MathValidationError, match="参考答案"):
+        engine.validate_problem("x=1", "x=x-x+1")
+
+
 def test_solution_set_rejects_empty_raw_state_list(engine):
     with pytest.raises(MathValidationError):
         engine.solution_set([])
@@ -452,6 +592,19 @@ def test_radical_coefficients_remain_supported(engine):
     )
 
     assert validation.solution_strings == ["sqrt(2)"]
+
+
+def test_non_real_equation_coefficients_are_rejected(engine):
+    with pytest.raises(MathValidationError, match="实数"):
+        engine.validate_problem(
+            "sqrt(-1)*x=sqrt(-1)",
+            "x=1",
+        )
+
+
+def test_specific_math_validation_message_is_preserved(engine):
+    with pytest.raises(MathValidationError, match="分母"):
+        engine.parse_expression("1/x")
 
 
 def test_validate_step_fails_safely_for_raw_empty_state(engine):

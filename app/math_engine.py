@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional, Tuple
 
 from sympy import (
     Add,
@@ -15,9 +15,11 @@ from sympy import (
     Rational,
     S,
     Symbol,
+    collect,
     count_ops,
     default_sort_key,
     expand,
+    factor,
     preorder_traversal,
     simplify,
     solveset,
@@ -43,7 +45,7 @@ class MathValidationError(ValueError):
 
 
 class _ImmutableList(list):
-    def _reject_mutation(self, *args, **kwargs):
+    def _reject_mutation(self, *args: object, **kwargs: object) -> None:
         raise TypeError("solution_strings is immutable")
 
     __delitem__ = _reject_mutation
@@ -64,7 +66,7 @@ class _ImmutableList(list):
 class ProblemValidation:
     solution_strings: List[str]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "solution_strings",
@@ -182,11 +184,16 @@ class MathEngine:
         if not isinstance(after, list) or not after:
             raise MathValidationError("变形后的方程状态不能为空。")
 
+        self._validate_operation(
+            getattr(step, "operation", None),
+            getattr(step, "operands", None),
+            before,
+            after,
+        )
         before_solutions = self.solution_set(before)
         after_solutions = self.solution_set(after)
         if before_solutions != after_solutions:
             raise MathValidationError("变形前后的解集不一致。")
-        self._validate_operation(getattr(step, "operation", None), before, after)
 
     def expressions_equivalent(self, actual: str, expected: str) -> bool:
         actual_expression = self.parse_expression(actual)
@@ -223,7 +230,7 @@ class MathEngine:
             right=right,
         )
 
-    def _parse_expression_pair(self, text: str):
+    def _parse_expression_pair(self, text: str) -> Tuple[Expr, Expr]:
         normalized = self._normalize_expression(text)
         try:
             unevaluated = parse_expr(
@@ -241,6 +248,8 @@ class MathEngine:
                 transformations=self._TRANSFORMATIONS,
                 evaluate=True,
             )
+        except MathValidationError:
+            raise
         except Exception as exc:
             raise MathValidationError("数学表达式格式不正确。") from exc
 
@@ -259,12 +268,14 @@ class MathEngine:
         if len(branches) > self._MAX_BRANCHES:
             raise MathValidationError("参考答案分支不能超过四个。")
 
-        values = []
+        values: List[Expr] = []
         for branch in branches:
             match = re.fullmatch(r"\s*x\s*=\s*(.+?)\s*", branch)
             if match is None:
                 raise MathValidationError("参考答案必须写成 x=常量。")
-            value = self.parse_expression(match.group(1))
+            raw_value, value = self._parse_expression_pair(match.group(1))
+            if raw_value.free_symbols:
+                raise MathValidationError("参考答案右侧不能包含 x 或其他符号。")
             if value.free_symbols or value.is_real is not True:
                 raise MathValidationError("参考答案右侧必须是实数常量。")
             values.append(value)
@@ -331,10 +342,13 @@ class MathEngine:
                     raise MathValidationError("暂不支持未知数的根式幂。")
             else:
                 raise MathValidationError("暂不支持这个指数形式。")
+        if expression.is_real is not True:
+            raise MathValidationError("数学表达式必须在实数范围内。")
 
     def _validate_operation(
         self,
-        operation: str,
+        operation: Optional[str],
+        operand_texts: Optional[List[str]],
         before_texts: List[str],
         after_texts: List[str],
     ) -> None:
@@ -356,129 +370,128 @@ class MathEngine:
         elif operation in {
             "add_both_sides",
             "subtract_both_sides",
-            "complete_the_square",
-        }:
-            valid = self._same_delta_on_both_sides(before, after)
-            if valid and operation == "complete_the_square":
-                valid = self._has_squared_binomial(after[0])
-        elif operation in {
             "multiply_both_sides",
             "divide_both_sides",
+            "complete_the_square",
         }:
-            valid = self._same_factor_on_both_sides(before, after)
-        elif operation == "expand":
-            valid = self._is_expansion(before, after)
-        elif operation == "factor":
-            valid = self._is_factorization(before, after)
-        elif operation in {"simplify", "combine_like_terms"}:
-            valid = self._is_nonincreasing_simplification(before, after)
+            valid = self._is_declared_operand_operation(
+                operation,
+                operand_texts,
+                before,
+                after,
+            )
+        elif operation in {
+            "simplify",
+            "combine_like_terms",
+            "expand",
+            "factor",
+        }:
+            valid = self._is_canonical_operation(operation, before, after)
         elif operation == "quadratic_formula":
             valid = self._is_quadratic_formula_result(before, after)
 
         if not valid:
             raise MathValidationError("操作标签与代数变形结构不一致。")
 
-    def _same_delta_on_both_sides(
+    def _is_declared_operand_operation(
         self,
+        operation: str,
+        operand_texts: Optional[List[str]],
         before: List[_EquationParts],
         after: List[_EquationParts],
     ) -> bool:
-        if len(before) != 1 or len(after) != 1:
-            return False
-        left_delta = simplify(after[0].left - before[0].left)
-        right_delta = simplify(after[0].right - before[0].right)
-        return (
-            left_delta == right_delta
-            and left_delta != 0
-            and not left_delta.has(self.x)
-        )
-
-    def _same_factor_on_both_sides(
-        self,
-        before: List[_EquationParts],
-        after: List[_EquationParts],
-    ) -> bool:
-        if len(before) != 1 or len(after) != 1:
-            return False
-
-        factors = []
-        for before_side, after_side in (
-            (before[0].left, after[0].left),
-            (before[0].right, after[0].right),
+        if (
+            not isinstance(operand_texts, list)
+            or len(operand_texts) != 1
+            or len(before) != 1
+            or len(after) != 1
         ):
-            if before_side == 0:
-                if after_side != 0:
-                    return False
-                continue
-            factors.append(simplify(after_side / before_side))
-        if not factors:
             return False
-        first = factors[0]
+
+        operand = self.parse_expression(operand_texts[0])
+        if operand == 0:
+            return False
+        if operation in {
+            "multiply_both_sides",
+            "divide_both_sides",
+            "complete_the_square",
+        } and operand.has(self.x):
+            return False
+
+        if operation in {"add_both_sides", "complete_the_square"}:
+            expected_left = before[0].left + operand
+            expected_right = before[0].right + operand
+        elif operation == "subtract_both_sides":
+            expected_left = before[0].left - operand
+            expected_right = before[0].right - operand
+        elif operation == "multiply_both_sides":
+            expected_left = before[0].left * operand
+            expected_right = before[0].right * operand
+        else:
+            expected_left = before[0].left / operand
+            expected_right = before[0].right / operand
+
+        if (
+            simplify(after[0].left - expected_left) != 0
+            or simplify(after[0].right - expected_right) != 0
+            or self._corresponding_sides_equal(before[0], after[0])
+        ):
+            return False
+        if operation == "complete_the_square":
+            return self._has_squared_binomial(after[0])
+        return True
+
+    def _is_canonical_operation(
+        self,
+        operation: str,
+        before: List[_EquationParts],
+        after: List[_EquationParts],
+    ) -> bool:
+        if len(before) != 1 or len(after) != 1:
+            return False
+
+        transformer = {
+            "simplify": simplify,
+            "combine_like_terms": lambda expression: collect(
+                expand(expression),
+                self.x,
+            ),
+            "expand": expand,
+            "factor": factor,
+        }[operation]
+        expected_left = transformer(before[0].left_raw)
+        expected_right = transformer(before[0].right_raw)
+
+        if operation == "combine_like_terms":
+            if (
+                after[0].left_raw != expected_left
+                or after[0].right_raw != expected_right
+            ):
+                return False
+        elif (
+            after[0].left != expected_left
+            or after[0].right != expected_right
+        ):
+            return False
+
+        if operation == "simplify":
+            before_ops = count_ops(before[0].left_raw) + count_ops(
+                before[0].right_raw
+            )
+            expected_ops = count_ops(expected_left) + count_ops(expected_right)
+            after_ops = count_ops(after[0].left_raw) + count_ops(
+                after[0].right_raw
+            )
+            return expected_ops < before_ops and after_ops <= expected_ops
+        if operation == "combine_like_terms":
+            return (
+                before[0].left_raw != expected_left
+                or before[0].right_raw != expected_right
+            )
         return (
-            first not in (0, 1)
-            and not first.has(self.x)
-            and all(simplify(factor - first) == 0 for factor in factors[1:])
+            before[0].left != expected_left
+            or before[0].right != expected_right
         )
-
-    def _is_expansion(
-        self,
-        before: List[_EquationParts],
-        after: List[_EquationParts],
-    ) -> bool:
-        if len(before) != 1 or len(after) != 1:
-            return False
-        if not self._corresponding_sides_equal(before[0], after[0]):
-            return False
-        return any(
-            simplify(expand(before_raw) - after_value) == 0
-            and before_raw != after_raw
-            for before_raw, after_raw, after_value in (
-                (
-                    before[0].left_raw,
-                    after[0].left_raw,
-                    after[0].left,
-                ),
-                (
-                    before[0].right_raw,
-                    after[0].right_raw,
-                    after[0].right,
-                ),
-            )
-        )
-
-    def _is_factorization(
-        self,
-        before: List[_EquationParts],
-        after: List[_EquationParts],
-    ) -> bool:
-        if len(before) != 1 or len(after) != 1:
-            return False
-        if not self._corresponding_sides_equal(before[0], after[0]):
-            return False
-        return any(
-            before_raw != after_raw and self._has_factored_structure(after_raw)
-            for before_raw, after_raw in (
-                (before[0].left_raw, after[0].left_raw),
-                (before[0].right_raw, after[0].right_raw),
-            )
-        )
-
-    def _is_nonincreasing_simplification(
-        self,
-        before: List[_EquationParts],
-        after: List[_EquationParts],
-    ) -> bool:
-        if len(before) != 1 or len(after) != 1:
-            return False
-        if not self._corresponding_sides_equal(before[0], after[0]):
-            return False
-        before_ops = count_ops(before[0].left_raw) + count_ops(
-            before[0].right_raw
-        )
-        after_ops = count_ops(after[0].left_raw) + count_ops(
-            after[0].right_raw
-        )
-        return after_ops <= before_ops
 
     def _is_quadratic_formula_result(
         self,
@@ -546,7 +559,10 @@ class MathEngine:
             )
         )
 
-    def _explicit_square_and_constant(self, equation: _EquationParts):
+    def _explicit_square_and_constant(
+        self,
+        equation: _EquationParts,
+    ) -> Optional[Tuple[Expr, Expr]]:
         for square_side, constant_side in (
             (equation.left_raw, equation.right),
             (equation.right_raw, equation.left),
@@ -566,7 +582,7 @@ class MathEngine:
         self,
         equation: _EquationParts,
         base: Expr,
-    ):
+    ) -> Optional[Expr]:
         for candidate_base, candidate_value in (
             (equation.left, equation.right),
             (equation.right, equation.left),
@@ -608,18 +624,6 @@ class MathEngine:
         except PolynomialError:
             return False
 
-    def _has_factored_structure(self, expression: Expr) -> bool:
-        if isinstance(expression, Pow):
-            return expression.exp.is_Integer and expression.exp > 1
-        if not isinstance(expression, Mul):
-            return False
-        dependent_factors = [
-            factor for factor in expression.args if factor.has(self.x)
-        ]
-        return len(dependent_factors) >= 2 or any(
-            isinstance(factor, Add) for factor in dependent_factors
-        )
-
     def _validate_equation_polynomial(
         self,
         left: Expr,
@@ -634,6 +638,11 @@ class MathEngine:
             degree > self._MAX_POLYNOMIAL_DEGREE
         ):
             raise MathValidationError("暂仅支持一次或二次方程。")
+        if any(
+            coefficient.is_real is not True
+            for coefficient in polynomial.all_coeffs()
+        ):
+            raise MathValidationError("方程系数必须是实数。")
 
     def _validate_parenthesis_nesting(self, text: str) -> None:
         nesting = 0
