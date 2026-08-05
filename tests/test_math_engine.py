@@ -12,10 +12,11 @@ def engine():
     return MathEngine()
 
 
-def make_step(operation, before, after):
+def make_step(operation, before, after, operands=None):
     return MathStep(
         purpose="验证代数操作",
         operation=operation,
+        operands=operands or [],
         state_before=before,
         state_after=after,
         reason="测试操作标签与变形结构一致。",
@@ -104,6 +105,7 @@ def test_validate_step_rejects_changed_solution_set(engine):
     step = MathStep(
         purpose="移项",
         operation="subtract_both_sides",
+        operands=["3"],
         state_before=["2x+3=7"],
         state_after=["2x=10"],
         reason="错误示例。",
@@ -141,24 +143,25 @@ def test_validate_step_accepts_expansion(engine):
 
 
 @pytest.mark.parametrize(
-    ("operation", "before", "after"),
+    ("operation", "operand", "before", "after"),
     (
-        ("add_both_sides", ["x=1"], ["x+3=4"]),
-        ("multiply_both_sides", ["x+1=2"], ["2(x+1)=4"]),
-        ("divide_both_sides", ["2x+2=4"], ["x+1=2"]),
+        ("add_both_sides", "3", ["x=1"], ["x+3=4"]),
+        ("multiply_both_sides", "2", ["x+1=2"], ["2(x+1)=4"]),
+        ("divide_both_sides", "2", ["2x+2=4"], ["x+1=2"]),
     ),
 )
 def test_validate_step_accepts_same_operation_on_both_sides(
     engine,
     operation,
+    operand,
     before,
     after,
 ):
-    engine.validate_step(make_step(operation, before, after))
+    engine.validate_step(make_step(operation, before, after, [operand]))
 
 
 def test_validate_step_rejects_different_changes_on_equation_sides(engine):
-    step = make_step("add_both_sides", ["x=1"], ["2x=2"])
+    step = make_step("add_both_sides", ["x=1"], ["2x=2"], ["x"])
 
     with pytest.raises(MathValidationError):
         engine.validate_step(step)
@@ -169,6 +172,7 @@ def test_validate_step_accepts_completing_the_square(engine):
         "complete_the_square",
         ["x^2-6x=7"],
         ["(x-3)^2=16"],
+        ["9"],
     )
 
     engine.validate_step(step)

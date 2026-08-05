@@ -238,11 +238,76 @@ def test_math_operation_and_lesson_layer_are_restricted():
         )
 
 
+def test_operand_required_operation_rejects_missing_or_multiple_operands():
+    base_payload = {
+        "purpose": "等式两边同时加三",
+        "operation": "add_both_sides",
+        "state_before": ["x = 1"],
+        "state_after": ["x + 3 = 4"],
+        "reason": "等式两边做相同运算。",
+    }
+
+    with pytest.raises(ValidationError):
+        MathStep.model_validate(base_payload)
+
+    with pytest.raises(ValidationError):
+        MathStep.model_validate({**base_payload, "operands": ["3", "4"]})
+
+
+def test_operand_free_operation_rejects_operands():
+    with pytest.raises(ValidationError):
+        MathStep(
+            purpose="因式分解",
+            operation="factor",
+            operands=["6"],
+            state_before=["x² - 5x + 6 = 0"],
+            state_after=["(x - 2)(x - 3) = 0"],
+            reason="寻找乘积为六且和为负五的两个数。",
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "operand"),
+    [
+        ("add_both_sides", "3"),
+        ("subtract_both_sides", "x"),
+        ("complete_the_square", "9"),
+    ],
+)
+def test_structured_operand_operations_accept_one_operand(
+    operation,
+    operand,
+):
+    step = MathStep(
+        purpose="执行等式变形",
+        operation=operation,
+        operands=[operand],
+        state_before=["x = 1"],
+        state_after=["x = 1"],
+        reason="记录结构化操作数。",
+    )
+
+    assert step.operands == [operand]
+
+
+def test_math_step_rejects_whitespace_operand():
+    with pytest.raises(ValidationError):
+        MathStep(
+            purpose="等式两边同时加三",
+            operation="add_both_sides",
+            operands=["   "],
+            state_before=["x = 1"],
+            state_after=["x + 3 = 4"],
+            reason="等式两边做相同运算。",
+        )
+
+
 @pytest.mark.parametrize("empty_field", ("state_before", "state_after"))
 def test_math_step_rejects_empty_state_lists(empty_field):
     payload = {
         "purpose": "移项",
         "operation": "subtract_both_sides",
+        "operands": ["1"],
         "state_before": ["x + 1 = 0"],
         "state_after": ["x = -1"],
         "reason": "等式两边同时减一。",
@@ -264,6 +329,7 @@ def test_lesson_draft_rejects_empty_execution_collections(empty_field):
             {
                 "purpose": "移项",
                 "operation": "subtract_both_sides",
+                "operands": ["1"],
                 "state_before": ["x + 1 = 0"],
                 "state_after": ["x = -1"],
                 "reason": "等式两边同时减一。",

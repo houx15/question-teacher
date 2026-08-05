@@ -60,9 +60,28 @@ class ProblemInput(SchemaModel):
 class MathStep(SchemaModel):
     purpose: NonEmptyString
     operation: MathOperation
+    operands: List[NonEmptyString] = Field(default_factory=list)
     state_before: List[NonEmptyString] = Field(min_length=1)
     state_after: List[NonEmptyString] = Field(min_length=1)
     reason: NonEmptyString
+
+    @model_validator(mode="after")
+    def validate_operand_count(self) -> "MathStep":
+        operand_required = {
+            "add_both_sides",
+            "subtract_both_sides",
+            "multiply_both_sides",
+            "divide_both_sides",
+            "complete_the_square",
+        }
+        if self.operation in operand_required:
+            if len(self.operands) != 1:
+                raise ValueError(
+                    f"{self.operation} requires exactly one operand"
+                )
+        elif self.operands:
+            raise ValueError(f"{self.operation} does not accept operands")
+        return self
 
 
 class BoardAction(SchemaModel):
