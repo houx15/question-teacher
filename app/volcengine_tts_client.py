@@ -4,7 +4,7 @@ import codecs
 import json
 import math
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import httpx
 
@@ -57,7 +57,7 @@ class VolcengineSpeechClient:
 
     def _voice_configuration(
         self,
-    ) -> Tuple[str, Dict[str, str], str, str, float, int]:
+    ) -> Tuple[str, str, str, str, float, int]:
         endpoint = self.settings.volcengine_tts_endpoint
         resource_id = self.settings.volcengine_tts_resource_id
         voice = self.settings.volcengine_tts_voice
@@ -78,28 +78,15 @@ class VolcengineSpeechClient:
         )
 
         api_key = self.settings.volcengine_tts_api_key
-        app_id = self.settings.volcengine_tts_app_id
-        access_key = self.settings.volcengine_tts_access_key
-        if isinstance(api_key, str) and api_key.strip():
-            auth_headers = {"X-Api-Key": api_key.strip()}
-        elif all(
-            isinstance(value, str) and value.strip()
-            for value in (app_id, access_key)
-        ):
-            auth_headers = {
-                "X-Api-App-Id": app_id.strip(),
-                "X-Api-Access-Key": access_key.strip(),
-            }
-        else:
-            auth_headers = {}
+        valid_auth = isinstance(api_key, str) and bool(api_key.strip())
 
-        if not valid_core or not valid_audio or not auth_headers:
+        if not valid_core or not valid_audio or not valid_auth:
             raise SpeechGenerationError(
                 "Speech service is not configured"
             )
         return (
             endpoint.strip(),
-            auth_headers,
+            api_key.strip(),
             resource_id.strip(),
             voice.strip(),
             float(speed_ratio),
@@ -109,7 +96,7 @@ class VolcengineSpeechClient:
     async def synthesize(self, text: str) -> bytes:
         (
             endpoint,
-            auth_headers,
+            api_key,
             resource_id,
             voice,
             speed_ratio,
@@ -121,7 +108,7 @@ class VolcengineSpeechClient:
             raise SpeechGenerationError("Speech input must not be blank")
 
         headers = {
-            **auth_headers,
+            "X-Api-Key": api_key,
             "X-Api-Resource-Id": resource_id,
             "X-Api-Request-Id": str(uuid.uuid4()),
             "Content-Type": "application/json",
@@ -134,8 +121,8 @@ class VolcengineSpeechClient:
                 "audio_params": {
                     "format": "mp3",
                     "sample_rate": sample_rate,
+                    "speech_rate": round((speed_ratio - 1) * 100),
                 },
-                "speed_ratio": speed_ratio,
             },
         }
 

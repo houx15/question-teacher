@@ -19,8 +19,6 @@ class Settings:
         "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
     )
     volcengine_tts_api_key: Optional[str] = None
-    volcengine_tts_app_id: Optional[str] = None
-    volcengine_tts_access_key: Optional[str] = None
     volcengine_tts_resource_id: Optional[str] = None
     volcengine_tts_voice: Optional[str] = None
     volcengine_tts_speed_ratio: float = 1.0
@@ -71,12 +69,6 @@ class Settings:
             ),
             volcengine_tts_api_key=cls._normalize_string(
                 os.getenv("VOLCENGINE_TTS_API_KEY")
-            ),
-            volcengine_tts_app_id=cls._normalize_string(
-                os.getenv("VOLCENGINE_TTS_APP_ID")
-            ),
-            volcengine_tts_access_key=cls._normalize_string(
-                os.getenv("VOLCENGINE_TTS_ACCESS_KEY")
             ),
             volcengine_tts_resource_id=cls._normalize_string(
                 os.getenv("VOLCENGINE_TTS_RESOURCE_ID")
@@ -195,16 +187,9 @@ class Settings:
     @property
     def voice_configured(self) -> bool:
         if self.tts_provider == "volcengine":
-            has_new_auth = bool(
+            has_auth = bool(
                 isinstance(self.volcengine_tts_api_key, str)
                 and self.volcengine_tts_api_key.strip()
-            )
-            has_legacy_auth = all(
-                isinstance(value, str) and value.strip()
-                for value in (
-                    self.volcengine_tts_app_id,
-                    self.volcengine_tts_access_key,
-                )
             )
             has_required_strings = all(
                 isinstance(value, str) and value.strip()
@@ -226,7 +211,7 @@ class Settings:
             )
             return bool(
                 has_required_strings
-                and (has_new_auth or has_legacy_auth)
+                and has_auth
                 and has_valid_speed
                 and self.volcengine_tts_sample_rate
                 in {8000, 16000, 24000}

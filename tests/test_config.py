@@ -20,8 +20,6 @@ TTS_ENV_NAMES = (
     "TTS_VOICE",
     "VOLCENGINE_TTS_ENDPOINT",
     "VOLCENGINE_TTS_API_KEY",
-    "VOLCENGINE_TTS_APP_ID",
-    "VOLCENGINE_TTS_ACCESS_KEY",
     "VOLCENGINE_TTS_RESOURCE_ID",
     "VOLCENGINE_TTS_VOICE",
     "VOLCENGINE_TTS_SPEED_RATIO",
@@ -242,19 +240,17 @@ def test_volcengine_new_key_configuration_never_inherits_openai_key(
     assert settings.voice_configured is True
 
 
-def test_volcengine_legacy_auth_requires_both_credentials(monkeypatch):
+def test_volcengine_requires_api_key(monkeypatch):
     clear_settings_env(monkeypatch)
     monkeypatch.setenv("TTS_PROVIDER", "volcengine")
-    monkeypatch.setenv("VOLCENGINE_TTS_APP_ID", "app-id")
-    monkeypatch.setenv("VOLCENGINE_TTS_ACCESS_KEY", "access-key")
     monkeypatch.setenv("VOLCENGINE_TTS_RESOURCE_ID", "seed-tts-2.0")
     monkeypatch.setenv("VOLCENGINE_TTS_VOICE", "teacher")
 
-    assert Settings.from_env().voice_configured is True
-
-    monkeypatch.delenv("VOLCENGINE_TTS_ACCESS_KEY")
-
     assert Settings.from_env().voice_configured is False
+
+    monkeypatch.setenv("VOLCENGINE_TTS_API_KEY", "voice-secret")
+
+    assert Settings.from_env().voice_configured is True
 
 
 @pytest.mark.parametrize("provider", ["unknown", "VOLCENGINE"])

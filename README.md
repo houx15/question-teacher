@@ -54,12 +54,10 @@ Demo 使用 HTTP Chunked 单向流式 V3 接口。先在豆包语音控制台开
 | 变量 | 必需 | 用途 |
 | --- | --- | --- |
 | `VOLCENGINE_TTS_ENDPOINT` | 否 | 默认 `https://openspeech.bytedance.com/api/v3/tts/unidirectional` |
-| `VOLCENGINE_TTS_API_KEY` | 新版鉴权是 | 新版控制台生成的 API Key；设置后优先使用，绝不会继承 `OPENAI_API_KEY` |
-| `VOLCENGINE_TTS_APP_ID` | 旧版鉴权是 | 旧版 App ID，必须与 Access Key 成对提供 |
-| `VOLCENGINE_TTS_ACCESS_KEY` | 旧版鉴权是 | 旧版 Access Key，必须与 App ID 成对提供 |
+| `VOLCENGINE_TTS_API_KEY` | 是 | 控制台生成的 API Key；V3 只使用 `X-Api-Key`，绝不会继承 `OPENAI_API_KEY` |
 | `VOLCENGINE_TTS_RESOURCE_ID` | 是 | 已开通的资源 ID；示例为 `seed-tts-2.0` |
 | `VOLCENGINE_TTS_VOICE` | 是 | 该资源下已授权的音色 ID |
-| `VOLCENGINE_TTS_SPEED_RATIO` | 否 | 语速，范围 `0.5`–`2.0`，默认 `1.0` |
+| `VOLCENGINE_TTS_SPEED_RATIO` | 否 | 对外语速倍率，范围 `0.5`–`2.0`，默认 `1.0`；请求时转换为 V3 的 `speech_rate`（`-50`–`100`） |
 | `VOLCENGINE_TTS_SAMPLE_RATE` | 否 | MP3 采样率，只支持 `8000`、`16000`、`24000`，默认 `24000` |
 | `VOLCENGINE_TTS_UID` | 否 | 非空请求用户标识，默认 `ai-math-demo`；生产环境应改为可追踪且不含敏感信息的标识 |
 

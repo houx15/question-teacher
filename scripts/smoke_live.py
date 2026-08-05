@@ -37,14 +37,7 @@ def missing_environment(settings: Settings) -> List[str]:
             if not isinstance(value, str) or not value.strip()
         )
         if not settings.volcengine_tts_api_key:
-            if not settings.volcengine_tts_app_id:
-                missing.append(
-                    "VOLCENGINE_TTS_API_KEY 或 VOLCENGINE_TTS_APP_ID"
-                )
-            if not settings.volcengine_tts_access_key:
-                missing.append(
-                    "VOLCENGINE_TTS_API_KEY 或 VOLCENGINE_TTS_ACCESS_KEY"
-                )
+            missing.append("VOLCENGINE_TTS_API_KEY")
         return missing
 
     voice_settings = (

@@ -73,10 +73,7 @@ def test_v3_client_decodes_split_concatenated_frames_and_builds_request():
 
     async def scenario():
         client = client_class()(
-            volcengine_settings(
-                volcengine_tts_app_id="unused-legacy-app",
-                volcengine_tts_access_key="unused-legacy-access",
-            ),
+            volcengine_settings(),
             transport=httpx.MockTransport(handler),
         )
         try:
@@ -90,8 +87,6 @@ def test_v3_client_decodes_split_concatenated_frames_and_builds_request():
         "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
     )
     assert request.headers["X-Api-Key"] == "voice-secret"
-    assert "X-Api-App-Id" not in request.headers
-    assert "X-Api-Access-Key" not in request.headers
     assert request.headers["X-Api-Resource-Id"] == "seed-tts-2.0"
     uuid.UUID(request.headers["X-Api-Request-Id"])
     assert "Authorization" not in request.headers
@@ -101,13 +96,23 @@ def test_v3_client_decodes_split_concatenated_frames_and_builds_request():
         "req_params": {
             "text": "先看等式两边。",
             "speaker": "teacher-voice",
-            "audio_params": {"format": "mp3", "sample_rate": 24000},
-            "speed_ratio": 1.2,
+            "audio_params": {
+                "format": "mp3",
+                "sample_rate": 24000,
+                "speech_rate": 20,
+            },
         },
     }
 
 
-def test_v3_client_uses_legacy_header_pair_when_new_key_is_absent():
+@pytest.mark.parametrize(
+    ("speed_ratio", "speech_rate"),
+    [(0.5, -50), (1.0, 0), (1.23, 23), (2.0, 100)],
+)
+def test_v3_client_maps_public_speed_ratio_to_v3_speech_rate(
+    speed_ratio,
+    speech_rate,
+):
     requests = []
 
     def handler(request):
@@ -130,9 +135,7 @@ def test_v3_client_uses_legacy_header_pair_when_new_key_is_absent():
     async def scenario():
         client = client_class()(
             volcengine_settings(
-                volcengine_tts_api_key=None,
-                volcengine_tts_app_id="legacy-app",
-                volcengine_tts_access_key="legacy-access",
+                volcengine_tts_speed_ratio=speed_ratio,
             ),
             transport=httpx.MockTransport(handler),
         )
@@ -143,9 +146,9 @@ def test_v3_client_uses_legacy_header_pair_when_new_key_is_absent():
 
     run(scenario())
 
-    assert requests[0].headers["X-Api-App-Id"] == "legacy-app"
-    assert requests[0].headers["X-Api-Access-Key"] == "legacy-access"
-    assert "X-Api-Key" not in requests[0].headers
+    req_params = json.loads(requests[0].content)["req_params"]
+    assert "speed_ratio" not in req_params
+    assert req_params["audio_params"]["speech_rate"] == speech_rate
 
 
 def test_v3_client_generates_a_unique_request_id_for_every_call():
