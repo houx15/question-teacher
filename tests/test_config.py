@@ -1,6 +1,10 @@
+import asyncio
+
+import httpx
 import pytest
 
 from app.config import Settings
+from app.tts_client import OpenAISpeechClient, SpeechGenerationError
 
 
 MODEL_ENV_NAMES = (
@@ -115,3 +119,92 @@ def test_tts_overrides_are_normalized(monkeypatch):
     assert settings.tts_voice == "teacher"
     assert settings.speech_url == "https://speech.test/v1/audio/speech"
     assert settings.voice_configured is True
+
+
+@pytest.mark.parametrize(
+    (
+        "tts_base_url",
+        "tts_api_key",
+        "expected_base_url",
+        "expected_api_key",
+    ),
+    [
+        (None, None, "https://model.test/v1", "model-secret"),
+        (
+            " https://model.test/v1/ ",
+            None,
+            "https://model.test/v1",
+            "model-secret",
+        ),
+        (
+            "https://speech.test/v1",
+            None,
+            "https://speech.test/v1",
+            None,
+        ),
+        (
+            "https://speech.test/v1",
+            "speech-secret",
+            "https://speech.test/v1",
+            "speech-secret",
+        ),
+    ],
+)
+def test_tts_credentials_only_inherit_for_the_same_endpoint(
+    monkeypatch,
+    tts_base_url,
+    tts_api_key,
+    expected_base_url,
+    expected_api_key,
+):
+    clear_settings_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "model-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "demo-model")
+    monkeypatch.setenv("TTS_MODEL", "demo-tts")
+    monkeypatch.setenv("TTS_VOICE", "teacher")
+    if tts_base_url is not None:
+        monkeypatch.setenv("TTS_BASE_URL", tts_base_url)
+    if tts_api_key is not None:
+        monkeypatch.setenv("TTS_API_KEY", tts_api_key)
+
+    settings = Settings.from_env()
+
+    assert settings.tts_base_url == expected_base_url
+    assert settings.tts_api_key == expected_api_key
+
+
+def test_cross_origin_tts_without_key_never_sends_model_credential(
+    monkeypatch,
+):
+    clear_settings_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "model-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "demo-model")
+    monkeypatch.setenv("TTS_BASE_URL", "https://speech.test/v1")
+    monkeypatch.setenv("TTS_MODEL", "demo-tts")
+    monkeypatch.setenv("TTS_VOICE", "teacher")
+    requests = []
+
+    def unexpected_request(request):
+        requests.append(request)
+        return httpx.Response(200, content=b"must-not-be-used")
+
+    client = OpenAISpeechClient(
+        Settings.from_env(),
+        transport=httpx.MockTransport(unexpected_request),
+    )
+
+    async def scenario():
+        try:
+            with pytest.raises(
+                SpeechGenerationError,
+                match="not configured",
+            ):
+                await client.synthesize("有效讲解")
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+    assert requests == []

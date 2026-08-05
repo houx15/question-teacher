@@ -1,27 +1,26 @@
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
 from app.math_engine import MathEngine, MathValidationError
-from app.schemas import GenerationJob, ProblemInput, RuntimeLesson
+from app.schemas import (
+    GenerationJob,
+    NonEmptyString,
+    ProblemInput,
+    RuntimeLesson,
+)
 from app.store import MemoryStore
 
 
 class InteractionSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal[
-        "point_select",
-        "choice",
-        "expression",
-        "free_text",
-        "transfer",
-    ]
+    lesson_id: NonEmptyString
+    interaction_id: NonEmptyString
     answer: str
-    expected: str
 
 
 @dataclass
@@ -136,26 +135,37 @@ def create_api_router(services: ApiServices) -> APIRouter:
     async def evaluate_interaction(
         submission: InteractionSubmission,
     ) -> dict:
-        if submission.kind in {"choice", "point_select"}:
-            correct = (
-                submission.answer.strip() == submission.expected.strip()
+        interaction = services.store.get_interaction(
+            submission.lesson_id,
+            submission.interaction_id,
+        )
+        if interaction is None:
+            raise HTTPException(
+                status_code=404,
+                detail="课程互动不存在。",
             )
-        elif submission.kind == "free_text":
+
+        if interaction.kind in {"choice", "point_select"}:
+            correct = (
+                submission.answer.strip()
+                == interaction.expected_answer.strip()
+            )
+        elif interaction.kind == "free_text":
             return {
                 "classification": "needs_review",
                 "message": "首版暂不自动判错这类文字回答。",
             }
         else:
             try:
-                if submission.kind == "expression":
+                if interaction.kind == "expression":
                     correct = services.math_engine.expressions_equivalent(
                         submission.answer,
-                        submission.expected,
+                        interaction.expected_answer,
                     )
                 else:
                     correct = services.math_engine.answers_equivalent(
                         submission.answer,
-                        submission.expected,
+                        interaction.expected_answer,
                     )
             except MathValidationError:
                 correct = False

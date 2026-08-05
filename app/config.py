@@ -19,8 +19,19 @@ class Settings:
     def from_env(cls) -> "Settings":
         openai_base_url = cls._normalize_url(os.getenv("OPENAI_BASE_URL"))
         openai_api_key = cls._normalize_string(os.getenv("OPENAI_API_KEY"))
-        tts_base_url = cls._normalize_url(os.getenv("TTS_BASE_URL"))
-        tts_api_key = cls._normalize_string(os.getenv("TTS_API_KEY"))
+        explicit_tts_base_url = cls._normalize_url(
+            os.getenv("TTS_BASE_URL")
+        )
+        explicit_tts_api_key = cls._normalize_string(
+            os.getenv("TTS_API_KEY")
+        )
+        tts_base_url = explicit_tts_base_url or openai_base_url
+        if explicit_tts_api_key:
+            tts_api_key = explicit_tts_api_key
+        elif tts_base_url == openai_base_url:
+            tts_api_key = openai_api_key
+        else:
+            tts_api_key = None
 
         return cls(
             openai_base_url=openai_base_url,
@@ -29,8 +40,8 @@ class Settings:
             openai_timeout_seconds=cls._parse_timeout(
                 os.getenv("OPENAI_TIMEOUT_SECONDS", "90")
             ),
-            tts_base_url=tts_base_url or openai_base_url,
-            tts_api_key=tts_api_key or openai_api_key,
+            tts_base_url=tts_base_url,
+            tts_api_key=tts_api_key,
             tts_model=cls._normalize_string(os.getenv("TTS_MODEL")),
             tts_voice=cls._normalize_string(os.getenv("TTS_VOICE")),
         )

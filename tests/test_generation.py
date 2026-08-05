@@ -364,6 +364,26 @@ def test_draft_requires_at_least_one_interaction():
         asyncio.run(service.generate(problem()))
 
 
+def test_draft_rejects_unexecutable_choice_before_review():
+    draft = valid_draft()
+    draft["moments"][0]["interaction"] = {
+        "interaction_id": "unusable-choice",
+        "kind": "choice",
+        "prompt": "请选择。",
+        "expected_answer": "A",
+        "options": [],
+    }
+    client = FakeClient([draft])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert "讲解结构无效" in str(exc_info.value)
+    assert "unusable-choice" not in str(exc_info.value)
+    assert len(client.calls) == 1
+
+
 def test_invalid_director_schema_is_reported_without_model_payload():
     private_payload = {
         "title": "private-model-output",

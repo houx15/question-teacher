@@ -2,7 +2,7 @@ from threading import RLock
 from typing import Dict, Optional
 from uuid import uuid4
 
-from app.schemas import GenerationJob, RuntimeLesson
+from app.schemas import GenerationJob, Interaction, RuntimeLesson
 
 
 class MemoryStore:
@@ -41,3 +41,21 @@ class MemoryStore:
     def get_lesson(self, lesson_id: str) -> Optional[RuntimeLesson]:
         with self._lock:
             return self._lessons.get(lesson_id)
+
+    def get_interaction(
+        self,
+        lesson_id: str,
+        interaction_id: str,
+    ) -> Optional[Interaction]:
+        with self._lock:
+            lesson = self._lessons.get(lesson_id)
+            if lesson is None:
+                return None
+            for beat in lesson.beats:
+                interaction = beat.interaction
+                if (
+                    interaction is not None
+                    and interaction.interaction_id == interaction_id
+                ):
+                    return interaction
+            return None

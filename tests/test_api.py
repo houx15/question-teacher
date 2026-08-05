@@ -8,7 +8,13 @@ from pydantic import ValidationError
 from app.api import run_generation
 from app.config import Settings
 from app.main import create_app
-from app.schemas import ProblemInput, RuntimeBeat, RuntimeLesson
+from app.schemas import (
+    Interaction,
+    InteractionOption,
+    ProblemInput,
+    RuntimeBeat,
+    RuntimeLesson,
+)
 from app.store import MemoryStore
 
 
@@ -43,6 +49,29 @@ def runtime_lesson(problem: ProblemInput) -> RuntimeLesson:
         },
         validation_report={"math_status": "verified"},
     )
+
+
+def save_interaction_lesson(
+    store,
+    *,
+    kind,
+    expected,
+    options=None,
+):
+    lesson = runtime_lesson(problem_input())
+    interaction = Interaction(
+        interaction_id="interaction-1",
+        kind=kind,
+        prompt="请作答。",
+        expected_answer=expected,
+        options=options or [],
+    )
+    beat = lesson.beats[0].model_copy(
+        update={"interaction": interaction}
+    )
+    lesson = lesson.model_copy(update={"beats": [beat]})
+    store.save_lesson(lesson)
+    return lesson, interaction
 
 
 class FakeGenerator:
@@ -209,15 +238,35 @@ def test_missing_job_and_lesson_return_404():
 
 @pytest.mark.parametrize("kind", ["choice", "point_select"])
 def test_choice_and_point_select_use_trimmed_exact_comparison(kind):
-    client, _, _ = build_client()
+    store = MemoryStore()
+    options = (
+        [InteractionOption(option_id="A", label="选项 A")]
+        if kind == "choice"
+        else []
+    )
+    lesson, interaction = save_interaction_lesson(
+        store,
+        kind=kind,
+        expected="A",
+        options=options,
+    )
+    client, _, _ = build_client(store=store)
 
     correct = client.post(
         "/api/interactions/evaluate",
-        json={"kind": kind, "answer": " A ", "expected": "A"},
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": " A ",
+        },
     )
     incorrect = client.post(
         "/api/interactions/evaluate",
-        json={"kind": kind, "answer": "a", "expected": "A"},
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "a",
+        },
     )
 
     assert correct.json() == {"classification": "correct"}
@@ -225,22 +274,28 @@ def test_choice_and_point_select_use_trimmed_exact_comparison(kind):
 
 
 def test_expression_interaction_uses_math_equivalence():
-    client, _, _ = build_client()
+    store = MemoryStore()
+    lesson, interaction = save_interaction_lesson(
+        store,
+        kind="expression",
+        expected="(x-3)^2",
+    )
+    client, _, _ = build_client(store=store)
 
     equivalent = client.post(
         "/api/interactions/evaluate",
         json={
-            "kind": "expression",
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
             "answer": "x^2-6x+9",
-            "expected": "(x-3)^2",
         },
     )
     malformed = client.post(
         "/api/interactions/evaluate",
         json={
-            "kind": "expression",
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
             "answer": "not math",
-            "expected": "(x-3)^2",
         },
     )
 
@@ -249,14 +304,20 @@ def test_expression_interaction_uses_math_equivalence():
 
 
 def test_transfer_interaction_uses_answer_equivalence():
-    client, _, _ = build_client()
+    store = MemoryStore()
+    lesson, interaction = save_interaction_lesson(
+        store,
+        kind="transfer",
+        expected="x=2",
+    )
+    client, _, _ = build_client(store=store)
 
     response = client.post(
         "/api/interactions/evaluate",
         json={
-            "kind": "transfer",
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
             "answer": "x=4/2",
-            "expected": "x=2",
         },
     )
 
@@ -264,14 +325,20 @@ def test_transfer_interaction_uses_answer_equivalence():
 
 
 def test_free_text_always_needs_review_without_calling_generator():
-    client, generator, _ = build_client()
+    store = MemoryStore()
+    lesson, interaction = save_interaction_lesson(
+        store,
+        kind="free_text",
+        expected="等式两边做相同运算。",
+    )
+    client, generator, _ = build_client(store=store)
 
     response = client.post(
         "/api/interactions/evaluate",
         json={
-            "kind": "free_text",
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
             "answer": "我的思路包含 private student text",
-            "expected": "任意参考答案",
         },
     )
 
@@ -280,6 +347,70 @@ def test_free_text_always_needs_review_without_calling_generator():
         "message": "首版暂不自动判错这类文字回答。",
     }
     assert generator.calls == 0
+
+
+def test_interaction_evaluation_rejects_forged_expected_answer():
+    store = MemoryStore()
+    lesson, interaction = save_interaction_lesson(
+        store,
+        kind="choice",
+        expected="A",
+        options=[InteractionOption(option_id="A", label="选项 A")],
+    )
+    client, _, _ = build_client(store=store)
+
+    forged = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "forged",
+            "expected": "forged",
+        },
+    )
+    incorrect = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "forged",
+        },
+    )
+
+    assert forged.status_code == 422
+    assert incorrect.json() == {"classification": "incorrect"}
+
+
+@pytest.mark.parametrize(
+    ("lesson_id", "interaction_id"),
+    [
+        ("missing", "interaction-1"),
+        ("lesson-1", "missing"),
+    ],
+)
+def test_interaction_evaluation_returns_safe_404_for_missing_authority(
+    lesson_id,
+    interaction_id,
+):
+    store = MemoryStore()
+    save_interaction_lesson(
+        store,
+        kind="free_text",
+        expected="参考答案",
+    )
+    client, _, _ = build_client(store=store)
+
+    response = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson_id,
+            "interaction_id": interaction_id,
+            "answer": "学生答案",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "课程互动不存在。"
 
 
 def test_run_generation_records_failed_job_without_raising():

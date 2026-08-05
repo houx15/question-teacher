@@ -164,6 +164,24 @@ class Interaction(SchemaModel):
             )
         return normalized
 
+    @model_validator(mode="after")
+    def require_executable_options(self) -> "Interaction":
+        if self.kind == "choice":
+            if not self.options:
+                raise ValueError("choice interactions require options")
+            option_ids = [option.option_id for option in self.options]
+            if len(option_ids) != len(set(option_ids)):
+                raise ValueError("choice option ids must be unique")
+            if self.expected_answer not in option_ids:
+                raise ValueError(
+                    "choice expected_answer must match an option_id"
+                )
+        elif self.options:
+            raise ValueError(
+                "only choice interactions may provide options"
+            )
+        return self
+
 
 class LessonMoment(SchemaModel):
     purpose: NonEmptyString

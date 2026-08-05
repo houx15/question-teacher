@@ -399,6 +399,66 @@ def test_interaction_requires_expected_answer():
         )
 
 
+def test_choice_interaction_requires_executable_unique_options():
+    base = {
+        "interaction_id": "choose-method",
+        "kind": "choice",
+        "prompt": "选择正确方法。",
+        "expected_answer": "factor",
+    }
+
+    with pytest.raises(ValidationError):
+        Interaction.model_validate(base)
+    with pytest.raises(ValidationError):
+        Interaction.model_validate(
+            {
+                **base,
+                "options": [
+                    {"option_id": "factor", "label": "因式分解"},
+                    {"option_id": "factor", "label": "重复选项"},
+                ],
+            }
+        )
+    with pytest.raises(ValidationError):
+        Interaction.model_validate(
+            {
+                **base,
+                "expected_answer": "missing",
+                "options": [
+                    {"option_id": "factor", "label": "因式分解"},
+                ],
+            }
+        )
+
+    interaction = Interaction.model_validate(
+        {
+            **base,
+            "options": [
+                {"option_id": "factor", "label": "因式分解"},
+                {"option_id": "formula", "label": "求根公式"},
+            ],
+        }
+    )
+
+    assert interaction.expected_answer == "factor"
+
+
+def test_non_choice_interaction_rejects_options():
+    with pytest.raises(ValidationError):
+        Interaction(
+            interaction_id="write-expression",
+            kind="expression",
+            prompt="写出因式分解结果。",
+            expected_answer="(x-2)(x-3)",
+            options=[
+                InteractionOption(
+                    option_id="unused",
+                    label="不应出现",
+                )
+            ],
+        )
+
+
 def test_lesson_moment_combines_micro_explanation_actions_and_interaction():
     moment = LessonMoment(
         purpose="解释因式分解的两个因式",
@@ -485,6 +545,9 @@ def test_runtime_beat_and_interaction_accept_audio_urls():
         kind="choice",
         prompt="哪个根满足原方程？",
         expected_answer="both",
+        options=[
+            InteractionOption(option_id="both", label="两个根都满足"),
+        ],
         explanation_after_correct="两个根代回原方程都成立。",
         hint_audio_urls=[
             "/audio/hints/check-one.mp3",
