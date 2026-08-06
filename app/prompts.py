@@ -433,6 +433,11 @@ MathEngine 解析 canonical_answer 并核对唯一正确项，服务端会忽略
 显示文本；其他模式保留模型 label，canonical_answer 只作为审稿证据，不应被当成
 可执行命令，也不得要求有限 x 解集。Reviewer 必须审查正确选项是否沿用冻结路线，
 以及每个错误选项是否对应一个具体误解。
+grounded 模式若返回 approved，grounded_transfer_review 必填：transfer_problem_text
+必须逐字复制 whole_lesson.transfer_item.problem_text；correct_option_id 与
+correct_canonical_answer 必须对应 whole_lesson 中服务端保存的正确选项；
+distractors 必须恰好覆盖其余全部 option_id，并为每项填写非空 misconception。
+symbolic_verified 模式的 grounded_transfer_review 应为 null 或省略。
 只返回一个符合 ReviewDecision JSON Schema 的 JSON 对象：approved 表示整篇可用；
 revision_required 必须给出整篇层面的 must_fix 和对应原文 evidence。不要返回
 Markdown 或额外文字。
@@ -986,6 +991,32 @@ def reviewer_prompt(
             "output_contract": {
                 "format": "Return exactly one JSON object.",
                 "schema": ReviewDecision.model_json_schema(),
+                "grounded_transfer_review": (
+                    {
+                        "required_when": "status=approved",
+                        "problem_text": (
+                            "Exact copy of whole_lesson.transfer_item."
+                            "problem_text."
+                        ),
+                        "correct_option": (
+                            "Exact correct_option_id and its private "
+                            "canonical_answer."
+                        ),
+                        "distractors": (
+                            "Exactly every remaining option_id, each with "
+                            "one nonempty specific misconception."
+                        ),
+                    }
+                    if route_context.get("verification_mode")
+                    != "symbolic_verified"
+                    else {
+                        "value": None,
+                        "reason": (
+                            "Symbolic transfer correctness is enforced by "
+                            "the server."
+                        ),
+                    }
+                ),
             },
         },
         ensure_ascii=False,

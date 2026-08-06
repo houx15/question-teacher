@@ -110,6 +110,63 @@ def _normalize_choice_option_label(label: str) -> str:
     )
 
 
+def _normalize_grounded_choice_option_label(label: str) -> str:
+    """Normalize visually equivalent, bounded KaTeX choice labels."""
+    normalized = label.translate(
+        str.maketrans(
+            {
+                "−": "-",
+                "－": "-",
+                "–": "-",
+                "—": "-",
+                "＋": "+",
+                "×": "*",
+                "·": "*",
+                "÷": "/",
+                "＝": "=",
+                "≠": r"\ne",
+                "²": "^2",
+                "³": "^3",
+            }
+        )
+    )
+    for command, replacement in (
+        (r"\left", ""),
+        (r"\right", ""),
+        (r"\dfrac", r"\frac"),
+        (r"\tfrac", r"\frac"),
+        (r"\times", "*"),
+        (r"\cdot", "*"),
+        (r"\div", "/"),
+        (r"\neq", r"\ne"),
+    ):
+        normalized = normalized.replace(command, replacement)
+    for delimiter in (r"\(", r"\)", r"\[", r"\]", "$"):
+        normalized = normalized.replace(delimiter, "")
+    for spacing in (
+        r"\,",
+        r"\;",
+        r"\:",
+        r"\!",
+        r"\quad",
+        r"\qquad",
+        r"\enspace",
+        r"\thinspace",
+        r"\medspace",
+        r"\thickspace",
+    ):
+        normalized = normalized.replace(spacing, "")
+    normalized = re.sub(r"\s+", "", normalized)
+    redundant_script_braces = re.compile(
+        r"([_^])\{([A-Za-z0-9]|\\[A-Za-z]+)\}"
+    )
+    while True:
+        reduced = redundant_script_braces.sub(r"\1\2", normalized)
+        if reduced == normalized:
+            return normalized
+        normalized = reduced
+
+
 class LessonQualityError(RuntimeError):
     """Raised when a generated lesson cannot pass safe quality gates."""
 
@@ -404,6 +461,7 @@ class LessonGenerationService:
                     self._validate_grounded_review_evidence(
                         review,
                         teaching_route,
+                        draft,
                     )
                 break
             if revision_count >= self.MAX_REVISIONS:
@@ -1228,8 +1286,10 @@ class LessonGenerationService:
                 for option in transfer_options
             ]
         else:
+            if any(option.label is None for option in transfer_options):
+                raise LessonQualityError("近迁移选项显示格式无效。")
             normalized_labels = [
-                _normalize_choice_option_label(option.label)
+                _normalize_grounded_choice_option_label(option.label)
                 for option in transfer_options
             ]
             if len(normalized_labels) != len(set(normalized_labels)):
@@ -1433,6 +1493,7 @@ class LessonGenerationService:
         self,
         review: ReviewDecision,
         teaching_route: FrozenTeachingRoute,
+        draft: LessonDraft,
     ) -> None:
         evidence = self._normalize_grounded_text(" ".join(review.evidence))
         conclusion = self._normalize_grounded_text(
@@ -1440,6 +1501,45 @@ class LessonGenerationService:
         )
         if not evidence or conclusion not in evidence:
             raise LessonQualityError("审稿证据没有定位参考结论。")
+        transfer_review = review.grounded_transfer_review
+        transfer_item = draft.transfer_item
+        if transfer_review is None:
+            raise LessonQualityError(
+                "审稿证据没有完整核对近迁移题。"
+            )
+        correct_option = next(
+            (
+                option
+                for option in transfer_item.options
+                if option.option_id == transfer_item.correct_option_id
+            ),
+            None,
+        )
+        if (
+            correct_option is None
+            or transfer_review.transfer_problem_text
+            != transfer_item.problem_text
+            or transfer_review.correct_option_id
+            != transfer_item.correct_option_id
+            or transfer_review.correct_canonical_answer
+            != correct_option.canonical_answer
+        ):
+            raise LessonQualityError(
+                "审稿证据没有完整核对近迁移题。"
+            )
+        expected_distractor_ids = {
+            option.option_id
+            for option in transfer_item.options
+            if option.option_id != transfer_item.correct_option_id
+        }
+        reviewed_distractor_ids = {
+            distractor.option_id
+            for distractor in transfer_review.distractors
+        }
+        if reviewed_distractor_ids != expected_distractor_ids:
+            raise LessonQualityError(
+                "审稿证据没有完整核对近迁移题。"
+            )
 
     @staticmethod
     def _normalize_grounded_text(value: str) -> str:

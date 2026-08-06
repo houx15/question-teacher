@@ -10,6 +10,7 @@ from app.generation import (
     LessonInputError,
     LessonQualityError,
     _VerifiedMathRoute,
+    _normalize_grounded_choice_option_label,
 )
 from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
@@ -319,6 +320,24 @@ def grounded_approved_review():
         "overall_assessment": "讲解按冻结路线完成了代入、约分和结论整理。",
         "must_fix": [],
         "evidence": ["板书依次得到各步关系，最终呈现m-n=1/2。"],
+        "grounded_transfer_review": {
+            "transfer_problem_text": (
+                "若a（a≠0）是方程x^2-px+a=0的根，"
+                "把x=a代入后首先得到哪个等式？"
+            ),
+            "correct_option_id": "option-substitute",
+            "correct_canonical_answer": "a^2-p*a+a=0",
+            "distractors": [
+                {
+                    "option_id": "option-miss-square",
+                    "misconception": "把x平方代入成a，遗漏了平方。",
+                },
+                {
+                    "option_id": "option-wrong-target",
+                    "misconception": "没有把x替换成题目给出的根a。",
+                },
+            ],
+        },
     }
 
 
@@ -335,6 +354,7 @@ async def generate_grounded_lesson(
     math_engine=None,
     claim_checker=None,
     materials_responses=None,
+    review_responses=None,
 ):
     statuses = review_statuses or ["approved"]
     responses = [
@@ -354,7 +374,11 @@ async def generate_grounded_lesson(
         if materials_responses is not None
         else [grounded_materials_payload()]
     )
-    for index, status in enumerate(statuses):
+    if review_responses is not None:
+        responses.extend(review_responses)
+    for index, status in enumerate(
+        [] if review_responses is not None else statuses
+    ):
         responses.append(
             grounded_approved_review()
             if status == "approved"
@@ -1098,6 +1122,74 @@ def test_grounded_transfer_rejects_labels_equal_after_normalization():
                     duplicate,
                     copy.deepcopy(duplicate),
                 ],
+            )
+        )
+
+
+def test_grounded_transfer_rejects_katex_equivalent_labels():
+    duplicate = grounded_materials_payload()
+    duplicate["transfer_item"]["options"][0]["label"] = (
+        r"\(\left(x^{2}+1\right)\)"
+    )
+    duplicate["transfer_item"]["options"][1]["label"] = (
+        r"\((x^2+1)\)"
+    )
+
+    with pytest.raises(
+        LessonQualityError,
+        match="近迁移选项显示格式无效",
+    ):
+        asyncio.run(
+            generate_grounded_lesson(
+                materials_responses=[
+                    duplicate,
+                    copy.deepcopy(duplicate),
+                ],
+            )
+        )
+
+
+def test_grounded_label_normalization_preserves_fraction_grouping():
+    assert _normalize_grounded_choice_option_label(
+        r"\(\frac{1}{23}\)"
+    ) != _normalize_grounded_choice_option_label(
+        r"\(\frac{12}{3}\)"
+    )
+
+
+def test_grounded_approved_review_rejects_reversed_draft_correct_key():
+    materials = grounded_materials_payload()
+    materials["transfer_item"]["correct_option_id"] = (
+        "option-miss-square"
+    )
+    materials["transfer_item"]["expected_answer"] = (
+        "option-miss-square"
+    )
+
+    with pytest.raises(
+        LessonQualityError,
+        match="近迁移题",
+    ):
+        asyncio.run(
+            generate_grounded_lesson(
+                materials_responses=[materials],
+                review_responses=[grounded_approved_review()],
+            )
+        )
+
+
+def test_grounded_approved_review_rejects_generic_conclusion_only_evidence():
+    review = grounded_approved_review()
+    review.pop("grounded_transfer_review")
+    review["evidence"] = ["板书最终呈现m-n=1/2。"]
+
+    with pytest.raises(
+        LessonQualityError,
+        match="近迁移题",
+    ):
+        asyncio.run(
+            generate_grounded_lesson(
+                review_responses=[review],
             )
         )
 

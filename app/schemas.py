@@ -714,11 +714,36 @@ class LessonDraft(SchemaModel):
         return self
 
 
+class GroundedTransferDistractorReview(SchemaModel):
+    option_id: GeneratedId
+    misconception: GeneratedFeedbackText
+
+
+class GroundedTransferReview(SchemaModel):
+    transfer_problem_text: GeneratedProblemText
+    correct_option_id: GeneratedId
+    correct_canonical_answer: GeneratedMathAnswer
+    distractors: List[GroundedTransferDistractorReview] = Field(
+        min_length=2,
+        max_length=3,
+    )
+
+    @model_validator(mode="after")
+    def validate_distractor_ids(self) -> "GroundedTransferReview":
+        option_ids = [
+            distractor.option_id for distractor in self.distractors
+        ]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("grounded distractor ids must be unique")
+        return self
+
+
 class ReviewDecision(SchemaModel):
     status: Literal["approved", "revision_required"]
     overall_assessment: NonEmptyString
     must_fix: List[NonEmptyString] = Field(default_factory=list)
     evidence: List[NonEmptyString] = Field(default_factory=list)
+    grounded_transfer_review: Optional[GroundedTransferReview] = None
 
     @model_validator(mode="after")
     def validate_must_fix_for_status(self) -> "ReviewDecision":
