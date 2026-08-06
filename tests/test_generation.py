@@ -51,7 +51,7 @@ def valid_draft():
         "method_introduction": {
             "method_name": "因式分解法",
             "student_definition": "把二次式写成两个一次因式的乘积，再分别令每个因式为零。",
-            "target_form": "(x-a)(x-b)=0",
+            "target_form": r"\((x-a)(x-b)=0\)",
             "why_it_helps": "零乘积性质把一个二次方程拆成两个更容易解的一次方程。",
         },
         "math_steps": [
@@ -88,7 +88,7 @@ def valid_draft():
                     {
                         "type": "transform",
                         "target": "equation",
-                        "content": "(x-2)(x-3)=0",
+                        "content": r"\((x-2)(x-3)=0\)",
                     }
                 ],
             },
@@ -132,22 +132,55 @@ def valid_diagnostic_choice():
         "options": [
             {
                 "option_id": "negative-two-negative-three",
-                "label": "-2 和 -3",
+                "label": r"\(-2\) 和 \(-3\)",
                 "feedback": "这组数的乘积为 6、和为 -5，正好满足条件。",
             },
             {
                 "option_id": "two-three",
-                "label": "2 和 3",
+                "label": r"\(2\) 和 \(3\)",
                 "feedback": "乘积是 6，但和是 5，需要注意一次项系数的符号。",
             },
             {
                 "option_id": "negative-one-negative-six",
-                "label": "-1 和 -6",
+                "label": r"\(-1\) 和 \(-6\)",
                 "feedback": "和是 -7，不符合一次项系数。",
             },
         ],
         "hints": ["同时检查乘积和相加结果。"],
         "explanation_after_correct": "这组数同时满足两个条件。",
+    }
+
+
+def transfer_item_with_display_label(
+    problem_text,
+    expected_answer,
+    correct_label,
+):
+    return {
+        "problem_text": problem_text,
+        "expected_answer": expected_answer,
+        "method_signal": "根据方程的解集判断。",
+        "options": [
+            {
+                "option_id": "correct",
+                "label": correct_label,
+                "canonical_answer": expected_answer,
+                "feedback": "这组解满足方程。",
+            },
+            {
+                "option_id": "positive-two",
+                "label": r"\(x=2\)",
+                "canonical_answer": "x=2",
+                "feedback": "代入后不能满足方程。",
+            },
+            {
+                "option_id": "negative-two",
+                "label": r"\(x=-2\)",
+                "canonical_answer": "x=-2",
+                "feedback": "代入后不能满足方程。",
+            },
+        ],
+        "correct_option_id": "correct",
     }
 
 
@@ -900,6 +933,87 @@ def test_transfer_item_rejects_mismatched_canonical_answer_label(
     assert canonical_answer not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("transfer_problem", "expected_answer", "correct_label"),
+    [
+        (
+            "解方程：x^2-2=0",
+            "x=-sqrt(2) or x=sqrt(2)",
+            r"\(x=- \sqrt{2}\) 或 \(x=\sqrt{2}\)",
+        ),
+        (
+            "解方程：x^2-7x+12=0",
+            "x=3或x=4",
+            r"\(x=3\) 或 \(x=4\)",
+        ),
+    ],
+)
+def test_transfer_item_accepts_math_engine_display_labels(
+    transfer_problem,
+    expected_answer,
+    correct_label,
+):
+    draft = valid_draft()
+    draft["transfer_item"] = transfer_item_with_display_label(
+        transfer_problem,
+        expected_answer,
+        correct_label,
+    )
+    client = FakeClient([draft, approved_review()])
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+
+
+@pytest.mark.parametrize(
+    ("transfer_problem", "expected_answer", "correct_label", "option_index"),
+    [
+        (
+            "解方程：x^2-2=0",
+            "x=-sqrt(2) or x=sqrt(2)",
+            r"\(x=- \sqrt{2}\) 或 \(x=\sqrt{2}\)",
+            0,
+        ),
+        (
+            "解方程：x^2-7x+12=0",
+            "x=3或x=4",
+            r"\(x=3\) 或 \(x=4\)",
+            1,
+        ),
+    ],
+)
+def test_transfer_item_rejects_mismatched_math_engine_display_label(
+    transfer_problem,
+    expected_answer,
+    correct_label,
+    option_index,
+):
+    draft = valid_draft()
+    draft["transfer_item"] = transfer_item_with_display_label(
+        transfer_problem,
+        expected_answer,
+        correct_label,
+    )
+    canonical_answer = draft["transfer_item"]["options"][option_index][
+        "canonical_answer"
+    ]
+    mismatched_label = r"\(x=30\)"
+    draft["transfer_item"]["options"][option_index]["label"] = (
+        mismatched_label
+    )
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移选项显示格式无效。"
+    assert mismatched_label not in str(exc_info.value)
+    assert canonical_answer not in str(exc_info.value)
+
+
 def test_choice_rejects_duplicate_visible_option_labels():
     draft = valid_draft()
     choice = valid_diagnostic_choice()
@@ -914,6 +1028,33 @@ def test_choice_rejects_duplicate_visible_option_labels():
 
     assert str(exc_info.value) == "选择互动选项标签不能重复。"
     assert duplicate_label not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "second_label",
+    [
+        "相同   推理",
+        r"\( x = 2 \)",
+    ],
+)
+def test_choice_rejects_labels_equal_after_display_normalization(
+    second_label,
+):
+    draft = valid_draft()
+    choice = valid_diagnostic_choice()
+    if second_label.startswith("\\"):
+        choice["options"][0]["label"] = r"\(x=2\)"
+    else:
+        choice["options"][0]["label"] = "相同 推理"
+    choice["options"][1]["label"] = second_label
+    draft["moments"][0]["interaction"] = choice
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "选择互动选项标签不能重复。"
 
 
 def test_accepts_valid_method_first_diagnostic_choice_draft():
@@ -1054,3 +1195,6 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "choice 的可见 label 不得重复" in DIRECTOR_SYSTEM
     assert "choice 的可见 label 重复" in REVIEWER_SYSTEM
     assert "choice 的可见 label 不得重复" in REVISION_SYSTEM
+    assert "MathEngine 确定性显示格式" in DIRECTOR_SYSTEM
+    assert "MathEngine 确定性显示格式" in REVIEWER_SYSTEM
+    assert "MathEngine 确定性显示格式" in REVISION_SYSTEM

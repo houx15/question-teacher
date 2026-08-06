@@ -9,6 +9,7 @@ from sympy import (
     Float,
     FiniteSet,
     Integer,
+    latex,
     Mul,
     Poly,
     Pow,
@@ -215,6 +216,18 @@ class MathEngine:
     def answers_equivalent(self, actual: str, expected: str) -> bool:
         return self._answer_solution_set(actual) == self._answer_solution_set(
             expected
+        )
+
+    def format_answer_label(self, answer: str) -> str:
+        """Format a validated answer as its public math-choice label."""
+        solution_set = self._answer_solution_set(answer)
+        if solution_set == S.EmptySet:
+            return r"\(\text{无实数解}\)"
+        if not isinstance(solution_set, FiniteSet):
+            raise MathValidationError("参考答案格式不正确。")
+        return " 或 ".join(
+            rf"\(x={latex(value)}\)"
+            for value in sorted(solution_set, key=default_sort_key)
         )
 
     def _parse_equation_parts(self, text: str) -> _EquationParts:

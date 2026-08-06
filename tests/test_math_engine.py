@@ -79,6 +79,35 @@ def test_validate_problem_accepts_canonical_no_real_solution_answer(engine):
     assert validation.solution_strings == []
 
 
+@pytest.mark.parametrize(
+    ("answer", "expected_label"),
+    [
+        ("x=sqrt(2)", r"\(x=\sqrt{2}\)"),
+        (
+            "x=-sqrt(2) or x=sqrt(2)",
+            r"\(x=- \sqrt{2}\) 或 \(x=\sqrt{2}\)",
+        ),
+        ("x=3或x=4", r"\(x=3\) 或 \(x=4\)"),
+        (
+            "x=1/2 或 x=3/4",
+            r"\(x=\frac{1}{2}\) 或 \(x=\frac{3}{4}\)",
+        ),
+        ("无实数解", r"\(\text{无实数解}\)"),
+    ],
+)
+def test_format_answer_label_uses_validated_solution_set(
+    engine,
+    answer,
+    expected_label,
+):
+    assert engine.format_answer_label(answer) == expected_label
+
+
+def test_format_answer_label_reuses_answer_validation(engine):
+    with pytest.raises(MathValidationError):
+        engine.format_answer_label("答案是二")
+
+
 def test_validate_step_accepts_equivalent_split_branches(engine):
     step = MathStep(
         purpose="拆分正负分支",

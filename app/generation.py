@@ -46,14 +46,21 @@ REQUIRED_METHODS = {
 }
 
 
-def format_transfer_option_label(canonical_answer: str) -> str:
-    """Format a MathEngine canonical answer for its public choice label."""
-    answer = canonical_answer.strip()
-    if answer == "无实数解":
-        return r"\(\text{无实数解}\)"
+_INLINE_MATH_SEGMENT = re.compile(r"\\\((.*?)\\\)")
+_BLOCK_MATH_SEGMENT = re.compile(r"\\\[(.*?)\\\]")
 
-    branches = re.split(r"\s+或\s+", answer)
-    return " 或 ".join(rf"\({branch}\)" for branch in branches)
+
+def _normalize_choice_option_label(label: str) -> str:
+    """Approximate browser display normalization for choice-label equality."""
+    normalized = " ".join(label.split())
+    normalized = _INLINE_MATH_SEGMENT.sub(
+        lambda match: r"\(" + re.sub(r"\s+", "", match.group(1)) + r"\)",
+        normalized,
+    )
+    return _BLOCK_MATH_SEGMENT.sub(
+        lambda match: r"\[" + re.sub(r"\s+", "", match.group(1)) + r"\]",
+        normalized,
+    )
 
 
 class LessonQualityError(RuntimeError):
@@ -361,7 +368,7 @@ class LessonGenerationService:
             ) from None
         if any(
             option.label.strip()
-            != format_transfer_option_label(option.canonical_answer)
+            != self.math_engine.format_answer_label(option.canonical_answer)
             for option in transfer_options
         ):
             raise LessonQualityError("近迁移选项显示格式无效。")
@@ -385,7 +392,7 @@ class LessonGenerationService:
                         "选择互动需要 3 至 4 个选项。"
                     )
                 option_labels = [
-                    option.label.strip()
+                    _normalize_choice_option_label(option.label)
                     for option in interaction.options
                 ]
                 if len(option_labels) != len(set(option_labels)):
