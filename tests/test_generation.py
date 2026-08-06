@@ -123,6 +123,34 @@ def valid_draft():
     }
 
 
+def valid_diagnostic_choice():
+    return {
+        "interaction_id": "find-factor-pair",
+        "kind": "choice",
+        "prompt": "哪一组数同时满足乘积为 6、和为 -5？",
+        "expected_answer": "negative-two-negative-three",
+        "options": [
+            {
+                "option_id": "negative-two-negative-three",
+                "label": "-2 和 -3",
+                "feedback": "这组数的乘积为 6、和为 -5，正好满足条件。",
+            },
+            {
+                "option_id": "two-three",
+                "label": "2 和 3",
+                "feedback": "乘积是 6，但和是 5，需要注意一次项系数的符号。",
+            },
+            {
+                "option_id": "negative-one-negative-six",
+                "label": "-1 和 -6",
+                "feedback": "和是 -7，不符合一次项系数。",
+            },
+        ],
+        "hints": ["同时检查乘积和相加结果。"],
+        "explanation_after_correct": "这组数同时满足两个条件。",
+    }
+
+
 def approved_review():
     return {
         "status": "approved",
@@ -525,6 +553,7 @@ def test_math_route_accepts_contiguous_normalized_steps():
 
 def test_math_route_preserves_valid_multi_branch_final_state():
     draft = valid_draft()
+    draft["method_introduction"]["method_name"] = "公式法"
     draft["math_steps"] = [
         {
             "purpose": "使用求根公式",
@@ -552,6 +581,7 @@ def test_math_route_preserves_valid_no_real_solution_state():
         required_method="quadratic_formula",
     )
     draft = valid_draft()
+    draft["method_introduction"]["method_name"] = "公式法"
     draft["math_steps"] = [
         {
             "purpose": "使用求根公式",
@@ -566,6 +596,27 @@ def test_math_route_preserves_valid_no_real_solution_state():
         "problem_text": "用求根公式解方程：x^2+4=0",
         "expected_answer": "无实数解",
         "method_signal": "先判断判别式的符号。",
+        "options": [
+            {
+                "option_id": "no-real-solution",
+                "label": "无实数解",
+                "canonical_answer": "无实数解",
+                "feedback": "判别式小于零，所以没有实数根。",
+            },
+            {
+                "option_id": "two",
+                "label": "x=2",
+                "canonical_answer": "x=2",
+                "feedback": "代入后不能使方程成立。",
+            },
+            {
+                "option_id": "negative-two",
+                "label": "x=-2",
+                "canonical_answer": "x=-2",
+                "feedback": "代入后不能使方程成立。",
+            },
+        ],
+        "correct_option_id": "no-real-solution",
     }
     client = FakeClient([draft, approved_review()])
     service = LessonGenerationService(client, MathEngine())
@@ -582,6 +633,19 @@ def test_required_method_must_be_used_as_an_operation():
     with pytest.raises(LessonQualityError, match="指定方法"):
         asyncio.run(service.generate(problem("complete_the_square")))
 
+    assert len(client.calls) == 2
+
+
+def test_required_method_requires_matching_method_introduction_name():
+    draft = valid_draft()
+    draft["method_introduction"]["method_name"] = "公式法"
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem("complete_the_square")))
+
+    assert str(exc_info.value) == "讲解的方法介绍与指定方法不一致。"
     assert len(client.calls) == 2
 
 
@@ -674,21 +738,21 @@ def test_draft_rejects_unexecutable_choice_before_review():
 
 
 @pytest.mark.parametrize(
-    ("kind", "invalid_expected"),
+    ("kind", "expected_answer"),
     [
-        ("expression", "not a supported expression"),
-        ("transfer", "not a supported answer"),
+        ("expression", "(x-2)*(x-3)"),
+        ("transfer", "x=2 或 x=3"),
     ],
 )
-def test_draft_rejects_invalid_auto_graded_answer_before_review(
+def test_draft_rejects_new_math_input_interaction_kinds_before_review(
     kind,
-    invalid_expected,
+    expected_answer,
 ):
     draft = valid_draft()
     draft["moments"][0]["interaction"].update(
         {
             "kind": kind,
-            "expected_answer": invalid_expected,
+            "expected_answer": expected_answer,
         }
     )
     client = FakeClient([draft, copy.deepcopy(draft)])
@@ -697,26 +761,121 @@ def test_draft_rejects_invalid_auto_graded_answer_before_review(
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert "互动答案" in str(exc_info.value)
-    assert invalid_expected not in str(exc_info.value)
+    assert str(exc_info.value) == "新讲解中的数学互动必须使用选择或点选。"
     assert len(client.calls) == 2
 
 
 @pytest.mark.parametrize(
-    ("kind", "expected"),
+    "option_count",
     [
-        ("expression", "(x-2)*(x-3)"),
-        ("transfer", "x=2 或 x=3"),
+        2,
+        5,
     ],
 )
-def test_draft_accepts_valid_auto_graded_answers(kind, expected):
+def test_choice_requires_three_or_four_diagnostic_options(option_count):
     draft = valid_draft()
-    draft["moments"][0]["interaction"].update(
-        {
-            "kind": kind,
-            "expected_answer": expected,
-        }
+    choice = valid_diagnostic_choice()
+    if option_count == 2:
+        choice["options"] = choice["options"][:2]
+    else:
+        choice["options"].extend(
+            [
+                {
+                    "option_id": "one-negative-six",
+                    "label": "1 和 -6",
+                    "feedback": "乘积是 -6，不符合常数项。",
+                },
+                {
+                    "option_id": "negative-one-six",
+                    "label": "-1 和 6",
+                    "feedback": "乘积是 -6，不符合常数项。",
+                },
+            ]
+        )
+    draft["moments"][0]["interaction"] = choice
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "选择互动需要 3 至 4 个选项。"
+
+
+@pytest.mark.parametrize("missing_feedback", ["missing", None])
+def test_choice_requires_feedback_for_every_diagnostic_option(
+    missing_feedback,
+):
+    draft = valid_draft()
+    choice = valid_diagnostic_choice()
+    if missing_feedback == "missing":
+        choice["options"][1].pop("feedback")
+    else:
+        choice["options"][1]["feedback"] = None
+    draft["moments"][0]["interaction"] = choice
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "选择互动缺少诊断反馈。"
+
+
+def test_transfer_item_requires_diagnostic_options():
+    draft = valid_draft()
+    draft["transfer_item"]["options"] = []
+    draft["transfer_item"]["correct_option_id"] = None
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移题必须提供 3 至 4 个诊断选项。"
+
+
+def test_transfer_item_rejects_a_second_equivalent_option():
+    draft = valid_draft()
+    draft["transfer_item"]["options"][1]["canonical_answer"] = (
+        "x=3 或 x=4"
     )
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移选项未通过数学验证。"
+
+
+def test_transfer_item_rejects_unparseable_canonical_answer():
+    draft = valid_draft()
+    draft["transfer_item"]["options"][1]["canonical_answer"] = "答案是三"
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移选项未通过数学验证。"
+
+
+def test_transfer_item_requires_the_equivalent_option_to_be_correct():
+    draft = valid_draft()
+    draft["transfer_item"]["correct_option_id"] = "only-three"
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移选项未通过数学验证。"
+
+
+def test_accepts_valid_method_first_diagnostic_choice_draft():
+    draft = valid_draft()
+    draft["moments"][0]["interaction"] = valid_diagnostic_choice()
     client = FakeClient([draft, approved_review()])
     service = LessonGenerationService(client, MathEngine())
 
@@ -820,13 +979,20 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "直接输出两个方程分支" in DIRECTOR_SYSTEM
     assert "参考解析" in DIRECTOR_SYSTEM
     assert "Reference Material Auditor" in DIRECTOR_SYSTEM
-    assert "expression" in DIRECTOR_SYSTEM
-    assert "不得包含等号" in DIRECTOR_SYSTEM
-    assert "expected_answer" in DIRECTOR_SYSTEM
+    assert "方法介绍" in DIRECTOR_SYSTEM
+    assert "配方法" in DIRECTOR_SYSTEM
+    assert "选择或点选" in DIRECTOR_SYSTEM
+    assert "LaTeX" in DIRECTOR_SYSTEM
+    assert "3 至 4" in DIRECTOR_SYSTEM
+    assert "canonical_answer" in DIRECTOR_SYSTEM
     assert "近迁移" in DIRECTOR_SYSTEM
     assert "整节课" in REVIEWER_SYSTEM
     assert "参考解析审阅" in REVIEWER_SYSTEM
     assert "无信息增益" in REVIEWER_SYSTEM
     assert "整式圈注" in REVIEWER_SYSTEM
+    assert "方法介绍" in REVIEWER_SYSTEM
+    assert "选择或点选" in REVIEWER_SYSTEM
     assert "完整 LessonDraft JSON" in REVISION_SYSTEM
     assert "参考解析审阅" in REVISION_SYSTEM
+    assert "方法介绍" in REVISION_SYSTEM
+    assert "选择或点选" in REVISION_SYSTEM

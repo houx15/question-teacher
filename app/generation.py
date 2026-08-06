@@ -271,6 +271,23 @@ class LessonGenerationService:
         problem: ProblemInput,
         draft: LessonDraft,
     ) -> None:
+        required_method_names = {
+            "factor": "因式分解法",
+            "quadratic_formula": "公式法",
+            "complete_the_square": "配方法",
+        }
+        expected_method_name = required_method_names.get(
+            problem.required_method
+        )
+        if (
+            expected_method_name is not None
+            and draft.method_introduction.method_name
+            != expected_method_name
+        ):
+            raise LessonQualityError(
+                "讲解的方法介绍与指定方法不一致。"
+            )
+
         for step in draft.math_steps:
             try:
                 self.math_engine.validate_step(step)
@@ -291,6 +308,39 @@ class LessonGenerationService:
                 "近迁移题未通过数学验证。"
             ) from None
 
+        transfer_options = draft.transfer_item.options
+        if len(transfer_options) not in {3, 4}:
+            raise LessonQualityError(
+                "近迁移题必须提供 3 至 4 个诊断选项。"
+            )
+        try:
+            equivalent_option_ids = []
+            for option in transfer_options:
+                if not self.math_engine.answers_equivalent(
+                    option.canonical_answer,
+                    option.canonical_answer,
+                ):
+                    raise MathValidationError(
+                        "Transfer option answer is not self-equivalent."
+                    )
+                if self.math_engine.answers_equivalent(
+                    option.canonical_answer,
+                    draft.transfer_item.expected_answer,
+                ):
+                    equivalent_option_ids.append(option.option_id)
+            if (
+                len(equivalent_option_ids) != 1
+                or draft.transfer_item.correct_option_id
+                != equivalent_option_ids[0]
+            ):
+                raise MathValidationError(
+                    "Transfer options must identify one correct answer."
+                )
+        except MathValidationError:
+            raise LessonQualityError(
+                "近迁移选项未通过数学验证。"
+            ) from None
+
         interactions = [
             moment.interaction
             for moment in draft.moments
@@ -300,23 +350,20 @@ class LessonGenerationService:
             raise LessonQualityError("讲解没有设置学生互动。")
 
         for interaction in interactions:
-            try:
-                if interaction.kind == "expression":
-                    self.math_engine.parse_expression(
-                        interaction.expected_answer
-                    )
-                elif interaction.kind == "transfer":
-                    if not self.math_engine.answers_equivalent(
-                        interaction.expected_answer,
-                        interaction.expected_answer,
-                    ):
-                        raise MathValidationError(
-                            "Transfer answer is not self-equivalent."
-                        )
-            except MathValidationError:
+            if interaction.kind in {"expression", "transfer"}:
                 raise LessonQualityError(
-                    "讲解中的互动答案未通过数学验证。"
-                ) from None
+                    "新讲解中的数学互动必须使用选择或点选。"
+                )
+            if interaction.kind == "choice":
+                if len(interaction.options) not in {3, 4}:
+                    raise LessonQualityError(
+                        "选择互动需要 3 至 4 个选项。"
+                    )
+                if any(
+                    option.feedback is None
+                    for option in interaction.options
+                ):
+                    raise LessonQualityError("选择互动缺少诊断反馈。")
 
         required_operations = {
             "factor": "factor",
