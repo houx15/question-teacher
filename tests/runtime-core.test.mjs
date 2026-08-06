@@ -128,6 +128,63 @@ test("board reducer executes annotations comparisons pause and clear", () => {
 });
 
 
+test("single board object ignores whole-object enclosure", () => {
+  const initial = new Map([
+    ["equation", {
+      kind: "object",
+      target: "equation",
+      content: "x² - 6x = -5",
+      annotations: [],
+    }],
+  ]);
+
+  const circled = applyBoardAction(initial, {
+    type: "annotate",
+    target: "equation",
+    annotation: "circle",
+  });
+  const boxed = applyBoardAction(circled, {
+    type: "annotate",
+    target: "equation",
+    annotation: "box",
+  });
+
+  assert.deepEqual(boxed.get("equation").annotations, []);
+});
+
+
+test("multiple board objects retain enclosure for distinction", () => {
+  const initial = new Map([
+    [
+      "left",
+      {
+        kind: "object",
+        target: "left",
+        content: "x+1",
+        annotations: [],
+      },
+    ],
+    [
+      "right",
+      {
+        kind: "object",
+        target: "right",
+        content: "2",
+        annotations: [],
+      },
+    ],
+  ]);
+
+  const result = applyBoardAction(initial, {
+    type: "annotate",
+    target: "left",
+    annotation: "circle",
+  });
+
+  assert.equal(result.get("left").annotations[0].type, "circle");
+});
+
+
 test("temporary layer returns to the exact base-board snapshot", () => {
   const runtime = new LessonRuntime(beats);
   runtime.baseBoard.set("equation", {

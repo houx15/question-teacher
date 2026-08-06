@@ -51,6 +51,13 @@ function boardObject(board, target) {
 }
 
 
+function visibleObjectCount(board) {
+  return [...board.values()].filter((value) => (
+    value?.kind === "object" && value.masked !== true
+  )).length;
+}
+
+
 export function applyBoardAction(currentBoard, action) {
   const board = cloneBoard(currentBoard);
   if (!action || typeof action.type !== "string") return board;
@@ -99,13 +106,19 @@ export function applyBoardAction(currentBoard, action) {
       break;
     }
     case "annotate": {
+      const annotation = action.annotation || "highlight";
+      const isUselessEnclosure = (
+        (annotation === "circle" || annotation === "box")
+        && visibleObjectCount(board) <= 1
+      );
+      if (isUselessEnclosure) break;
       const current = boardObject(board, target);
       board.set(target, {
         ...current,
         annotations: [
           ...(current.annotations || []),
           {
-            type: action.annotation || "highlight",
+            type: annotation,
             content: action.content || "",
             relationTarget: action.relation_target || null,
           },
