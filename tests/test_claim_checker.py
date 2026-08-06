@@ -32,18 +32,32 @@ def check_payload(
 
 
 def test_substitution_with_parameters():
-    result = ClaimChecker().check(
-        check_payload(
-            kind="substitution",
-            expression="x^2-2*m*x+2*n",
-            expected="4*n^2-4*m*n+2*n",
-            substitutions={"x": "2*n"},
-        )
+    check = check_payload(
+        kind="substitution",
+        expression="x^2-2*m*x+2*n",
+        expected="4*n^2-4*m*n+2*n",
+        substitutions={"x": "2*n"},
     )
+    result = ClaimChecker().check(check)
 
     assert result.status == ClaimStatus.PASSED
     assert result.check_id == "check"
     assert result.conclusion_linked is True
+    assert result.request_fingerprint == (
+        ClaimChecker.request_fingerprint(check)
+    )
+    assert len(result.request_fingerprint) == 64
+
+
+def test_request_fingerprint_binds_all_canonical_request_fields():
+    checker = ClaimChecker()
+    first = check_payload(expression="x", expected="x")
+    second = check_payload(expression="m", expected="m")
+
+    assert first.check_id == second.check_id
+    assert checker.check(first).request_fingerprint != (
+        checker.check(second).request_fingerprint
+    )
 
 
 def test_false_substitution_fails():

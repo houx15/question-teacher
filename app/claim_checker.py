@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -40,6 +42,7 @@ class ClaimCheckResult:
     status: ClaimStatus
     conclusion_linked: bool
     reason_code: str
+    request_fingerprint: str
 
 
 class _UnsupportedClaim(ValueError):
@@ -84,6 +87,18 @@ class ClaimChecker:
         "Pow": Pow,
         "Rational": Rational,
     }
+
+    @staticmethod
+    def request_fingerprint(request: GroundingCheckRequest) -> str:
+        canonical_json = json.dumps(
+            request.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(
+            canonical_json.encode("utf-8")
+        ).hexdigest()
 
     def check(self, request: GroundingCheckRequest) -> ClaimCheckResult:
         symbols: Dict[str, Symbol] = {}
@@ -373,4 +388,7 @@ class ClaimChecker:
             status=status,
             conclusion_linked=request.conclusion_linked,
             reason_code=reason_code,
+            request_fingerprint=ClaimChecker.request_fingerprint(
+                request
+            ),
         )

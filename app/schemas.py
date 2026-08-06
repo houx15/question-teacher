@@ -378,6 +378,15 @@ class ReferenceGroundingBrief(SchemaModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def validate_check_request_ids(self) -> "ReferenceGroundingBrief":
+        check_ids = [
+            request.check_id for request in self.check_requests
+        ]
+        if len(check_ids) != len(set(check_ids)):
+            raise ValueError("check request ids must be unique")
+        return self
+
 
 class BoardAction(SchemaModel):
     type: Literal[

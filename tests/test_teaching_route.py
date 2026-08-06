@@ -1,14 +1,16 @@
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
-from app.claim_checker import ClaimCheckResult, ClaimStatus
+from app.claim_checker import ClaimChecker, ClaimStatus
 from app.generation import LessonQualityError, _VerifiedMathRoute
 from app.schemas import MathRouteDraft, ReferenceGroundingBrief
 from app.teaching_route import (
     TeachingRouteConsistency,
     TeachingRouteContradiction,
+    TeachingRouteEvidenceError,
     TeachingRouteMode,
     freeze_grounded_route,
     freeze_symbolic_route,
@@ -18,7 +20,9 @@ from app.teaching_route import (
 REFERENCE_ANSWER = r"\(m-n=\frac12\)"
 
 
-def grounding_brief() -> ReferenceGroundingBrief:
+def grounding_brief(
+    check_requests=None,
+) -> ReferenceGroundingBrief:
     return ReferenceGroundingBrief.model_validate(
         {
             "task_summary": "把已知根代回方程，求m-n",
@@ -43,25 +47,59 @@ def grounding_brief() -> ReferenceGroundingBrief:
                     "statement_after": r"\(2n-2m+1=0\)",
                 },
             ],
-            "check_requests": [],
+            "check_requests": check_requests or [],
             "audit_notes": [],
         },
         context={"reference_answer": REFERENCE_ANSWER},
     )
 
 
-def check_result(
+def checked_brief(
     status: ClaimStatus,
     *,
     conclusion_linked: bool = True,
     check_id: str = "back-check",
-) -> ClaimCheckResult:
-    return ClaimCheckResult(
-        check_id=check_id,
-        status=status,
-        conclusion_linked=conclusion_linked,
-        reason_code="test-result",
+) -> tuple:
+    expressions = {
+        ClaimStatus.PASSED: ("2*n-2*m+1", "2*n-2*m+1"),
+        ClaimStatus.FAILED: ("1", "2"),
+        ClaimStatus.UNSUPPORTED: ("n+1", "1"),
+    }
+    expression, expected = expressions[status]
+    request = {
+        "check_id": check_id,
+        "kind": (
+            "nonzero_division"
+            if status == ClaimStatus.UNSUPPORTED
+            else "equivalence"
+        ),
+        "expression": expression,
+        "expected": expected,
+        "substitutions": {},
+        "nonzero_symbols": (
+            ["n"] if status == ClaimStatus.UNSUPPORTED else []
+        ),
+        "conclusion_linked": conclusion_linked,
+    }
+    brief = grounding_brief([request])
+    return brief, ClaimChecker().check(brief.check_requests[0])
+
+
+def passed_brief_with_expression(expression: str) -> tuple:
+    brief = grounding_brief(
+        [
+            {
+                "check_id": "same-check-id",
+                "kind": "equivalence",
+                "expression": expression,
+                "expected": expression,
+                "substitutions": {},
+                "nonzero_symbols": [],
+                "conclusion_linked": True,
+            }
+        ]
     )
+    return brief, ClaimChecker().check(brief.check_requests[0])
 
 
 def symbolic_route() -> _VerifiedMathRoute:
@@ -86,22 +124,28 @@ def symbolic_route() -> _VerifiedMathRoute:
 
 
 def test_grounded_route_preserves_assumptions_and_conclusion():
-    route = freeze_grounded_route(
-        grounding_brief(),
-        [check_result(ClaimStatus.PASSED)],
-    )
+    brief, result = checked_brief(ClaimStatus.PASSED)
+    route = freeze_grounded_route(brief, [result])
+    payload = route.to_prompt_payload()
 
     assert route.mode == TeachingRouteMode.MODEL_CROSS_CHECKED
     assert route.consistency == TeachingRouteConsistency.CONSISTENT
     assert route.method_name == "代入法"
     assert route.final_conclusion == REFERENCE_ANSWER
-    assert route.to_prompt_payload()["assumptions"] == [
+    assert payload["assumptions"] == [
         r"\(n\ne0\)",
         r"\(x=2n\)是原方程的根",
     ]
-    assert route.to_prompt_payload()["steps"][0]["evidence_status"] == (
-        "cross_checked"
-    )
+    assert payload["steps"][0]["evidence_status"] == "reference_only"
+    assert payload["check_evidence"] == [
+        {
+            "check_id": "back-check",
+            "conclusion_linked": True,
+            "reason_code": "equivalent",
+            "request_fingerprint": result.request_fingerprint,
+            "status": "passed",
+        }
+    ]
     assert route.fingerprint
 
 
@@ -116,28 +160,22 @@ def test_unchecked_grounded_route_is_reference_grounded():
 
 
 def test_passed_unlinked_check_does_not_upgrade_grounded_mode():
-    route = freeze_grounded_route(
-        grounding_brief(),
-        [
-            check_result(
-                ClaimStatus.PASSED,
-                conclusion_linked=False,
-            )
-        ],
+    brief, result = checked_brief(
+        ClaimStatus.PASSED,
+        conclusion_linked=False,
     )
+    route = freeze_grounded_route(brief, [result])
 
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
 
 
 def test_failed_conclusion_linked_check_is_contradiction():
+    brief, result = checked_brief(ClaimStatus.FAILED)
     with pytest.raises(
         TeachingRouteContradiction,
         match="参考材料中的推导存在明确矛盾",
     ):
-        freeze_grounded_route(
-            grounding_brief(),
-            [check_result(ClaimStatus.FAILED)],
-        )
+        freeze_grounded_route(brief, [result])
 
 
 @pytest.mark.parametrize(
@@ -151,18 +189,69 @@ def test_nonblocking_check_problem_creates_warning(
     status,
     conclusion_linked,
 ):
-    route = freeze_grounded_route(
-        grounding_brief(),
-        [
-            check_result(
-                status,
-                conclusion_linked=conclusion_linked,
-            )
-        ],
+    brief, result = checked_brief(
+        status,
+        conclusion_linked=conclusion_linked,
     )
+    route = freeze_grounded_route(brief, [result])
 
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
     assert route.consistency == TeachingRouteConsistency.WARNING
+
+
+@pytest.mark.parametrize(
+    "results_factory",
+    [
+        lambda result: [],
+        lambda result: [result, result],
+        lambda result: [replace(result, check_id="unknown-check")],
+    ],
+    ids=["missing", "duplicate", "unknown"],
+)
+def test_grounded_route_rejects_non_bijective_check_results(
+    results_factory,
+):
+    brief, result = checked_brief(ClaimStatus.PASSED)
+
+    with pytest.raises(TeachingRouteEvidenceError):
+        freeze_grounded_route(brief, results_factory(result))
+
+
+def test_grounded_route_rejects_result_supplied_linkage():
+    brief, result = checked_brief(ClaimStatus.PASSED)
+    forged = replace(result, conclusion_linked=False)
+
+    with pytest.raises(
+        TeachingRouteEvidenceError,
+        match="linkage",
+    ):
+        freeze_grounded_route(brief, [forged])
+
+
+def test_grounded_route_rejects_result_reused_for_same_id_in_other_brief():
+    first_brief, first_result = passed_brief_with_expression("x")
+    second_brief, _ = passed_brief_with_expression("m")
+
+    with pytest.raises(
+        TeachingRouteEvidenceError,
+        match="fingerprint",
+    ):
+        freeze_grounded_route(second_brief, [first_result])
+
+
+def test_check_evidence_changes_route_fingerprint():
+    brief, result = checked_brief(ClaimStatus.PASSED)
+
+    original = freeze_grounded_route(brief, [result])
+    changed = freeze_grounded_route(
+        brief,
+        [replace(result, reason_code="different-reason")],
+    )
+
+    assert original.fingerprint != changed.fingerprint
+    assert json.loads(original.canonical_json)["check_evidence"] != (
+        json.loads(changed.canonical_json)["check_evidence"]
+    )
 
 
 def test_thawed_route_cannot_mutate_frozen_fingerprint():
@@ -170,10 +259,12 @@ def test_thawed_route_cannot_mutate_frozen_fingerprint():
     thawed = route.to_prompt_payload()
 
     thawed["steps"][0]["statement_after"] = "mutated"
+    thawed["check_evidence"].append({"status": "mutated"})
 
     assert route.to_prompt_payload()["steps"][0]["statement_after"] != (
         "mutated"
     )
+    assert route.to_prompt_payload()["check_evidence"] == []
     assert route.fingerprint == hashlib.sha256(
         route.canonical_json.encode("utf-8")
     ).hexdigest()
@@ -201,6 +292,7 @@ def test_symbolic_route_adapts_verified_math_route():
     assert route.final_conclusion == "(x-2)(x-3)=0"
     assert payload["assumptions"] == []
     assert payload["steps"][0]["evidence_status"] == "checked"
+    assert payload["check_evidence"] == []
     assert route.symbolic_math_route_json == verified.canonical_json
 
 

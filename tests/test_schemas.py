@@ -102,6 +102,23 @@ def test_reference_grounding_brief_accepts_all_and_only_local_check_kinds():
         )
 
 
+def test_reference_grounding_brief_requires_unique_check_request_ids():
+    payload = grounding_brief_payload()
+    payload["check_requests"] = [
+        payload["check_requests"][0],
+        {
+            **payload["check_requests"][0],
+            "kind": "back_substitution",
+        },
+    ]
+
+    with pytest.raises(ValidationError, match="check request ids"):
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
+
+
 @pytest.mark.parametrize(
     ("collection", "limit"),
     [
