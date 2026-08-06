@@ -12,6 +12,7 @@ from app.schemas import (
     RuntimeBeat,
     RuntimeLesson,
     TransferItem,
+    TransferOption,
 )
 from app.tts_client import OpenAISpeechClient, SpeechGenerationError
 
@@ -77,6 +78,27 @@ def runtime_lesson(
             problem_text="解方程 x + 2 = 0",
             expected_answer="x = -2",
             method_signal="等式两边同时减二。",
+            options=[
+                TransferOption(
+                    option_id="negative-two",
+                    label="x = -2",
+                    canonical_answer="x = -2",
+                    feedback="对，等式两边同时减二得到 x = -2。",
+                ),
+                TransferOption(
+                    option_id="positive-two",
+                    label="x = 2",
+                    canonical_answer="x = 2",
+                    feedback="减二后符号应为负。",
+                ),
+                TransferOption(
+                    option_id="zero",
+                    label="x = 0",
+                    canonical_answer="x = 0",
+                    feedback="代回原方程会得到 2，不成立。",
+                ),
+            ],
+            correct_option_id="negative-two",
         ),
         validation_report={"math_valid": True},
     )

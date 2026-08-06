@@ -9,13 +9,133 @@ from app.schemas import (
     LessonDraft,
     LessonMoment,
     MathStep,
+    MethodIntroduction,
     ProblemInput,
     ReferenceMaterialAudit,
     ReviewDecision,
     RuntimeBeat,
     RuntimeLesson,
     TransferItem,
+    TransferOption,
 )
+
+
+def valid_transfer_options():
+    return [
+        TransferOption(
+            option_id="both-roots",
+            label="x = 3 或 x = 4",
+            canonical_answer="x = 3 或 x = 4",
+            feedback="两个根都能使原方程成立。",
+        ),
+        TransferOption(
+            option_id="only-three",
+            label="x = 3",
+            canonical_answer="x = 3",
+            feedback="还遗漏了另一个根。",
+        ),
+        TransferOption(
+            option_id="only-four",
+            label="x = 4",
+            canonical_answer="x = 4",
+            feedback="还遗漏了另一个根。",
+        ),
+    ]
+
+
+def test_method_introduction_accepts_student_facing_complete_square_contract():
+    introduction = MethodIntroduction(
+        method_name="配方法",
+        student_definition="把二次式整理成完全平方，再开平方求根。",
+        target_form=r"\((x-a)^2=b\)",
+        why_it_helps="完全平方能把二次方程转成直接可开平方的形式。",
+    )
+
+    assert introduction.method_name == "配方法"
+    assert introduction.target_form == r"\((x-a)^2=b\)"
+
+
+def test_interaction_option_keeps_legacy_defaults_and_accepts_diagnostic_feedback():
+    legacy_option = InteractionOption(option_id="factor", label="因式分解")
+    diagnostic_option = InteractionOption(
+        option_id="square",
+        label="配方法",
+        feedback="先观察这个式子能否直接分解。",
+        feedback_audio_url="https://audio.example/diagnostic.mp3",
+    )
+
+    assert legacy_option.feedback is None
+    assert legacy_option.feedback_audio_url is None
+    assert diagnostic_option.feedback == "先观察这个式子能否直接分解。"
+    assert diagnostic_option.feedback_audio_url == "https://audio.example/diagnostic.mp3"
+
+
+def test_transfer_item_accepts_three_diagnostic_options():
+    item = TransferItem(
+        problem_text="用因式分解法解方程：x^2-7x+12=0",
+        expected_answer="x=3 或 x=4",
+        method_signal="寻找乘积为 12、和为 -7 的两个数。",
+        options=valid_transfer_options(),
+        correct_option_id="both-roots",
+    )
+
+    assert item.correct_option_id == "both-roots"
+    assert len(item.options) == 3
+
+
+def test_transfer_item_keeps_legacy_empty_options_compatible():
+    item = TransferItem(
+        problem_text="解方程 x + 2 = 0",
+        expected_answer="x = -2",
+        method_signal="等式两边同时减二。",
+    )
+
+    assert item.options == []
+    assert item.correct_option_id is None
+
+
+def test_transfer_item_rejects_invalid_diagnostic_option_contract():
+    def invalid_item(options, correct_option_id):
+        return TransferItem(
+            problem_text="用因式分解法解方程：x^2-7x+12=0",
+            expected_answer="x=3 或 x=4",
+            method_signal="寻找乘积为 12、和为 -7 的两个数。",
+            options=options,
+            correct_option_id=correct_option_id,
+        )
+
+    duplicate_ids = valid_transfer_options()
+    duplicate_ids[1] = TransferOption(
+        option_id="both-roots",
+        label="x = 3",
+        canonical_answer="x = 3",
+        feedback="还遗漏了另一个根。",
+    )
+    duplicate_labels = valid_transfer_options()
+    duplicate_labels[1] = TransferOption(
+        option_id="only-three",
+        label="x = 3 或 x = 4",
+        canonical_answer="x = 3",
+        feedback="还遗漏了另一个根。",
+    )
+
+    for options, correct_option_id in [
+        (duplicate_ids, "both-roots"),
+        (valid_transfer_options()[:2], "both-roots"),
+        (valid_transfer_options(), None),
+        (valid_transfer_options(), "unknown"),
+        (duplicate_labels, "both-roots"),
+    ]:
+        with pytest.raises(ValidationError):
+            invalid_item(options, correct_option_id)
+
+    with pytest.raises(ValidationError):
+        TransferItem(
+            problem_text="用因式分解法解方程：x^2-7x+12=0",
+            expected_answer="x=3 或 x=4",
+            method_signal="寻找乘积为 12、和为 -7 的两个数。",
+            options=valid_transfer_options(),
+        )
 
 
 def test_problem_input_accepts_valid_example_and_defaults_to_standard():
@@ -415,6 +535,12 @@ def test_lesson_draft_rejects_empty_execution_collections(empty_field):
         "learning_goal": "能用等式性质完成移项。",
         "opening": "观察未知数所在的位置。",
         "method_rationale": "通过等式两边同减一来隔离未知数。",
+        "method_introduction": {
+            "method_name": "等式性质",
+            "student_definition": "等式两边做相同运算，等式仍然成立。",
+            "target_form": "x = a",
+            "why_it_helps": "可以逐步把未知数单独留在等号一边。",
+        },
         "math_steps": [
             {
                 "purpose": "移项",
@@ -843,6 +969,12 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
         learning_goal="能根据系数找到因式并求根。",
         opening="观察常数项和一次项系数。",
         method_rationale="整式容易分解，因式分解法步骤最短。",
+        method_introduction=MethodIntroduction(
+            method_name="因式分解法",
+            student_definition="把二次式写成两个一次因式的乘积，再分别令每个因式为零。",
+            target_form="(x-a)(x-b)=0",
+            why_it_helps="零乘积性质把二次方程拆成两个一次方程。",
+        ),
         math_steps=[math_step],
         moments=[moment],
         summary="先分解，再令每个因式等于零。",

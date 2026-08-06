@@ -48,6 +48,12 @@ def valid_draft():
         "learning_goal": "理解因式分解如何把二次方程变成两个一次方程。",
         "opening": "先观察原式：哪两个数相乘是 6，相加是 -5？",
         "method_rationale": "首项系数为 1，常数 6 可拆成两个整数的乘积。",
+        "method_introduction": {
+            "method_name": "因式分解法",
+            "student_definition": "把二次式写成两个一次因式的乘积，再分别令每个因式为零。",
+            "target_form": "(x-a)(x-b)=0",
+            "why_it_helps": "零乘积性质把一个二次方程拆成两个更容易解的一次方程。",
+        },
         "math_steps": [
             {
                 "purpose": "因式分解",
@@ -92,6 +98,27 @@ def valid_draft():
             "problem_text": "用因式分解法解方程：x^2-7x+12=0",
             "expected_answer": "x=3 或 x=4",
             "method_signal": "寻找乘积为 12、和为 -7 的两个数。",
+            "options": [
+                {
+                    "option_id": "both-roots",
+                    "label": "x=3 或 x=4",
+                    "canonical_answer": "x=3 或 x=4",
+                    "feedback": "两个根都能使原方程成立。",
+                },
+                {
+                    "option_id": "only-three",
+                    "label": "x=3",
+                    "canonical_answer": "x=3",
+                    "feedback": "还遗漏了另一个根。",
+                },
+                {
+                    "option_id": "only-four",
+                    "label": "x=4",
+                    "canonical_answer": "x=4",
+                    "feedback": "还遗漏了另一个根。",
+                },
+            ],
+            "correct_option_id": "both-roots",
         },
     }
 

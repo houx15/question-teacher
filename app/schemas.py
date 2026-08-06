@@ -160,6 +160,8 @@ class BoardAction(SchemaModel):
 class InteractionOption(SchemaModel):
     option_id: NonEmptyString
     label: NonEmptyString
+    feedback: Optional[NonEmptyString] = None
+    feedback_audio_url: Optional[NonEmptyString] = None
 
 
 class Interaction(SchemaModel):
@@ -218,10 +220,52 @@ class LessonMoment(SchemaModel):
     interaction: Optional[Interaction] = None
 
 
+class TransferOption(SchemaModel):
+    option_id: NonEmptyString
+    label: NonEmptyString
+    canonical_answer: NonEmptyString
+    feedback: NonEmptyString
+
+
 class TransferItem(SchemaModel):
     problem_text: ProblemText
     expected_answer: NonEmptyString
     method_signal: NonEmptyString
+    options: List[TransferOption] = Field(default_factory=list)
+    correct_option_id: Optional[NonEmptyString] = None
+
+    @model_validator(mode="after")
+    def validate_diagnostic_options(self) -> "TransferItem":
+        if not self.options:
+            if self.correct_option_id is not None:
+                raise ValueError(
+                    "correct_option_id requires diagnostic options"
+                )
+            return self
+
+        if len(self.options) not in {3, 4}:
+            raise ValueError("diagnostic options must contain 3 or 4 items")
+
+        option_ids = [option.option_id for option in self.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("transfer option ids must be unique")
+
+        labels = [option.label for option in self.options]
+        if len(labels) != len(set(labels)):
+            raise ValueError("transfer option labels must be unique")
+
+        if self.correct_option_id not in option_ids:
+            raise ValueError(
+                "correct_option_id must match a transfer option_id"
+            )
+        return self
+
+
+class MethodIntroduction(SchemaModel):
+    method_name: NonEmptyString
+    student_definition: NonEmptyString
+    target_form: NonEmptyString
+    why_it_helps: NonEmptyString
 
 
 class LessonDraft(SchemaModel):
@@ -229,6 +273,7 @@ class LessonDraft(SchemaModel):
     learning_goal: NonEmptyString
     opening: NonEmptyString
     method_rationale: NonEmptyString
+    method_introduction: MethodIntroduction
     math_steps: List[MathStep] = Field(min_length=1)
     moments: List[LessonMoment] = Field(min_length=1)
     summary: NonEmptyString
