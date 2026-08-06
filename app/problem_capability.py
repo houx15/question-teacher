@@ -23,7 +23,6 @@ _DIRECT_EQUATION_COMMAND = re.compile(
 _EXPLICIT_MATH_COMMAND = re.compile(
     r"(?:解方程|求解|计算|化简|求值|因式分解)\s*$"
 )
-_FUNCTION_CALL_NOTATION = re.compile(r"\b[A-Za-z]+\s*\(")
 
 
 class ProblemIntakeStatus(str, Enum):
@@ -171,13 +170,7 @@ def _looks_like_direct_math_input(text: str) -> bool:
         prefix = text[:colon_index]
         suffix = text[colon_index + 1 :].strip()
         suffix_has_equality = "=" in suffix or "＝" in suffix
-        if suffix_has_equality and (
-            _EXPLICIT_MATH_COMMAND.search(prefix)
-            or (
-                _CJK_CHARACTER.search(suffix) is None
-                and _FUNCTION_CALL_NOTATION.search(suffix)
-            )
-        ):
+        if suffix_has_equality and _EXPLICIT_MATH_COMMAND.search(prefix):
             return True
         if (
             suffix_has_equality
