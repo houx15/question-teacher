@@ -125,6 +125,176 @@ warnings 指出的缺口或被阻断的原始表述。只返回完整 LessonDraf
 """.strip()
 
 
+_TRANSFER_METHOD_PROFILES = {
+    "factor": {
+        "required_method": "factor",
+        "equation_template": "x^2+b*x+c=0",
+        "coefficient_constraints": (
+            "Choose different small integer b and c so the discriminant is a "
+            "nonnegative perfect square and the equation factors over the "
+            "integers."
+        ),
+        "valid_example": {
+            "problem_text": "用因式分解法解方程：x^2-7*x+12=0",
+            "expected_answer": "x=3 或 x=4",
+            "correct_label": r"\(x=3\) 或 \(x=4\)",
+        },
+    },
+    "quadratic_formula": {
+        "required_method": "quadratic_formula",
+        "equation_template": "a*x^2+b*x+c=0",
+        "coefficient_constraints": (
+            "Choose small integer a, b, and c with a nonzero; keep the exact "
+            "real roots expressible with integers, fractions, or sqrt(...)."
+        ),
+        "valid_example": {
+            "problem_text": "用公式法解方程：x^2-4*x-1=0",
+            "expected_answer": "x=2-sqrt(5) 或 x=2+sqrt(5)",
+            "correct_label": (
+                r"\(x=2 - \sqrt{5}\) 或 \(x=2 + \sqrt{5}\)"
+            ),
+        },
+    },
+    "complete_the_square": {
+        "required_method": "complete_the_square",
+        "equation_template": "x^2+b*x+c=0",
+        "coefficient_constraints": (
+            "Choose different small integer b and c, with b nonzero and even, "
+            "so the discriminant is a positive perfect square and completing "
+            "the square produces two distinct integer roots."
+        ),
+        "valid_example": {
+            "problem_text": "用配方法解方程：x^2-8*x+12=0",
+            "expected_answer": "x=2 或 x=6",
+            "correct_label": r"\(x=2\) 或 \(x=6\)",
+        },
+    },
+}
+
+
+def _transfer_item_contract(
+    required_method: Optional[str],
+) -> dict:
+    method_profile = _TRANSFER_METHOD_PROFILES.get(
+        required_method,
+        _TRANSFER_METHOD_PROFILES["quadratic_formula"],
+    )
+    return {
+        "relationship": {
+            "same_structure": (
+                "Use the original required_method and the same core algebraic "
+                "structure."
+            ),
+            "different_surface": (
+                "Change coefficients, constants, and the solution set; never "
+                "copy the original equation."
+            ),
+        },
+        "problem_text": {
+            "shape": (
+                "Optional Chinese instruction followed by the final colon and "
+                "exactly one plain-text equation."
+            ),
+            "equation_segment": {
+                "count": 1,
+                "variable": "x",
+                "allowed_identifiers": ["x", "sqrt"],
+                "allowed_ascii_characters": (
+                    "0-9 A-Z a-z + - * / ^ ( ) . = spaces"
+                ),
+                "degree": "1 or 2; use degree 2 for this quadratic lesson",
+            },
+            "forbidden": [
+                "LaTeX commands",
+                "±",
+                "multiple equations",
+                "x in a denominator",
+                "unknowns other than x",
+                "powers of x above 2",
+            ],
+        },
+        "expected_answer": {
+            "accepted_forms": [
+                "x=2",
+                "x=2 或 x=6",
+                "x=-sqrt(2) 或 x=sqrt(2)",
+                "无实数解",
+            ],
+            "rules": [
+                "Solve the exact problem_text equation independently first.",
+                "Write each real root as x=constant.",
+                "Join multiple branches only with 或 or or.",
+                "Use sqrt(...) for radicals; never use ± or LaTeX.",
+                "The answer must equal the complete real solution set.",
+            ],
+        },
+        "method_profile": method_profile,
+        "example_policy": (
+            "The example demonstrates syntax only. Create new coefficients and "
+            "a new solution set, and do not reuse it when it matches the "
+            "original problem."
+        ),
+        "options": {
+            "count": "3 or 4",
+            "canonical_answer": (
+                "Every option must use one of the accepted answer forms."
+            ),
+            "equivalent_to_expected_answer": (
+                "exactly one option; its option_id must equal correct_option_id"
+            ),
+            "label": (
+                "Use the exact deterministic MathEngine display label derived "
+                "from canonical_answer."
+            ),
+        },
+        "verification_order": [
+            "Choose a supported equation with the required method profile.",
+            "Solve that exact equation.",
+            "Write expected_answer from the complete real solution set.",
+            "Derive the correct option from expected_answer.",
+            "Create parseable distractors and deterministic labels.",
+        ],
+    }
+
+
+def _director_retry_contract(
+    previous_validation_error: Optional[str],
+) -> Optional[dict]:
+    if previous_validation_error is None:
+        return None
+    if previous_validation_error in {
+        "近迁移题未通过数学验证。",
+        "近迁移题必须提供 3 至 4 个诊断选项。",
+        "近迁移选项未通过数学验证。",
+        "近迁移选项显示格式无效。",
+    }:
+        return {
+            "failed_gate": "transfer_item_math_validation",
+            "required_action": [
+                "Discard the previous transfer_item.",
+                "Create a different supported equation using method_profile.",
+                "Solve that exact equation before writing expected_answer.",
+                "Rebuild 3 or 4 options with exactly one equivalent answer.",
+                (
+                    "Return a complete new LessonDraft; do not weaken any "
+                    "other field."
+                ),
+            ],
+            "forbidden": [
+                "Do not reuse the failed equation-answer pair.",
+                "Do not alter the original problem or reference answer.",
+                "Do not guess, silently rewrite, or copy an unchecked answer.",
+            ],
+        }
+    return {
+        "failed_gate": "lesson_draft_quality_validation",
+        "required_action": (
+            "Regenerate a complete LessonDraft and correct the reported gate "
+            "without weakening any other contract."
+        ),
+    }
+
+
 def reference_audit_prompt(
     problem: ProblemInput,
     solution_strings: List[str],
@@ -183,6 +353,12 @@ def director_prompt(
                         "quadratic_formula",
                     ],
                 },
+                "transfer_item": _transfer_item_contract(
+                    problem.required_method
+                ),
+                "retry": _director_retry_contract(
+                    previous_validation_error
+                ),
             },
         },
         ensure_ascii=False,

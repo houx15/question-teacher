@@ -15,6 +15,7 @@ from app.prompts import (
     REFERENCE_AUDITOR_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
+    director_prompt,
     reference_audit_prompt,
 )
 from app.schemas import ProblemInput, ReferenceMaterialAudit
@@ -739,6 +740,78 @@ def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
     )
 
 
+def test_director_prompt_gives_executable_transfer_contract_for_completing_square():
+    payload = json.loads(
+        director_prompt(
+            problem("complete_the_square"),
+            ["2", "3"],
+        )
+    )
+
+    contract = payload["output_contract"]["transfer_item"]
+    assert contract["relationship"] == {
+        "same_structure": (
+            "Use the original required_method and the same core algebraic "
+            "structure."
+        ),
+        "different_surface": (
+            "Change coefficients, constants, and the solution set; never copy "
+            "the original equation."
+        ),
+    }
+    assert contract["problem_text"]["equation_segment"] == {
+        "count": 1,
+        "variable": "x",
+        "allowed_identifiers": ["x", "sqrt"],
+        "allowed_ascii_characters": "0-9 A-Z a-z + - * / ^ ( ) . = spaces",
+        "degree": "1 or 2; use degree 2 for this quadratic lesson",
+    }
+    assert contract["expected_answer"]["accepted_forms"] == [
+        "x=2",
+        "x=2 或 x=6",
+        "x=-sqrt(2) 或 x=sqrt(2)",
+        "无实数解",
+    ]
+    method_profile = contract["method_profile"]
+    assert method_profile["required_method"] == "complete_the_square"
+    assert method_profile["equation_template"] == "x^2+b*x+c=0"
+    assert "perfect square" in method_profile["coefficient_constraints"]
+    assert method_profile["valid_example"] == {
+        "problem_text": "用配方法解方程：x^2-8*x+12=0",
+        "expected_answer": "x=2 或 x=6",
+        "correct_label": r"\(x=2\) 或 \(x=6\)",
+    }
+    assert contract["options"]["count"] == "3 or 4"
+    assert contract["options"]["equivalent_to_expected_answer"] == (
+        "exactly one option; its option_id must equal correct_option_id"
+    )
+
+
+def test_transfer_math_retry_prompt_requires_recomputing_equation_answer_pair():
+    payload = json.loads(
+        director_prompt(
+            problem("complete_the_square"),
+            ["2", "3"],
+            previous_validation_error="近迁移题未通过数学验证。",
+        )
+    )
+
+    retry = payload["output_contract"]["retry"]
+    assert retry["failed_gate"] == "transfer_item_math_validation"
+    assert retry["required_action"] == [
+        "Discard the previous transfer_item.",
+        "Create a different supported equation using method_profile.",
+        "Solve that exact equation before writing expected_answer.",
+        "Rebuild 3 or 4 options with exactly one equivalent answer.",
+        "Return a complete new LessonDraft; do not weaken any other field.",
+    ]
+    assert retry["forbidden"] == [
+        "Do not reuse the failed equation-answer pair.",
+        "Do not alter the original problem or reference answer.",
+        "Do not guess, silently rewrite, or copy an unchecked answer.",
+    ]
+
+
 def test_two_invalid_initial_drafts_still_fail_quality_gate():
     invalid_draft = valid_draft()
     invalid_draft["transfer_item"] = {
@@ -754,6 +827,24 @@ def test_two_invalid_initial_drafts_still_fail_quality_gate():
     with pytest.raises(LessonQualityError, match="近迁移题"):
         asyncio.run(service.generate(problem()))
 
+    assert len(client.calls) == 2
+
+
+def test_unsupported_transfer_equation_still_fails_quality_gate():
+    invalid_draft = valid_draft()
+    invalid_draft["transfer_item"]["problem_text"] = (
+        "用因式分解法解方程：x^3-6*x^2+11*x-6=0"
+    )
+    invalid_draft["transfer_item"]["expected_answer"] = (
+        "x=1 或 x=2 或 x=3"
+    )
+    client = FakeClient([invalid_draft, copy.deepcopy(invalid_draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移题未通过数学验证。"
     assert len(client.calls) == 2
 
 
