@@ -451,6 +451,40 @@ def test_invalid_director_schema_is_reported_without_model_payload():
     assert "private-model-output" not in str(exc_info.value)
 
 
+def test_transient_model_failure_is_retried_once():
+    client = FakeClient(
+        [
+            RuntimeError("temporary-provider-detail"),
+            valid_draft(),
+            approved_review(),
+        ]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+    assert len(client.calls) == 3
+    assert client.calls[0] == client.calls[1]
+
+
+def test_repeated_model_failure_uses_safe_error_after_one_retry():
+    client = FakeClient(
+        [
+            RuntimeError("private-provider-detail"),
+            RuntimeError("private-provider-detail"),
+        ]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "完整讲解生成失败。"
+    assert "private-provider-detail" not in str(exc_info.value)
+    assert len(client.calls) == 2
+
+
 def test_sync_stage_callback_receives_generation_stages_in_order():
     stages = []
     client = FakeClient([valid_draft(), approved_review()])
@@ -492,6 +526,9 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "只有一个" in DIRECTOR_SYSTEM
     assert "circle" in DIRECTOR_SYSTEM
     assert "局部语义对象" in DIRECTOR_SYSTEM
+    assert "(x-3)^2=4" in DIRECTOR_SYSTEM
+    assert "禁止使用 ±" in DIRECTOR_SYSTEM
+    assert "直接输出两个方程分支" in DIRECTOR_SYSTEM
     assert "整节课" in REVIEWER_SYSTEM
     assert "无信息增益" in REVIEWER_SYSTEM
     assert "整式圈注" in REVIEWER_SYSTEM

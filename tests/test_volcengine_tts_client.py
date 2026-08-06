@@ -105,6 +105,37 @@ def test_v3_client_decodes_split_concatenated_frames_and_builds_request():
     }
 
 
+def test_v3_client_ignores_sentence_metadata_frames_without_audio_data():
+    audio = base64.b64encode(b"complete-audio").decode()
+    payload = response_frames(
+        {"code": 0, "data": audio, "message": ""},
+        {
+            "code": 0,
+            "data": None,
+            "message": "",
+            "sentence": {"text": "测试语音。"},
+        },
+        {"code": 20000000, "data": None, "message": "OK"},
+    )
+
+    async def scenario():
+        client = client_class()(
+            volcengine_settings(),
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    stream=ChunkStream([payload]),
+                )
+            ),
+        )
+        try:
+            return await client.synthesize("测试语音。")
+        finally:
+            await client.close()
+
+    assert run(scenario()) == b"complete-audio"
+
+
 @pytest.mark.parametrize(
     ("speed_ratio", "speech_rate"),
     [(0.5, -50), (1.0, 0), (1.23, 23), (2.0, 100)],

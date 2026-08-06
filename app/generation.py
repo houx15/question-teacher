@@ -148,13 +148,15 @@ class LessonGenerationService:
         user_prompt: str,
         safe_error: str,
     ) -> Any:
-        try:
-            return await self.client.complete_json(
-                system_prompt,
-                user_prompt,
-            )
-        except Exception:
-            raise LessonQualityError(safe_error) from None
+        for _attempt in range(2):
+            try:
+                return await self.client.complete_json(
+                    system_prompt,
+                    user_prompt,
+                )
+            except Exception:
+                continue
+        raise LessonQualityError(safe_error) from None
 
     def _validate_draft(
         self,

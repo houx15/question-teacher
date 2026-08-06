@@ -18,17 +18,24 @@ DIRECTOR_SYSTEM = """
 6. add_both_sides、subtract_both_sides、multiply_both_sides、
    divide_both_sides、complete_the_square 的 operands 必须 exactly one operand；
    其他 operation 的 operands 必须为空；
-7. BoardAction.type 只能使用 write、transform、focus、annotate、compare、mask、
+7. math_steps 必须使用执行器可验证的紧凑轨迹：
+   - complete_the_square 一步完成两边加同一正数、构造平方并化简，例如
+     x^2-6x=-5，operands=["9"]，state_after=["(x-3)^2=4"]；
+   - take_square_root_both_sides 或 split_plus_minus 必须直接输出两个方程分支，
+     例如 ["x-3=2","x-3=-2"]，禁止使用 ± 字符；
+   - 两个方程分支已经确定解集时可以结束 math_steps，不要再用 simplify 或
+     combine_like_terms 同时处理两个方程；
+8. BoardAction.type 只能使用 write、transform、focus、annotate、compare、mask、
    reveal、fade、pause、clear；使用语义 target，不输出坐标、字号或动画参数；
-8. write/transform 同时给 target 与 content；focus/mask/reveal/fade 给 target；
+9. write/transform 同时给 target 与 content；focus/mask/reveal/fade 给 target；
    annotate 给 target 与 annotation；compare 给 target 与 relation_target；
-9. 重点动作必须指向对理解有帮助的局部语义对象。画面只有一个公式或板书对象时，
+10. 重点动作必须指向对理解有帮助的局部语义对象。画面只有一个公式或板书对象时，
    禁止用 circle 或 box 包围整个对象；需要强调内部的系数、符号、运算或条件时，
    先将该局部写成独立 target，再使用 focus、underline、arrow 或短 label；
    circle/box 只用于多个对象间的区分、回指或比较；
-10. 禁止为了制造动画而添加没有信息增益的标注；
-11. 若题目指定 required_method，math_steps 必须真正使用对应 operation；
-12. transfer_item 必须是同结构、不同表面的近迁移题，答案可由数学引擎验证。
+11. 禁止为了制造动画而添加没有信息增益的标注；
+12. 若题目指定 required_method，math_steps 必须真正使用对应 operation；
+13. transfer_item 必须是同结构、不同表面的近迁移题，答案可由数学引擎验证。
 """.strip()
 
 

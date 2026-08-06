@@ -193,6 +193,8 @@ class VolcengineSpeechClient:
                 f"{code}"
             )
         encoded = frame.get("data")
+        if encoded is None and isinstance(frame.get("sentence"), dict):
+            return completed
         if not isinstance(encoded, str):
             raise SpeechGenerationError(
                 "Speech generation returned invalid response"
