@@ -55,6 +55,45 @@ def test_method_introduction_accepts_student_facing_complete_square_contract():
     assert introduction.target_form == r"\((x-a)^2=b\)"
 
 
+@pytest.mark.parametrize(
+    ("student_definition", "why_it_helps", "expected_narration"),
+    [
+        (
+            "把二次式整理成完全平方",
+            "这样就能直接开平方求根",
+            "今天用配方法。把二次式整理成完全平方。这样就能直接开平方求根。",
+        ),
+        (
+            "把二次式整理成完全平方。",
+            "这样就能直接开平方求根！",
+            "今天用配方法。把二次式整理成完全平方。这样就能直接开平方求根！",
+        ),
+        (
+            "把二次式整理成完全平方？",
+            "这样就能直接开平方求根!",
+            "今天用配方法。把二次式整理成完全平方？这样就能直接开平方求根!",
+        ),
+    ],
+)
+def test_method_introduction_builds_spoken_narration_with_sentence_boundaries(
+    student_definition,
+    why_it_helps,
+    expected_narration,
+):
+    introduction = MethodIntroduction(
+        method_name="配方法",
+        student_definition=student_definition,
+        target_form=r"\((x-a)^2=b\)",
+        why_it_helps=why_it_helps,
+    )
+
+    narration = introduction.spoken_narration
+
+    assert narration == expected_narration
+    assert introduction.target_form not in narration
+    assert r"\(" not in narration
+
+
 def test_interaction_option_keeps_legacy_defaults_and_accepts_diagnostic_feedback():
     legacy_option = InteractionOption(option_id="factor", label="因式分解")
     diagnostic_option = InteractionOption(

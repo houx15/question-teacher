@@ -267,6 +267,23 @@ class MethodIntroduction(SchemaModel):
     target_form: NonEmptyString
     why_it_helps: NonEmptyString
 
+    @property
+    def spoken_narration(self) -> str:
+        return "".join(
+            self._as_sentence(fragment)
+            for fragment in (
+                f"今天用{self.method_name}",
+                self.student_definition,
+                self.why_it_helps,
+            )
+        )
+
+    @staticmethod
+    def _as_sentence(fragment: str) -> str:
+        if fragment.endswith(("。", "！", "？", "!", "?")):
+            return fragment
+        return f"{fragment}。"
+
 
 class LessonDraft(SchemaModel):
     title: NonEmptyString

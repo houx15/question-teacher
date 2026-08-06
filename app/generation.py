@@ -314,6 +314,9 @@ class LessonGenerationService:
                 "讲解的方法介绍与指定方法不一致。"
             )
 
+        if len(draft.method_introduction.spoken_narration) > 90:
+            raise LessonQualityError("方法介绍的口语讲稿过长。")
+
         for step in draft.math_steps:
             try:
                 self.math_engine.validate_step(step)

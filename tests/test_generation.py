@@ -694,6 +694,24 @@ def test_invalid_transfer_item_stops_before_review():
     assert len(client.calls) == 2
 
 
+def test_overlong_method_spoken_narration_is_regenerated_safely():
+    invalid_draft = valid_draft()
+    private_narration = "私有方法说明" * 20
+    invalid_draft["method_introduction"]["student_definition"] = (
+        private_narration
+    )
+    invalid_draft["method_introduction"]["why_it_helps"] = "便于求根"
+    client = FakeClient([invalid_draft, copy.deepcopy(invalid_draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "方法介绍的口语讲稿过长。"
+    assert private_narration not in str(exc_info.value)
+    assert len(client.calls) == 2
+
+
 def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
     invalid_draft = valid_draft()
     invalid_draft["transfer_item"] = {

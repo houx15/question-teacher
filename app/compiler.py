@@ -53,15 +53,14 @@ class LessonCompiler:
         ]
 
         method_introduction = draft.method_introduction
+        method_narration = method_introduction.spoken_narration
+        if len(method_narration) > 90:
+            raise LessonCompileError("方法介绍的口语讲稿过长。")
         beats.append(
             RuntimeBeat(
                 beat_id="pending",
                 purpose="先认识方法",
-                narration=(
-                    f"今天用{method_introduction.method_name}。"
-                    f"{method_introduction.student_definition}"
-                    f"{method_introduction.why_it_helps}"
-                ),
+                narration=method_narration,
                 board_actions=[
                     BoardAction(
                         type="write",

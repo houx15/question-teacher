@@ -52,9 +52,36 @@ def test_compiler_opens_by_writing_the_original_problem():
     }
 
 
-def test_compiler_introduces_method_before_first_manuscript_moment():
+@pytest.mark.parametrize(
+    ("student_definition", "why_it_helps", "expected_narration"),
+    [
+        (
+            "把二次式写成两个一次因式的乘积",
+            "这样能把二次方程拆成一次方程",
+            "今天用因式分解法。把二次式写成两个一次因式的乘积。这样能把二次方程拆成一次方程。",
+        ),
+        (
+            "把二次式写成两个一次因式的乘积。",
+            "这样能把二次方程拆成一次方程！",
+            "今天用因式分解法。把二次式写成两个一次因式的乘积。这样能把二次方程拆成一次方程！",
+        ),
+    ],
+)
+def test_compiler_introduces_method_before_first_manuscript_moment(
+    student_definition,
+    why_it_helps,
+    expected_narration,
+):
     draft = valid_draft()
-    lesson = compile_lesson()
+    draft["method_introduction"]["student_definition"] = (
+        student_definition
+    )
+    draft["method_introduction"]["why_it_helps"] = why_it_helps
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
+    )
     introduction = draft["method_introduction"]
     method_beat = lesson.beats[1]
 
@@ -63,6 +90,7 @@ def test_compiler_introduces_method_before_first_manuscript_moment():
     assert method_beat.narration.startswith(
         f"今天用{introduction['method_name']}。"
     )
+    assert method_beat.narration == expected_narration
     assert introduction["student_definition"] in method_beat.narration
     assert introduction["why_it_helps"] in method_beat.narration
     assert introduction["target_form"] not in method_beat.narration
@@ -144,6 +172,23 @@ def test_compiler_preserves_legacy_text_transfer_without_options():
     assert transfer.kind == "transfer"
     assert transfer.expected_answer == draft["transfer_item"]["expected_answer"]
     assert transfer.options == []
+
+
+def test_compiler_rejects_overlong_method_spoken_narration():
+    draft = valid_draft()
+    private_narration = "私有方法说明" * 20
+    draft["method_introduction"]["student_definition"] = private_narration
+    draft["method_introduction"]["why_it_helps"] = "便于求根"
+
+    with pytest.raises(LessonCompileError) as exc_info:
+        LessonCompiler().compile(
+            problem(),
+            LessonDraft.model_validate(draft),
+            {"review_status": "approved"},
+        )
+
+    assert str(exc_info.value) == "方法介绍的口语讲稿过长。"
+    assert private_narration not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
