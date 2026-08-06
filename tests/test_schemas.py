@@ -83,7 +83,10 @@ def test_reference_grounding_brief_accepts_all_and_only_local_check_kinds():
         )
     ]
 
-    brief = ReferenceGroundingBrief.model_validate(payload)
+    brief = ReferenceGroundingBrief.model_validate(
+        payload,
+        context={"reference_answer": r"\(m-n=\frac12\)"},
+    )
     assert [request.kind for request in brief.check_requests] == [
         "substitution",
         "equivalence",
@@ -93,7 +96,10 @@ def test_reference_grounding_brief_accepts_all_and_only_local_check_kinds():
 
     payload["check_requests"][0]["kind"] = "execute_python"
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
 
 @pytest.mark.parametrize(
@@ -114,7 +120,10 @@ def test_reference_grounding_brief_rejects_oversized_collections(
     payload[collection] = [source for _ in range(limit + 1)]
 
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
 
 @pytest.mark.parametrize(
@@ -136,24 +145,36 @@ def test_reference_grounding_brief_rejects_blank_or_oversized_text(
     payload[field] = value
 
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
 
 def test_reference_grounding_brief_forbids_extra_fields_at_every_level():
     payload = grounding_brief_payload()
     payload["run_command"] = "trusted"
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
     payload = grounding_brief_payload()
     payload["reasoning_steps"][0]["unexpected"] = "field"
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
     payload = grounding_brief_payload()
     payload["check_requests"][0]["tool"] = "shell"
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
 
 @pytest.mark.parametrize(
@@ -173,7 +194,10 @@ def test_reference_grounding_brief_requires_single_letter_symbol_keys(
     payload["check_requests"][0][field] = value
 
     with pytest.raises(ValidationError):
-        ReferenceGroundingBrief.model_validate(payload)
+        ReferenceGroundingBrief.model_validate(
+            payload,
+            context={"reference_answer": r"\(m-n=\frac12\)"},
+        )
 
 
 def test_reference_conclusion_agrees_with_supplied_answer_after_text_normalization():
@@ -192,6 +216,26 @@ def test_reference_conclusion_rejects_mismatch_with_supplied_answer():
         ReferenceGroundingBrief.model_validate(
             grounding_brief_payload(),
             context={"reference_answer": r"$\frac13$"},
+        )
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        None,
+        {},
+        {"reference_answer": None},
+        {"reference_answer": 1},
+        {"reference_answer": " \n "},
+    ],
+)
+def test_reference_grounding_brief_requires_explicit_reference_answer_context(
+    context,
+):
+    with pytest.raises(ValidationError, match="reference_answer context"):
+        ReferenceGroundingBrief.model_validate(
+            grounding_brief_payload(),
+            context=context,
         )
 
 

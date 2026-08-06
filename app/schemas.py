@@ -312,6 +312,28 @@ class ReferenceGroundingBrief(SchemaModel):
     check_requests: List[GroundingCheckRequest] = Field(max_length=8)
     audit_notes: List[GeneratedFeedbackText] = Field(max_length=8)
 
+    @model_validator(mode="before")
+    @classmethod
+    def require_reference_answer_context(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        context = info.context
+        reference_answer = (
+            context.get("reference_answer")
+            if isinstance(context, dict)
+            else None
+        )
+        if (
+            not isinstance(reference_answer, str)
+            or not reference_answer.strip()
+        ):
+            raise ValueError(
+                "nonblank reference_answer context is required"
+            )
+        return value
+
     @field_validator("reference_conclusion")
     @classmethod
     def validate_reference_conclusion(
@@ -319,12 +341,7 @@ class ReferenceGroundingBrief(SchemaModel):
         value: str,
         info: ValidationInfo,
     ) -> str:
-        context = info.context
-        if not isinstance(context, dict):
-            return value
-        reference_answer = context.get("reference_answer")
-        if not isinstance(reference_answer, str):
-            return value
+        reference_answer = info.context["reference_answer"]
 
         conclusion = _normalize_reference_text(value)
         answer = _normalize_reference_text(reference_answer)
