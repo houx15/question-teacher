@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api import run_generation
+from app.api import run_generation, safe_generation_error
 from app.config import Settings
+from app.generation import LessonInputError
 from app.main import create_app
 from app.schemas import (
     Interaction,
@@ -225,6 +226,17 @@ def test_generation_failure_is_sanitized_and_has_no_lesson():
     assert "secret" not in str(job)
     assert "private" not in str(job)
     assert client.get("/api/lessons/lesson-1").status_code == 404
+
+
+def test_generation_failure_exposes_only_typed_safe_input_errors():
+    public_message = "参考解析与题目或参考答案存在数学冲突，请检查后再试。"
+
+    assert safe_generation_error(LessonInputError(public_message)) == (
+        public_message
+    )
+    assert safe_generation_error(RuntimeError("private-provider-detail")) == (
+        "课程生成失败，请稍后重试。"
+    )
 
 
 def test_missing_job_and_lesson_return_404():

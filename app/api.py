@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
+from app.generation import LessonInputError
 from app.math_engine import MathEngine, MathValidationError
 from app.schemas import (
     GenerationJob,
@@ -42,7 +43,9 @@ _PUBLIC_GENERATION_STAGES = {
 }
 
 
-def safe_generation_error(_error: Exception) -> str:
+def safe_generation_error(error: Exception) -> str:
+    if isinstance(error, LessonInputError):
+        return error.public_message
     return "课程生成失败，请稍后重试。"
 
 

@@ -7,15 +7,18 @@ from app.compiler import LessonCompileError, LessonCompiler
 from app.math_engine import MathValidationError
 from app.prompts import (
     DIRECTOR_SYSTEM,
+    REFERENCE_AUDITOR_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
     director_prompt,
+    reference_audit_prompt,
     reviewer_prompt,
     revision_prompt,
 )
 from app.schemas import (
     LessonDraft,
     ProblemInput,
+    ReferenceMaterialAudit,
     ReviewDecision,
     RuntimeLesson,
 )
@@ -29,6 +32,14 @@ StageCallback = Callable[
 
 class LessonQualityError(RuntimeError):
     """Raised when a generated lesson cannot pass safe quality gates."""
+
+
+class LessonInputError(LessonQualityError):
+    """Safe, user-correctable input failure that may be shown publicly."""
+
+    def __init__(self, public_message: str) -> None:
+        super().__init__(public_message)
+        self.public_message = public_message
 
 
 class LessonGenerationService:
@@ -56,25 +67,43 @@ class LessonGenerationService:
                 problem.reference_answer,
             )
         except MathValidationError:
-            raise LessonQualityError(
-                "题目或参考答案未通过数学验证。"
+            raise LessonInputError(
+                "题目或参考答案未通过数学验证，请检查后再试。"
             ) from None
 
+        reference_audit = None
+        if problem.reference_solution_text is not None:
+            await self._emit(on_stage, "正在审阅参考解析")
+            reference_audit = await self._audit_reference(
+                problem,
+                problem_report.solution_strings,
+            )
+            self._validate_reference_audit(problem, reference_audit)
+
         await self._emit(on_stage, "正在设计完整讲解")
-        draft = await self._create_draft(problem, problem_report.solution_strings)
+        draft = await self._create_draft(
+            problem,
+            problem_report.solution_strings,
+            reference_audit,
+        )
         revision_count = 0
 
         while True:
             self._validate_draft(problem, draft)
             await self._emit(on_stage, "正在进行整篇审稿")
-            review = await self._review(problem, draft)
+            review = await self._review(problem, draft, reference_audit)
             if review.status == "approved":
                 break
             if revision_count >= self.MAX_REVISIONS:
                 raise LessonQualityError("整篇讲稿在两轮修订后仍未通过。")
 
             await self._emit(on_stage, "正在修订完整讲解")
-            draft = await self._revise(problem, draft, review)
+            draft = await self._revise(
+                problem,
+                draft,
+                review,
+                reference_audit,
+            )
             revision_count += 1
 
         await self._emit(on_stage, "正在编译课堂")
@@ -85,6 +114,10 @@ class LessonGenerationService:
             "independent_solutions": problem_report.solution_strings,
             "review_assessment": review.overall_assessment,
         }
+        if reference_audit is not None:
+            validation_report["reference_material_status"] = (
+                reference_audit.status
+            )
         try:
             return self.compiler.compile(
                 problem,
@@ -100,10 +133,15 @@ class LessonGenerationService:
         self,
         problem: ProblemInput,
         solution_strings: Any,
+        reference_audit: Optional[ReferenceMaterialAudit],
     ) -> LessonDraft:
         payload = await self._complete_json(
             DIRECTOR_SYSTEM,
-            director_prompt(problem, list(solution_strings)),
+            director_prompt(
+                problem,
+                list(solution_strings),
+                reference_audit,
+            ),
             "完整讲解生成失败。",
         )
         try:
@@ -115,10 +153,11 @@ class LessonGenerationService:
         self,
         problem: ProblemInput,
         draft: LessonDraft,
+        reference_audit: Optional[ReferenceMaterialAudit],
     ) -> ReviewDecision:
         payload = await self._complete_json(
             REVIEWER_SYSTEM,
-            reviewer_prompt(problem, draft),
+            reviewer_prompt(problem, draft, reference_audit),
             "整篇审稿失败。",
         )
         try:
@@ -131,16 +170,59 @@ class LessonGenerationService:
         problem: ProblemInput,
         draft: LessonDraft,
         review: ReviewDecision,
+        reference_audit: Optional[ReferenceMaterialAudit],
     ) -> LessonDraft:
         payload = await self._complete_json(
             REVISION_SYSTEM,
-            revision_prompt(problem, draft, review),
+            revision_prompt(problem, draft, review, reference_audit),
             "完整讲解修订失败。",
         )
         try:
             return LessonDraft.model_validate(payload)
         except ValidationError:
             raise LessonQualityError("模型修订的讲解结构无效。") from None
+
+    async def _audit_reference(
+        self,
+        problem: ProblemInput,
+        solution_strings: Any,
+    ) -> ReferenceMaterialAudit:
+        payload = await self._complete_json(
+            REFERENCE_AUDITOR_SYSTEM,
+            reference_audit_prompt(problem, list(solution_strings)),
+            "参考解析审阅失败。",
+        )
+        try:
+            return ReferenceMaterialAudit.model_validate(payload)
+        except ValidationError:
+            raise LessonQualityError("参考解析审阅结构无效。") from None
+
+    def _validate_reference_audit(
+        self,
+        problem: ProblemInput,
+        audit: ReferenceMaterialAudit,
+    ) -> None:
+        public_message = (
+            "参考解析与题目或参考答案存在数学冲突，请检查后再试。"
+        )
+        if audit.status == "rejected":
+            raise LessonInputError(public_message)
+
+        try:
+            if (
+                audit.claimed_answer is not None
+                and not self.math_engine.answers_equivalent(
+                    audit.claimed_answer,
+                    problem.reference_answer,
+                )
+            ):
+                raise MathValidationError(
+                    "Reference solution answer conflicts."
+                )
+            for step in audit.key_steps:
+                self.math_engine.validate_step(step)
+        except MathValidationError:
+            raise LessonInputError(public_message) from None
 
     async def _complete_json(
         self,

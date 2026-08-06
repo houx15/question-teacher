@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from app.generation import LessonGenerationService, LessonQualityError
+from app.generation import (
+    LessonGenerationService,
+    LessonInputError,
+    LessonQualityError,
+)
 from app.math_engine import MathEngine
 from app.prompts import (
     DIRECTOR_SYSTEM,
@@ -110,6 +114,28 @@ def revision_review():
     }
 
 
+def approved_audit():
+    return {
+        "status": "approved",
+        "claimed_answer": "x=2 或 x=3",
+        "method_summary": "因式分解法",
+        "key_steps": [
+            {
+                "purpose": "因式分解",
+                "operation": "factor",
+                "operands": [],
+                "state_before": ["x^2-5x+6=0"],
+                "state_after": ["(x-2)(x-3)=0"],
+                "reason": "乘积为 6、和为 -5。",
+            }
+        ],
+        "teaching_assets": ["先观察乘积与和的关系。"],
+        "warnings": [],
+        "blocking_issues": [],
+        "evidence": ["所以 x=2 或 x=3。"],
+    }
+
+
 def test_reference_auditor_prompt_treats_multiline_solution_as_untrusted_data():
     multiline_text = (
         "解：先因式分解。\n"
@@ -132,6 +158,135 @@ def test_reference_auditor_prompt_treats_multiline_solution_as_untrusted_data():
     assert payload["reference_solution_text"] == multiline_text
     assert payload["independent_solutions"] == ["2", "3"]
     assert payload["audit_schema"]["properties"]["status"]
+
+
+def test_reference_material_audit_runs_before_director_and_reaches_review():
+    reference_text = (
+        "解：x^2-5x+6=(x-2)(x-3)。\n"
+        "所以 x=2 或 x=3。"
+    )
+    client = FakeClient(
+        [approved_audit(), valid_draft(), approved_review()]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(
+        service.generate(
+            problem(reference_solution_text=reference_text)
+        )
+    )
+
+    assert [call[0] for call in client.calls] == [
+        REFERENCE_AUDITOR_SYSTEM,
+        DIRECTOR_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    director_payload = json.loads(client.calls[1][1])
+    reviewer_payload = json.loads(client.calls[2][1])
+    assert director_payload["reference_material_audit"]["status"] == "approved"
+    assert reviewer_payload["reference_material_audit"]["method_summary"] == (
+        "因式分解法"
+    )
+    assert lesson.validation_report["reference_material_status"] == "approved"
+
+
+def test_reference_material_rejected_audit_blocks_generation():
+    rejected = approved_audit()
+    rejected.update(
+        status="rejected",
+        blocking_issues=["最终答案与独立结果冲突。"],
+        evidence=["所以 x=100。"],
+    )
+    client = FakeClient([rejected])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonInputError) as exc_info:
+        asyncio.run(
+            service.generate(
+                problem(reference_solution_text="所以 x=100。")
+            )
+        )
+
+    assert str(exc_info.value) == (
+        "参考解析与题目或参考答案存在数学冲突，请检查后再试。"
+    )
+    assert len(client.calls) == 1
+
+
+def test_reference_material_conflicting_claimed_answer_blocks_generation():
+    conflicting = approved_audit()
+    conflicting["claimed_answer"] = "x=100"
+    client = FakeClient([conflicting])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonInputError):
+        asyncio.run(
+            service.generate(
+                problem(reference_solution_text="所以 x=100。")
+            )
+        )
+
+    assert len(client.calls) == 1
+
+
+def test_reference_material_invalid_key_step_blocks_generation():
+    conflicting = approved_audit()
+    conflicting["claimed_answer"] = None
+    conflicting["key_steps"][0]["state_after"] = ["(x-1)(x-6)=0"]
+    client = FakeClient([conflicting])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonInputError):
+        asyncio.run(
+            service.generate(
+                problem(
+                    reference_solution_text=(
+                        "错误地写成 (x-1)(x-6)=0。"
+                    )
+                )
+            )
+        )
+
+    assert len(client.calls) == 1
+
+
+def test_reference_material_invalid_schema_is_not_blamed_on_user():
+    client = FakeClient([{"status": "approved", "private": "vendor"}])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(
+            service.generate(
+                problem(reference_solution_text="一段正确解析。")
+            )
+        )
+
+    assert not isinstance(exc_info.value, LessonInputError)
+    assert str(exc_info.value) == "参考解析审阅结构无效。"
+    assert "vendor" not in str(exc_info.value)
+
+
+def test_reference_material_audit_retries_one_transient_failure():
+    reference_text = "因式分解后得到 x=2 或 x=3。"
+    client = FakeClient(
+        [
+            RuntimeError("temporary-provider-detail"),
+            approved_audit(),
+            valid_draft(),
+            approved_review(),
+        ]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(
+        service.generate(
+            problem(reference_solution_text=reference_text)
+        )
+    )
+
+    assert lesson.validation_report["reference_material_status"] == "approved"
+    assert client.calls[0] == client.calls[1]
+    assert len(client.calls) == 4
 
 
 def test_approved_draft_is_compiled_without_rewrite():
@@ -560,7 +715,11 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "(x-3)^2=4" in DIRECTOR_SYSTEM
     assert "禁止使用 ±" in DIRECTOR_SYSTEM
     assert "直接输出两个方程分支" in DIRECTOR_SYSTEM
+    assert "参考解析" in DIRECTOR_SYSTEM
+    assert "Reference Material Auditor" in DIRECTOR_SYSTEM
     assert "整节课" in REVIEWER_SYSTEM
+    assert "参考解析审阅" in REVIEWER_SYSTEM
     assert "无信息增益" in REVIEWER_SYSTEM
     assert "整式圈注" in REVIEWER_SYSTEM
     assert "完整 LessonDraft JSON" in REVISION_SYSTEM
+    assert "参考解析审阅" in REVISION_SYSTEM
