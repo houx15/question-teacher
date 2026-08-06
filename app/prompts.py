@@ -88,8 +88,9 @@ REVIEWER_SYSTEM = """
 中的缺口当成事实，或重新引入原解析未通过的内容。以下任一情况必须列为 must_fix：
 方法介绍 method_introduction 未在首次实质代数变形前完整出现，或名称与 required_method 不一致；
 配方法没有先强调“配方法”再说明配方目标；board_actions、interaction、summary 的数学
-未用 `\\( ... \\)` 或 `\\[ ... \\]`，或 narration 含 LaTeX 命令；自动判分互动不是
-选择或点选（choice 或 point_select）；choice 不含 3 至 4 个不同选项、缺少针对所选推理的诊断反馈、或
+未用 `\\( ... \\)` 或 `\\[ ... \\]`；narration 必须是自然口语中文，禁止包含 LaTeX 命令，
+任何不符合此要求的讲稿都必须列为 must_fix；自动判分互动不是选择或点选（choice 或 point_select）；
+choice 不含 3 至 4 个不同选项；任一 choice 选项缺少针对所选推理的具体诊断 feedback，或
 过早泄露答案；transfer_item 不含 3 至 4 个可由 MathEngine 解析的纯 canonical_answer 选项。
 只返回一个符合 ReviewDecision JSON Schema 的 JSON 对象：approved 表示整篇可用；
 revision_required 必须给出整篇层面的 must_fix 和对应原文 evidence。不要返回
@@ -105,8 +106,9 @@ narration 最多 90 个字符、严格 BoardAction 词汇、互动前不泄露�
 必须真实出现以及近迁移可验证等约束。方法介绍 method_introduction 必须在首次实质代数变形前
 完整出现，名称严格对应 required_method；配方法必须先强调“配方法”再说明构造完全平方
 的目标。board_actions、interaction、summary 的数学使用 `\\( ... \\)` 或 `\\[ ... \\]`，
-narration 不含 LaTeX 命令。自动判分互动只能使用选择或点选（choice 或 point_select）；choice 必须有
-3 至 4 个不同选项及不提前泄露答案的具体诊断反馈。transfer_item 必须有 3 至 4 个
+narration 必须是自然口语中文，禁止包含 LaTeX 命令。自动判分互动只能使用选择或点选（choice 或 point_select）；
+choice 必须有 3 至 4 个不同选项及不提前泄露答案的具体诊断反馈；必须重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback。
+transfer_item 必须有 3 至 4 个
 canonical_answer 为 MathEngine 可解析纯答案的 TransferOption。删除无信息增益的整式圈注；画面只有一个
 公式或板书对象时，不得用 circle 或 box 包围整个对象，重点必须指向局部语义
 对象。若存在参考解析审阅结果，继续只使用其中批准的素材，不得在修订中重新引入

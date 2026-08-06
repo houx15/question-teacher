@@ -996,3 +996,9 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "参考解析审阅" in REVISION_SYSTEM
     assert "方法介绍" in REVISION_SYSTEM
     assert "选择或点选" in REVISION_SYSTEM
+    assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in DIRECTOR_SYSTEM
+    assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVIEWER_SYSTEM
+    assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVISION_SYSTEM
+    assert "每个选项都要给出针对所选推理的具体 feedback" in DIRECTOR_SYSTEM
+    assert "任一 choice 选项缺少针对所选推理的具体诊断 feedback" in REVIEWER_SYSTEM
+    assert "重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback" in REVISION_SYSTEM
