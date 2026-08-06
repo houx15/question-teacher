@@ -43,6 +43,45 @@ def test_valid_draft_uses_choice_for_the_main_math_interaction():
     assert all(option["feedback"] for option in interaction["options"])
 
 
+def test_narrative_quality_gate_rejects_focus_on_missing_board_target():
+    narrative_payload = valid_narrative().model_dump()
+    narrative_payload["moments"][0]["board_actions"] = [
+        {"type": "focus", "target": "step1_eq_coeff_-6"}
+    ]
+    narrative = NarrativeDraft.model_validate(narrative_payload)
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+
+    with pytest.raises(LessonQualityError, match="板书动作引用了尚未写出的对象"):
+        service._validate_narrative(problem(), narrative)
+
+
+def test_narrative_quality_gate_accepts_focus_after_write_in_same_moment():
+    narrative = valid_narrative()
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+
+    service._validate_narrative(problem(), narrative)
+
+
+def test_narrative_quality_gate_rejects_target_from_finished_temporary_layer():
+    narrative_payload = valid_narrative().model_dump()
+    narrative_payload["moments"][0]["layer"] = "micro_explanation"
+    narrative_payload["moments"][0]["board_actions"] = [
+        {
+            "type": "write",
+            "target": "temporary_detail",
+            "content": "临时解释",
+        }
+    ]
+    narrative_payload["moments"][1]["board_actions"] = [
+        {"type": "focus", "target": "temporary_detail"}
+    ]
+    narrative = NarrativeDraft.model_validate(narrative_payload)
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+
+    with pytest.raises(LessonQualityError, match="板书动作引用了尚未写出的对象"):
+        service._validate_narrative(problem(), narrative)
+
+
 def valid_draft():
     return {
         "title": "把二次式拆成两个一次因式",
@@ -70,6 +109,16 @@ def valid_draft():
                 "purpose": "寻找因数关系",
                 "narration": "先自己找一找：哪两个数满足乘积与和的条件？",
                 "board_actions": [
+                    {
+                        "type": "write",
+                        "target": "equation",
+                        "content": r"\(x^2-5x+6=0\)",
+                    },
+                    {
+                        "type": "write",
+                        "target": "constant_and_linear_terms",
+                        "content": "常数项 6，一次项系数 -5",
+                    },
                     {"type": "focus", "target": "constant_and_linear_terms"}
                 ],
                 "layer": "interaction",

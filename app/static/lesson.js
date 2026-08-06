@@ -1,5 +1,6 @@
 import {
   LessonRuntime,
+  boardActionAnnouncement,
   classifyInteractionControl,
   cloneBoard,
   createBoundedSettlement,
@@ -423,8 +424,8 @@ function executeBoardAction(action, actionIndex, token) {
   appliedActionIndexes.add(actionIndex);
   runtime.apply(action);
   renderActiveBoards();
-  dom.announcer.textContent = action.content
-    || `${action.type} ${humanizeTarget(action.target)}`;
+  const announcement = boardActionAnnouncement(runtime.activeBoard, action);
+  if (announcement) dom.announcer.textContent = announcement;
 }
 
 

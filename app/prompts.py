@@ -287,6 +287,8 @@ DIRECTOR_SYSTEM = """
    reveal、fade、pause、clear；使用语义 target，不输出坐标、字号或动画参数；
 7. write/transform 同时给 target 与 content；focus/mask/reveal/fade 给 target；
    annotate 给 target 与 annotation；compare 给 target 与 relation_target；
+   focus、annotate、compare、mask、reveal、fade 只能引用当前图层中已经由
+   write/transform 创建的 target；临时图层结束后，其中创建的 target 不可继续引用；
 8. 重点动作必须指向对理解有帮助的局部语义对象。画面只有一个公式或板书对象时，
    禁止用 circle 或 box 包围整个对象；需要强调内部的系数、符号、运算或条件时，
    先将该局部写成独立 target，再使用 focus、underline、arrow 或短 label；

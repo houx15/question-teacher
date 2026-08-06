@@ -88,6 +88,27 @@ function visibleObjectCount(board) {
 }
 
 
+export function boardActionAnnouncement(board, action) {
+  const writesContent = (
+    action?.type === "write" || action?.type === "transform"
+  );
+  if (
+    writesContent
+    && typeof action?.content === "string"
+    && action.content
+  ) {
+    return action.content;
+  }
+  if (!(board instanceof Map) || !action?.target) return "";
+  const value = board.get(action.target);
+  if (!value) return "";
+  if (typeof action?.content === "string" && action.content) {
+    return action.content;
+  }
+  return typeof value?.content === "string" ? value.content : "";
+}
+
+
 export function applyBoardAction(currentBoard, action) {
   const board = cloneBoard(currentBoard);
   if (!action || typeof action.type !== "string") return board;
@@ -119,6 +140,7 @@ export function applyBoardAction(currentBoard, action) {
       break;
     }
     case "focus": {
+      if (!board.has(target)) break;
       for (const [key, value] of board.entries()) {
         if (value.kind !== "object") continue;
         board.set(key, {
@@ -127,16 +149,17 @@ export function applyBoardAction(currentBoard, action) {
           faded: key !== target,
         });
       }
-      if (!board.has(target)) {
-        board.set(target, {
-          ...boardObject(board, target),
-          focused: true,
-        });
-      }
       break;
     }
     case "annotate": {
       const annotation = action.annotation || "highlight";
+      if (
+        !board.has(target)
+        || (
+          annotation === "arrow"
+          && !board.has(action.relation_target || "")
+        )
+      ) break;
       const isUselessEnclosure = (
         (annotation === "circle" || annotation === "box")
         && visibleObjectCount(board) <= 1
@@ -157,8 +180,9 @@ export function applyBoardAction(currentBoard, action) {
       break;
     }
     case "compare": {
-      const left = boardObject(board, target);
       const rightTarget = action.relation_target || "";
+      if (!board.has(target) || !board.has(rightTarget)) break;
+      const left = boardObject(board, target);
       const right = boardObject(board, rightTarget);
       board.set("__comparison__", {
         kind: "comparison",
@@ -170,16 +194,19 @@ export function applyBoardAction(currentBoard, action) {
       break;
     }
     case "mask": {
+      if (!board.has(target)) break;
       const current = boardObject(board, target);
       board.set(target, { ...current, masked: true });
       break;
     }
     case "reveal": {
+      if (!board.has(target)) break;
       const current = boardObject(board, target);
       board.set(target, { ...current, masked: false, revealed: true });
       break;
     }
     case "fade": {
+      if (!board.has(target)) break;
       const current = boardObject(board, target);
       board.set(target, { ...current, faded: true, focused: false });
       break;

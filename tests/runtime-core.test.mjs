@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   LessonRuntime,
   applyBoardAction,
+  boardActionAnnouncement,
   classifyInteractionControl,
   cloneBoard,
   createBoundedSettlement,
@@ -195,6 +196,103 @@ test("board reducer executes annotations comparisons pause and clear", () => {
 
   board = applyBoardAction(board, { type: "clear" });
   assert.equal(board.size, 0);
+});
+
+
+test("board reducer ignores reference actions whose targets do not exist", () => {
+  const initial = new Map([
+    ["equation", {
+      kind: "object",
+      target: "equation",
+      content: "x² - 6x + 5 = 0",
+      annotations: [],
+    }],
+  ]);
+  const invalidActions = [
+    { type: "focus", target: "step1_eq_coeff_-6" },
+    {
+      type: "annotate",
+      target: "step1_eq_coeff_-6",
+      annotation: "underline",
+    },
+    { type: "mask", target: "step1_eq_coeff_-6" },
+    { type: "reveal", target: "step1_eq_coeff_-6" },
+    { type: "fade", target: "step1_eq_coeff_-6" },
+    {
+      type: "compare",
+      target: "equation",
+      relation_target: "step1_eq_coeff_-6",
+    },
+  ];
+
+  for (const action of invalidActions) {
+    const result = applyBoardAction(initial, action);
+    assert.deepEqual(
+      result,
+      initial,
+      `${action.type} must not create a phantom board object`,
+    );
+  }
+});
+
+
+test("arrow annotation requires both board objects to exist", () => {
+  const initial = new Map([
+    ["equation", {
+      kind: "object",
+      target: "equation",
+      content: "x² - 6x + 5 = 0",
+      annotations: [],
+    }],
+  ]);
+
+  const result = applyBoardAction(initial, {
+    type: "annotate",
+    target: "equation",
+    annotation: "arrow",
+    relation_target: "step1_eq_coeff_-6",
+  });
+
+  assert.deepEqual(result, initial);
+});
+
+
+test("board action announcements use visible content and never target ids", () => {
+  const board = new Map([
+    ["equation", {
+      kind: "object",
+      target: "equation",
+      content: "x² - 6x + 5 = 0",
+      annotations: [],
+    }],
+  ]);
+
+  assert.equal(
+    boardActionAnnouncement(
+      board,
+      { type: "focus", target: "equation" },
+    ),
+    "x² - 6x + 5 = 0",
+  );
+  assert.equal(
+    boardActionAnnouncement(
+      board,
+      { type: "focus", target: "step1_eq_coeff_-6" },
+    ),
+    "",
+  );
+  assert.equal(
+    boardActionAnnouncement(
+      board,
+      {
+        type: "annotate",
+        target: "step1_eq_coeff_-6",
+        annotation: "label",
+        content: "一次项系数",
+      },
+    ),
+    "",
+  );
 });
 
 

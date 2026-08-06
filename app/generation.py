@@ -855,6 +855,7 @@ class LessonGenerationService:
         verified_route: Optional[_VerifiedMathRoute] = None,
     ) -> None:
         self._validate_narrative_size(narrative)
+        self._validate_board_action_references(narrative.moments)
         expected_method_name = (
             self._resolved_method_display_name(verified_route)
             if verified_route is not None
@@ -888,6 +889,47 @@ class LessonGenerationService:
             raise LessonQualityError("方法介绍的口语讲稿过长。")
 
     @staticmethod
+    def _validate_board_action_references(moments: Any) -> None:
+        base_targets = {"original_problem"}
+        reference_types = {
+            "focus",
+            "annotate",
+            "compare",
+            "mask",
+            "reveal",
+            "fade",
+        }
+        for moment in moments:
+            active_targets = set(base_targets)
+            for action in moment.board_actions:
+                if action.type in {"write", "transform"}:
+                    active_targets.add(action.target)
+                    continue
+                if action.type == "clear":
+                    if action.target:
+                        active_targets.discard(action.target)
+                    else:
+                        active_targets.clear()
+                    continue
+                if action.type not in reference_types:
+                    continue
+                required_targets = [action.target]
+                if action.type == "compare" or (
+                    action.type == "annotate"
+                    and action.annotation == "arrow"
+                ):
+                    required_targets.append(action.relation_target)
+                if any(
+                    target not in active_targets
+                    for target in required_targets
+                ):
+                    raise LessonQualityError(
+                        "板书动作引用了尚未写出的对象。"
+                    )
+            if moment.layer == "base":
+                base_targets = active_targets
+
+    @staticmethod
     def _validate_narrative_size(narrative: NarrativeDraft) -> None:
         serialized_size = len(
             narrative.model_dump_json().encode("utf-8")
@@ -901,6 +943,7 @@ class LessonGenerationService:
         draft: LessonDraft,
         verified_route: Optional[_VerifiedMathRoute] = None,
     ) -> None:
+        self._validate_board_action_references(draft.moments)
         required_method = REQUIRED_METHODS.get(problem.required_method)
         expected_method_name = (
             self._resolved_method_display_name(verified_route)
