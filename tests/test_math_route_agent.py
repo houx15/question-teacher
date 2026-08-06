@@ -117,6 +117,11 @@ def test_route_prompt_is_minimal_private_and_typed():
     assert "reference_solution_text" not in serialized
     assert "teaching_assets" not in serialized
     assert "route_step_invalid" in MATH_ROUTE_SYSTEM
+    state_rules = " ".join(
+        payload["output_contract"]["operation_contract"]["state_rules"]
+    )
+    assert "positive" in state_rules and "two explicit branches" in state_rules
+    assert "zero" in state_rules and "one explicit zero branch" in state_rules
 
 
 def test_factor_route_contract_allows_only_verified_factored_terminal():
@@ -580,3 +585,79 @@ def complete_square_materials():
         "correct_option_id": "both",
     }
     return payload
+
+
+def test_complete_square_agent_fallback_accepts_one_repeated_root_branch():
+    from app.schemas import ProblemInput
+
+    source = ProblemInput(
+        problem_text="用配方法解方程：4*x^2-4*x+1=0",
+        reference_answer="x=1/2",
+        required_method="complete_the_square",
+    )
+    route = {
+        "math_steps": [
+            {
+                "purpose": "先把二次项系数化为一",
+                "operation": "divide_both_sides",
+                "operands": ["4"],
+                "state_before": ["4*x^2-4*x+1=0"],
+                "state_after": ["x^2-x+1/4=0"],
+                "reason": "等式两边同时除以 4。",
+            },
+            {
+                "purpose": "把常数项移到右边",
+                "operation": "subtract_both_sides",
+                "operands": ["1/4"],
+                "state_before": ["x^2-x+1/4=0"],
+                "state_after": ["x^2-x=-1/4"],
+                "reason": "等式两边同时减去四分之一。",
+            },
+            {
+                "purpose": "配成完全平方",
+                "operation": "complete_the_square",
+                "operands": ["1/4"],
+                "state_before": ["x^2-x=-1/4"],
+                "state_after": ["(x-1/2)^2=0"],
+                "reason": "一次项系数一半的平方是四分之一。",
+            },
+            {
+                "purpose": "得到唯一零分支",
+                "operation": "take_square_root_both_sides",
+                "operands": [],
+                "state_before": ["(x-1/2)^2=0"],
+                "state_after": ["x-1/2=0"],
+                "reason": "底数的平方为零，底数只能为零。",
+            },
+            {
+                "purpose": "求出重根",
+                "operation": "add_both_sides",
+                "operands": ["1/2"],
+                "state_before": ["x-1/2=0"],
+                "state_after": ["x=1/2"],
+                "reason": "等式两边同时加上二分之一。",
+            },
+        ]
+    }
+    narrative = narrative_without_route(method="配方法")
+    narrative["method_introduction"]["why_it_helps"] = (
+        "平方形式能直接连接到所有实数根分支。"
+    )
+    client = AgentClient(
+        [
+            route,
+            narrative,
+            complete_square_materials(),
+            approved_review(),
+        ]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(source)
+    )
+
+    assert client.calls[0][0] == MATH_ROUTE_SYSTEM
+    assert lesson.validation_report["math_route_source"] == "agent"
+    assert lesson.validation_report["math_route_method_family"] == (
+        "complete_the_square"
+    )

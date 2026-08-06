@@ -28,7 +28,7 @@ def test_method_introduction_preserves_the_teaching_contract():
         method_name="配方法",
         student_definition="把二次式整理成完全平方的形式。",
         target_form=r"\((x-a)^2=b\)",
-        why_it_helps="开平方后可以转成两个一次方程。",
+        why_it_helps="完全平方能直接连接到所有实数根分支。",
     )
 
     assert introduction.method_name == "配方法"
@@ -70,7 +70,7 @@ def test_transfer_item_accepts_diagnostic_options():
                 option_id="C",
                 label=r"\(x=4\)",
                 canonical_answer="x=4",
-                feedback="开平方会产生两个分支，不能只保留中点。",
+                feedback="本题配方后右侧为正数，开平方有两个正负分支。",
             ),
         ],
         correct_option_id="A",

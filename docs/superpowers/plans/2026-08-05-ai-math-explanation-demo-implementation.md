@@ -895,7 +895,7 @@ def valid_draft():
                 "operation": "split_plus_minus",
                 "state_before": ["(x-3)^2=4"],
                 "state_after": ["x-3=2", "x-3=-2"],
-                "reason": "平方根有正负两个分支",
+                "reason": "本步右侧是 4，因此底数有正负两个分支",
             },
         ],
         "moments": [

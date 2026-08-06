@@ -180,7 +180,8 @@ math_steps 必须从原题唯一方程开始，逐步连续连接，每一步保
 一个经 MathEngine 验证与原题完整解集相同的因式乘积方程。不得伪造不存在的 operation
 或把求根公式混入因式分解方法族。add_both_sides、subtract_both_sides、multiply_both_sides、
 divide_both_sides、complete_the_square 恰好使用一个 operand，其他 operation 不使用
-operand。禁止 ±；开平方必须输出两个明确方程分支。required_method 非空时必须只使用该
+operand。禁止 ±；开平方时，右侧为正数必须输出两个明确的正负分支，右侧为 0 必须
+输出一个明确的零分支，右侧为负数必须输出“无实数解”状态。required_method 非空时必须只使用该
 命名方法族；未指定方法的二次方程必须选择且只选择 factor、complete_the_square、
 quadratic_formula 中一个方法族；一次方程只使用基本等式操作。
 
@@ -238,7 +239,20 @@ def math_route_prompt(
                             "product equation preserving the complete solution "
                             "set; do not invent a zero-product operation."
                         ),
-                        "Never use ±; emit explicit equation branches.",
+                        (
+                            "When taking a square root with a positive right "
+                            "side, emit two explicit branches for the positive "
+                            "and negative roots."
+                        ),
+                        (
+                            "When taking a square root with a zero right side, "
+                            "emit one explicit zero branch; do not duplicate it."
+                        ),
+                        (
+                            "When the squared expression equals a negative "
+                            "right side, emit the no-real-solution state."
+                        ),
+                        "Never use ±; emit every required branch explicitly.",
                     ],
                 },
             },

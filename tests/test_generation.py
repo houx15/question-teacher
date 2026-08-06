@@ -1663,7 +1663,10 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "circle" in DIRECTOR_SYSTEM
     assert "局部语义对象" in DIRECTOR_SYSTEM
     assert "禁止 ±" in MATH_ROUTE_SYSTEM
-    assert "两个明确方程分支" in MATH_ROUTE_SYSTEM
+    assert "右侧为正数" in MATH_ROUTE_SYSTEM
+    assert "两个明确的正负分支" in MATH_ROUTE_SYSTEM
+    assert "右侧为 0" in MATH_ROUTE_SYSTEM
+    assert "一个明确的零分支" in MATH_ROUTE_SYSTEM
     assert "参考解析" in DIRECTOR_SYSTEM
     assert "Reference Material Auditor" in DIRECTOR_SYSTEM
     assert "方法介绍" in DIRECTOR_SYSTEM
