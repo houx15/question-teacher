@@ -232,9 +232,12 @@ async def main(argv=None) -> None:
             "缺少环境变量：" + "、".join(missing) + "。未发起网络请求。"
         )
 
-    model_client = OpenAICompatibleClient(settings)
-    speech_client = create_speech_client(settings)
+    model_client = None
+    speech_client = None
+    primary_error = None
     try:
+        model_client = OpenAICompatibleClient(settings)
+        speech_client = create_speech_client(settings)
         math_engine = MathEngine()
         with tempfile.TemporaryDirectory(
             prefix="ai-math-smoke-audio-"
@@ -274,16 +277,29 @@ async def main(argv=None) -> None:
                 summary["reference_material_status"] = report.get(
                     "reference_material_status"
                 )
-        print(
-            json.dumps(
-                summary,
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        await model_client.close()
-        await speech_client.close()
+        close_error = None
+        for client in (speech_client, model_client):
+            if client is None:
+                continue
+            try:
+                await client.close()
+            except BaseException as error:
+                if close_error is None:
+                    close_error = error
+        if primary_error is None and close_error is not None:
+            raise close_error
+
+    print(
+        json.dumps(
+            summary,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 def run_cli(argv=None) -> None:

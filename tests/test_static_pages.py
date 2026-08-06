@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -154,6 +155,195 @@ def test_live_smoke_cli_converts_known_failures_to_safe_errors(
     assert "private" not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__suppress_context__ is True
+
+
+class _LifecycleClient:
+    def __init__(self, close_error=None):
+        self.close_error = close_error
+        self.close_calls = 0
+
+    async def close(self):
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def _configure_smoke_clients(monkeypatch, model_client, speech_client):
+    monkeypatch.setattr(
+        smoke_live.Settings,
+        "from_env",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(smoke_live, "missing_environment", lambda _: [])
+    monkeypatch.setattr(
+        smoke_live,
+        "OpenAICompatibleClient",
+        lambda _settings: model_client,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "create_speech_client",
+        lambda _settings: speech_client,
+    )
+
+
+def test_live_smoke_real_generation_service_reaches_model_cli_category(
+    monkeypatch,
+):
+    class ProviderFailingClient(_LifecycleClient):
+        def __init__(self):
+            super().__init__()
+            self.complete_calls = 0
+
+        async def complete_json(self, _system_prompt, _user_prompt):
+            self.complete_calls += 1
+            raise ModelResponseError("private provider response")
+
+    model_client = ProviderFailingClient()
+    speech_client = _LifecycleClient()
+    _configure_smoke_clients(
+        monkeypatch,
+        model_client,
+        speech_client,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        smoke_live.run_cli([])
+
+    assert str(exc_info.value) == "模型服务调用失败，请检查配置或稍后重试。"
+    assert "private" not in str(exc_info.value)
+    assert model_client.complete_calls == 2
+    assert model_client.close_calls == 1
+    assert speech_client.close_calls == 1
+
+
+def test_live_smoke_closes_model_when_speech_client_construction_fails(
+    monkeypatch,
+):
+    model_client = _LifecycleClient()
+    monkeypatch.setattr(
+        smoke_live.Settings,
+        "from_env",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(smoke_live, "missing_environment", lambda _: [])
+    monkeypatch.setattr(
+        smoke_live,
+        "OpenAICompatibleClient",
+        lambda _settings: model_client,
+    )
+
+    def fail_speech_construction(_settings):
+        raise SpeechGenerationError("private construction detail")
+
+    monkeypatch.setattr(
+        smoke_live,
+        "create_speech_client",
+        fail_speech_construction,
+    )
+
+    with pytest.raises(SpeechGenerationError):
+        asyncio.run(smoke_live.main([]))
+
+    assert model_client.close_calls == 1
+
+
+def test_live_smoke_body_failure_wins_while_both_clients_close_once(
+    monkeypatch,
+):
+    body_error = LessonQualityError("primary quality failure")
+    model_client = _LifecycleClient(
+        ModelResponseError("private model close detail")
+    )
+    speech_client = _LifecycleClient(
+        SpeechGenerationError("private speech close detail")
+    )
+    _configure_smoke_clients(
+        monkeypatch,
+        model_client,
+        speech_client,
+    )
+
+    class FailingGenerationService:
+        def __init__(self, *_args):
+            pass
+
+        async def generate(self, _problem):
+            raise body_error
+
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonGenerationService",
+        FailingGenerationService,
+    )
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(smoke_live.main([]))
+
+    assert exc_info.value is body_error
+    assert model_client.close_calls == 1
+    assert speech_client.close_calls == 1
+
+
+def test_live_smoke_close_only_failure_is_safely_classified(
+    monkeypatch,
+    capsys,
+):
+    model_client = _LifecycleClient(
+        httpx.ConnectError("private close endpoint")
+    )
+    speech_client = _LifecycleClient()
+    _configure_smoke_clients(
+        monkeypatch,
+        model_client,
+        speech_client,
+    )
+    lesson = SimpleNamespace(
+        lesson_id="smoke-lesson",
+        beats=[],
+        validation_report={},
+    )
+
+    class SuccessfulGenerationService:
+        def __init__(self, *_args):
+            pass
+
+        async def generate(self, _problem):
+            return lesson
+
+    class SuccessfulAudioService:
+        def __init__(self, *_args):
+            pass
+
+        async def attach_audio(self, candidate):
+            return candidate
+
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonGenerationService",
+        SuccessfulGenerationService,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonAudioService",
+        SuccessfulAudioService,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "assert_generated_lesson_contract",
+        lambda *_args: {},
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        smoke_live.run_cli([])
+
+    assert str(exc_info.value) == (
+        "现场服务网络请求失败，请检查网络连接或稍后重试。"
+    )
+    assert "private" not in str(exc_info.value)
+    assert capsys.readouterr().out == ""
+    assert model_client.close_calls == 1
+    assert speech_client.close_calls == 1
 
 
 def test_live_smoke_uses_automatic_temporary_audio_directory():

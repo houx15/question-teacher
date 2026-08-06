@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 from pydantic import ValidationError
 
 from app.compiler import LessonCompileError, LessonCompiler
+from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
 from app.prompts import (
     DIRECTOR_SYSTEM,
@@ -251,7 +252,6 @@ class LessonGenerationService:
                 reference_audit,
                 previous_validation_error,
             ),
-            "完整讲解生成失败。",
         )
         try:
             return LessonDraft.model_validate(payload)
@@ -298,7 +298,6 @@ class LessonGenerationService:
         payload = await self._complete_json(
             REVIEWER_SYSTEM,
             reviewer_prompt(problem, draft, reference_audit),
-            "整篇审稿失败。",
         )
         try:
             return ReviewDecision.model_validate(payload)
@@ -315,7 +314,6 @@ class LessonGenerationService:
         payload = await self._complete_json(
             REVISION_SYSTEM,
             revision_prompt(problem, draft, review, reference_audit),
-            "完整讲解修订失败。",
         )
         try:
             return LessonDraft.model_validate(payload)
@@ -330,7 +328,6 @@ class LessonGenerationService:
         payload = await self._complete_json(
             REFERENCE_AUDITOR_SYSTEM,
             reference_audit_prompt(problem, list(solution_strings)),
-            "参考解析审阅失败。",
         )
         try:
             return ReferenceMaterialAudit.model_validate(payload)
@@ -368,17 +365,17 @@ class LessonGenerationService:
         self,
         system_prompt: str,
         user_prompt: str,
-        safe_error: str,
     ) -> Any:
-        for _attempt in range(2):
+        for attempt in range(2):
             try:
                 return await self.client.complete_json(
                     system_prompt,
                     user_prompt,
                 )
-            except Exception:
-                continue
-        raise LessonQualityError(safe_error) from None
+            except ModelResponseError:
+                if attempt == 1:
+                    raise
+        raise AssertionError("unreachable model retry state")
 
     def _validate_draft(
         self,

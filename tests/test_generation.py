@@ -10,6 +10,7 @@ from app.generation import (
     LessonQualityError,
 )
 from app.math_engine import MathEngine
+from app.llm_client import ModelResponseError
 from app.prompts import (
     DIRECTOR_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
@@ -29,7 +30,7 @@ class FakeClient:
     async def complete_json(self, system_prompt, user_prompt):
         self.calls.append((system_prompt, user_prompt))
         response = self.responses.pop(0)
-        if isinstance(response, Exception):
+        if isinstance(response, BaseException):
             raise response
         return response
 
@@ -392,7 +393,7 @@ def test_reference_material_audit_retries_one_transient_failure():
     reference_text = "因式分解后得到 x=2 或 x=3。"
     client = FakeClient(
         [
-            RuntimeError("temporary-provider-detail"),
+            ModelResponseError("temporary-provider-detail"),
             approved_audit(),
             valid_draft(),
             approved_review(),
@@ -1240,7 +1241,7 @@ def test_two_invalid_director_schemas_stop_after_one_safe_retry():
 def test_transient_model_failure_is_retried_once():
     client = FakeClient(
         [
-            RuntimeError("temporary-provider-detail"),
+            ModelResponseError("temporary-provider-detail"),
             valid_draft(),
             approved_review(),
         ]
@@ -1254,21 +1255,52 @@ def test_transient_model_failure_is_retried_once():
     assert client.calls[0] == client.calls[1]
 
 
-def test_repeated_model_failure_uses_safe_error_after_one_retry():
+def test_repeated_model_failure_preserves_provider_error_after_one_retry():
+    final_error = ModelResponseError("safe-provider-category")
     client = FakeClient(
         [
-            RuntimeError("private-provider-detail"),
-            RuntimeError("private-provider-detail"),
+            ModelResponseError("safe-provider-category"),
+            final_error,
         ]
     )
     service = LessonGenerationService(client, MathEngine())
 
-    with pytest.raises(LessonQualityError) as exc_info:
+    with pytest.raises(ModelResponseError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "完整讲解生成失败。"
-    assert "private-provider-detail" not in str(exc_info.value)
+    assert exc_info.value is final_error
     assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "programming_error",
+    [
+        TypeError("private type detail"),
+        AttributeError("private attribute detail"),
+    ],
+)
+def test_programming_errors_are_not_retried_or_reclassified(
+    programming_error,
+):
+    client = FakeClient([programming_error, valid_draft()])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(type(programming_error)) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert exc_info.value is programming_error
+    assert len(client.calls) == 1
+
+
+def test_generation_cancellation_is_not_retried_or_reclassified():
+    cancellation = asyncio.CancelledError("cancel generation")
+    client = FakeClient([cancellation, valid_draft()])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.generate(problem()))
+
+    assert len(client.calls) == 1
 
 
 def test_sync_stage_callback_receives_generation_stages_in_order():
