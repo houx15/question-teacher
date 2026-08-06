@@ -93,6 +93,12 @@ class LessonCompiler:
             )
 
         transfer_item = draft.transfer_item
+        if transfer_item.options and any(
+            option.label is None for option in transfer_item.options
+        ):
+            raise LessonCompileError(
+                "近迁移选项缺少已规范化的显示标签。"
+            )
         transfer_interaction = (
             Interaction(
                 interaction_id=NEAR_TRANSFER_INTERACTION_ID,

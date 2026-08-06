@@ -174,6 +174,24 @@ def test_compiler_preserves_legacy_text_transfer_without_options():
     assert transfer.options == []
 
 
+def test_compiler_rejects_missing_canonicalized_transfer_label_safely():
+    draft = valid_draft()
+    private_option_id = "private-option-without-label"
+    draft["transfer_item"]["options"][0]["option_id"] = private_option_id
+    draft["transfer_item"]["correct_option_id"] = private_option_id
+    draft["transfer_item"]["options"][0].pop("label")
+
+    with pytest.raises(LessonCompileError) as exc_info:
+        LessonCompiler().compile(
+            problem(),
+            LessonDraft.model_validate(draft),
+            {"review_status": "approved"},
+        )
+
+    assert str(exc_info.value) == "近迁移选项缺少已规范化的显示标签。"
+    assert private_option_id not in str(exc_info.value)
+
+
 def test_compiler_rejects_overlong_method_spoken_narration():
     draft = valid_draft()
     private_narration = "私有方法说明" * 20
