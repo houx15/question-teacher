@@ -396,18 +396,17 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
         "观察中间项。"
     ]
     assert payload["beats"][0]["interaction"]["hint_audio_urls"]
-    assert payload["beats"][0]["interaction"]["correct_audio_url"]
+    assert "explanation_after_correct" not in (
+        payload["beats"][0]["interaction"]
+    )
+    assert "correct_audio_url" not in payload["beats"][0]["interaction"]
     assert payload["beats"][1]["interaction"]["options"] == [
         {"option_id": "correct-option", "label": "配方法"},
-        {
-            "option_id": "other-option",
-            "label": "其他方法",
-            "feedback": "这个式子已经是完全平方。",
-            "feedback_audio_url": (
-                "/audio/lesson-public/other-option.mp3"
-            ),
-        },
+        {"option_id": "other-option", "label": "其他方法"},
     ]
+    assert "这个式子已经是完全平方" not in serialized
+    assert "other-option.mp3" not in serialized
+    assert "correct.mp3" not in serialized
 
     evaluation = client.post(
         "/api/interactions/evaluate",
@@ -469,17 +468,14 @@ def test_public_lesson_payload_redacts_diagnostic_transfer_answers():
         {
             "option_id": "both-roots",
             "label": "x=3 或 x=4",
-            "feedback": "两个根都能使原方程成立。",
         },
         {
             "option_id": "only-three",
             "label": "x=3",
-            "feedback": "还遗漏了另一个根。",
         },
         {
             "option_id": "only-four",
             "label": "x=4",
-            "feedback": "还遗漏了另一个根。",
         },
     ]
 
@@ -507,10 +503,72 @@ def test_public_compiled_diagnostic_transfer_hides_answer_key():
         {
             "option_id": option["option_id"],
             "label": option["label"],
-            "feedback": option["feedback"],
         }
         for option in draft["transfer_item"]["options"]
     ]
+
+
+def test_choice_evaluation_returns_only_submitted_option_feedback():
+    store = MemoryStore()
+    lesson, interaction = save_interaction_lesson(
+        store,
+        kind="choice",
+        expected="correct-option",
+        options=[
+            InteractionOption(
+                option_id="correct-option",
+                label="正确选项",
+                feedback="correct-private-feedback",
+                feedback_audio_url="/audio/correct-private.mp3",
+            ),
+            InteractionOption(
+                option_id="wrong-option",
+                label="错误选项",
+                feedback="wrong-private-feedback",
+                feedback_audio_url="/audio/wrong-private.mp3",
+            ),
+        ],
+    )
+    client, _, _ = build_client(store=store)
+
+    public_response = client.get(f"/api/lessons/{lesson.lesson_id}")
+    wrong_response = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "wrong-option",
+        },
+    )
+    correct_response = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "correct-option",
+        },
+    )
+
+    public_serialized = json.dumps(
+        public_response.json(),
+        ensure_ascii=False,
+    )
+    assert "correct-private-feedback" not in public_serialized
+    assert "wrong-private-feedback" not in public_serialized
+    assert "correct-private.mp3" not in public_serialized
+    assert "wrong-private.mp3" not in public_serialized
+    assert wrong_response.json() == {
+        "classification": "incorrect",
+        "feedback": "wrong-private-feedback",
+        "feedback_audio_url": "/audio/wrong-private.mp3",
+    }
+    assert "correct-private" not in wrong_response.text
+    assert correct_response.json() == {
+        "classification": "correct",
+        "feedback": "correct-private-feedback",
+        "feedback_audio_url": "/audio/correct-private.mp3",
+    }
+    assert "wrong-private" not in correct_response.text
 
 
 @pytest.mark.parametrize("kind", ["choice", "point_select"])

@@ -594,6 +594,8 @@ def test_choice_submission_passes_selected_option_without_exposing_answer_key():
     assert "submitInteraction(interaction, option.option_id, option," in source
     assert "async function submitInteraction(interaction, answer, selectedOption, ui)" in source
     assert "resolveInteractionPresentation" in source
+    assert "if (result?.feedback)" in source
+    assert "if (selectedOption?.feedback)" not in source
     assert "expected: interaction.expected_answer" not in source
     assert "interaction.expected_answer" not in source
 

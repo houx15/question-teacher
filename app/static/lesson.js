@@ -911,7 +911,7 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
     });
     if (!outcome.canContinue) {
       ui.feedback.classList.add("is-wrong");
-      if (selectedOption?.feedback) {
+      if (result?.feedback) {
         renderMathText(ui.feedback, presentation.message);
         renderMathText(ui.hint, "");
       } else {

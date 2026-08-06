@@ -262,10 +262,10 @@ export function resolveInteractionPresentation({
     };
   }
 
-  if (selectedOption?.feedback) {
+  if (result?.feedback) {
     return {
-      message: selectedOption.feedback,
-      audioUrl: selectedOption.feedback_audio_url || null,
+      message: result.feedback,
+      audioUrl: result.feedback_audio_url || null,
       advanceMode: classification === "correct" ? "automatic" : "retry",
     };
   }

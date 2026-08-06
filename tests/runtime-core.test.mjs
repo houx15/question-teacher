@@ -410,14 +410,18 @@ test("native interactive target recognizes controls and contenteditable ancestry
 
 test("wrong diagnostic option presents its own feedback and audio", () => {
   const presentation = resolveInteractionPresentation({
-    result: { classification: "incorrect" },
+    result: {
+      classification: "incorrect",
+      feedback: "这里应满足 \\(ab=5\\)，这组数的乘积不对。",
+      feedback_audio_url: "/audio/option-b.mp3",
+    },
     interaction: {
       hints: ["先看常数项。"],
       hint_audio_urls: ["/audio/hint-1.mp3"],
     },
     selectedOption: {
-      feedback: "这里应满足 \\(ab=5\\)，这组数的乘积不对。",
-      feedback_audio_url: "/audio/option-b.mp3",
+      option_id: "option-b",
+      label: "错误选项",
     },
     outcome: { hint: "先看常数项。", hintIndex: 0 },
   });
@@ -451,14 +455,18 @@ test("wrong legacy response presents its staged hint and matching audio", () => 
 
 test("correct diagnostic option presents its own feedback and audio", () => {
   const presentation = resolveInteractionPresentation({
-    result: { classification: "correct" },
+    result: {
+      classification: "correct",
+      feedback: "对，\\(2+3=5\\) 且 \\(2\\times3=6\\)。",
+      feedback_audio_url: "/audio/option-a.mp3",
+    },
     interaction: {
       explanation_after_correct: "旧的正确解释。",
       correct_audio_url: "/audio/correct.mp3",
     },
     selectedOption: {
-      feedback: "对，\\(2+3=5\\) 且 \\(2\\times3=6\\)。",
-      feedback_audio_url: "/audio/option-a.mp3",
+      option_id: "option-a",
+      label: "正确选项",
     },
     outcome: { canContinue: true },
   });
@@ -467,6 +475,28 @@ test("correct diagnostic option presents its own feedback and audio", () => {
     message: "对，\\(2+3=5\\) 且 \\(2\\times3=6\\)。",
     audioUrl: "/audio/option-a.mp3",
     advanceMode: "automatic",
+  });
+});
+
+
+test("server feedback overrides any answer-revealing local option data", () => {
+  const presentation = resolveInteractionPresentation({
+    result: {
+      classification: "incorrect",
+      feedback: "只显示本次提交的服务端反馈。",
+      feedback_audio_url: "/audio/server-selected.mp3",
+    },
+    selectedOption: {
+      feedback: "不应信任的本地反馈。",
+      feedback_audio_url: "/audio/client-leak.mp3",
+    },
+    outcome: { hint: "继续观察。", hintIndex: 0 },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "只显示本次提交的服务端反馈。",
+    audioUrl: "/audio/server-selected.mp3",
+    advanceMode: "retry",
   });
 });
 

@@ -60,16 +60,17 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
     payload["transfer_item"].pop("correct_option_id", None)
     for option in payload["transfer_item"].get("options", []):
         option.pop("canonical_answer", None)
+        option.pop("feedback", None)
     payload.pop("validation_report", None)
     for beat in payload["beats"]:
         interaction = beat.get("interaction")
         if interaction is not None:
             interaction.pop("expected_answer", None)
+            interaction.pop("explanation_after_correct", None)
+            interaction.pop("correct_audio_url", None)
             for option in interaction.get("options", []):
-                if option.get("feedback") is None:
-                    option.pop("feedback", None)
-                if option.get("feedback_audio_url") is None:
-                    option.pop("feedback_audio_url", None)
+                option.pop("feedback", None)
+                option.pop("feedback_audio_url", None)
     return payload
 
 
@@ -172,7 +173,21 @@ def create_api_router(services: ApiServices) -> APIRouter:
                 detail="课程互动不存在。",
             )
 
-        if interaction.kind in {"choice", "point_select"}:
+        selected_option = None
+        if interaction.kind == "choice":
+            submitted_answer = submission.answer.strip()
+            selected_option = next(
+                (
+                    option
+                    for option in interaction.options
+                    if option.option_id.strip() == submitted_answer
+                ),
+                None,
+            )
+            correct = (
+                submitted_answer == interaction.expected_answer.strip()
+            )
+        elif interaction.kind == "point_select":
             correct = (
                 submission.answer.strip()
                 == interaction.expected_answer.strip()
@@ -196,8 +211,23 @@ def create_api_router(services: ApiServices) -> APIRouter:
                     )
             except MathValidationError:
                 correct = False
-        return {
+
+        result = {
             "classification": "correct" if correct else "incorrect",
         }
+        if selected_option is not None:
+            if selected_option.feedback is not None:
+                result["feedback"] = selected_option.feedback
+            if selected_option.feedback_audio_url is not None:
+                result["feedback_audio_url"] = (
+                    selected_option.feedback_audio_url
+                )
+        elif correct and interaction.explanation_after_correct:
+            result["feedback"] = interaction.explanation_after_correct
+            if interaction.correct_audio_url is not None:
+                result["feedback_audio_url"] = (
+                    interaction.correct_audio_url
+                )
+        return result
 
     return router
