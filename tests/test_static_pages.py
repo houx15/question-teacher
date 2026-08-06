@@ -97,6 +97,14 @@ def test_live_smoke_rejects_near_transfer_option_order_or_id_mismatch():
         assert_generated_lesson_contract(lesson)
 
 
+def test_live_smoke_rejects_reversed_near_transfer_option_order():
+    lesson = _smoke_contract_lesson()
+    lesson.beats[-1].interaction.options.reverse()
+
+    with pytest.raises(RuntimeError, match="近迁移选项"):
+        assert_generated_lesson_contract(lesson)
+
+
 def test_live_smoke_defaults_to_core_and_requires_explicit_audit_flag():
     assert smoke_live.parse_args([]).with_reference_audit is False
     assert smoke_live.parse_args(["--with-reference-audit"]).with_reference_audit is True
