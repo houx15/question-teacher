@@ -3,6 +3,7 @@ from typing import List, Optional
 
 from app.schemas import (
     LessonDraft,
+    MAX_NARRATIVE_SERIALIZED_BYTES,
     MaterialsDraft,
     METHOD_DEFINITION_MAX_LENGTH,
     METHOD_NAME_MAX_LENGTH,
@@ -219,6 +220,9 @@ DIRECTOR_SYSTEM = """
     correct_option_id 或任何互动答案字段；
 16. 若输入包含 previous_validation_error，说明上一版教学主线没有通过硬质量门；
     必须重新生成完整 NarrativeDraft，并针对该失败类别修正，不能降低或绕过校验。
+17. 标题最多 120 字符，学习目标最多 240，开场与总结各最多 90；math_steps 和
+    moments 各最多 16，每个 moment 最多 12 个 board_actions；完整 NarrativeDraft
+    的 UTF-8 JSON 不得超过 65536 字节。
 """.strip()
 
 
@@ -304,7 +308,10 @@ moment_id，并在 1 至 3 个真正认知转折点填写 interaction_intent；�
 对象。若存在参考解析审阅结果，继续只使用其中批准的素材，不得在修订中重新引入
 warnings 指出的缺口或被阻断的原始表述。只返回完整 NarrativeDraft JSON 对象，
 不返回 Markdown 或额外文字。修订通过数学校验后，Materials Agent 会重新生成全部
-互动和近迁移素材，禁止复用旧素材。
+互动和近迁移素材，禁止复用旧素材。继续遵守 NarrativeDraft Schema 的字段、列表
+与 65536 字节整体预算。
+若 previous_validation_error 非空，上一版修订未通过硬门；必须丢弃上一版并按安全
+失败类别重写完整 NarrativeDraft，不能复用超限内容或降低其他约束。
 """.strip()
 
 
@@ -585,6 +592,9 @@ def director_prompt(
             "output_contract": {
                 "format": "Return exactly one JSON object.",
                 "schema": NarrativeDraft.model_json_schema(),
+                "aggregate_budget_bytes": (
+                    MAX_NARRATIVE_SERIALIZED_BYTES
+                ),
                 "method_introduction": _method_introduction_contract(),
                 "operand_rule": {
                     "exactly_one": [
@@ -698,6 +708,7 @@ def revision_prompt(
     narrative: NarrativeDraft,
     review: ReviewDecision,
     reference_audit: Optional[ReferenceMaterialAudit] = None,
+    previous_validation_error: Optional[str] = None,
 ) -> str:
     return json.dumps(
         {
@@ -707,13 +718,20 @@ def revision_prompt(
             ),
             "current_narrative": narrative.model_dump(),
             "review": review.model_dump(),
+            "previous_validation_error": previous_validation_error,
             "narrative_schema": NarrativeDraft.model_json_schema(),
             "output_contract": {
                 "format": (
                     "Return exactly one complete NarrativeDraft JSON object."
                 ),
                 "schema": NarrativeDraft.model_json_schema(),
+                "aggregate_budget_bytes": (
+                    MAX_NARRATIVE_SERIALIZED_BYTES
+                ),
                 "method_introduction": _method_introduction_contract(),
+                "retry": _director_retry_contract(
+                    previous_validation_error
+                ),
             },
         },
         ensure_ascii=False,

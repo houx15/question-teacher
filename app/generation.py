@@ -27,6 +27,7 @@ from app.prompts import (
 from app.schemas import (
     LessonMoment,
     LessonDraft,
+    MAX_NARRATIVE_SERIALIZED_BYTES,
     MaterialsDraft,
     NarrativeDraft,
     ProblemInput,
@@ -245,6 +246,7 @@ class LessonGenerationService:
         revision_count = 0
 
         while True:
+            self._validate_narrative_size(narrative)
             self._validate_draft(problem, draft)
             await self._emit(on_stage, "正在进行整篇审稿")
             review = await self._review(problem, draft, reference_audit)
@@ -260,7 +262,6 @@ class LessonGenerationService:
                 review,
                 reference_audit,
             )
-            self._validate_narrative(problem, narrative)
             await self._emit(on_stage, "正在准备互动素材")
             draft = await self._create_validated_materials(
                 problem,
@@ -272,6 +273,7 @@ class LessonGenerationService:
             revision_count += 1
 
         await self._emit(on_stage, "正在编译课堂")
+        self._validate_narrative_size(narrative)
         validation_report = {
             "math_status": "verified",
             "review_status": review.status,
@@ -386,6 +388,7 @@ class LessonGenerationService:
         review: Optional[ReviewDecision],
         original_equation_degree: Optional[int],
     ) -> LessonDraft:
+        self._validate_narrative_size(narrative)
         previous_validation_error = None
         last_error: Optional[LessonQualityError] = None
         for attempt in range(2):
@@ -448,7 +451,10 @@ class LessonGenerationService:
             LessonMoment(
                 purpose=moment.purpose,
                 narration=moment.narration,
-                board_actions=moment.board_actions,
+                board_actions=[
+                    action.model_copy(deep=True)
+                    for action in moment.board_actions
+                ],
                 layer=moment.layer,
                 interaction=(
                     by_id[moment.moment_id].model_dump()
@@ -486,19 +492,37 @@ class LessonGenerationService:
         review: ReviewDecision,
         reference_audit: Optional[ReferenceMaterialAudit],
     ) -> NarrativeDraft:
-        payload = await self._complete_json(
-            REVISION_SYSTEM,
-            revision_prompt(
-                problem,
-                narrative,
-                review,
-                reference_audit,
-            ),
-        )
-        try:
-            return NarrativeDraft.model_validate(payload)
-        except ValidationError:
-            raise LessonQualityError("模型修订的讲解结构无效。") from None
+        previous_validation_error = None
+        for attempt in range(self.MAX_DRAFT_ATTEMPTS):
+            payload = await self._complete_json(
+                REVISION_SYSTEM,
+                revision_prompt(
+                    problem,
+                    narrative,
+                    review,
+                    reference_audit,
+                    previous_validation_error,
+                ),
+            )
+            try:
+                revised = NarrativeDraft.model_validate(payload)
+            except ValidationError as error:
+                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
+                    raise LessonQualityError(
+                        "模型修订的讲解结构无效。"
+                    ) from None
+                previous_validation_error = (
+                    _narrative_schema_validation_summary(error)
+                )
+                continue
+            try:
+                self._validate_narrative(problem, revised)
+                return revised
+            except LessonQualityError as error:
+                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
+                    raise
+                previous_validation_error = str(error)
+        raise AssertionError("unreachable revision retry state")
 
     def _canonicalize_transfer_labels(
         self,
@@ -590,6 +614,7 @@ class LessonGenerationService:
         problem: ProblemInput,
         narrative: NarrativeDraft,
     ) -> None:
+        self._validate_narrative_size(narrative)
         required_method = REQUIRED_METHODS.get(problem.required_method)
         moment_ids = [
             moment.moment_id
@@ -630,6 +655,14 @@ class LessonGenerationService:
             }
         ):
             raise LessonQualityError("讲解没有真正使用指定方法。")
+
+    @staticmethod
+    def _validate_narrative_size(narrative: NarrativeDraft) -> None:
+        serialized_size = len(
+            narrative.model_dump_json().encode("utf-8")
+        )
+        if serialized_size > MAX_NARRATIVE_SERIALIZED_BYTES:
+            raise LessonQualityError("教学主线整体内容过长。")
 
     def _validate_draft(
         self,

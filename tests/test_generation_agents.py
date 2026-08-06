@@ -107,6 +107,85 @@ def test_materials_contract_is_small_and_receives_validated_narrative():
     assert "互动前" in MATERIALS_SYSTEM
 
 
+def test_narrative_schema_bounds_tts_fields_lists_and_board_actions():
+    schema = NarrativeDraft.model_json_schema()
+    properties = schema["properties"]
+    moment = schema["$defs"]["NarrativeMoment"]["properties"]
+    math_step = schema["$defs"]["NarrativeMathStep"]["properties"]
+    board_action = schema["$defs"]["NarrativeBoardAction"]["properties"]
+
+    assert properties["title"]["maxLength"] == 120
+    assert properties["opening"]["maxLength"] == 90
+    assert properties["summary"]["maxLength"] == 90
+    assert properties["moments"]["maxItems"] == 16
+    assert properties["math_steps"]["maxItems"] == 16
+    assert moment["purpose"]["maxLength"] == 120
+    assert moment["board_actions"]["maxItems"] == 12
+    assert math_step["state_before"]["maxItems"] == 4
+    assert math_step["state_after"]["maxItems"] == 4
+    assert board_action["content"]["anyOf"][0]["maxLength"] == 500
+
+
+def oversized_narrative_payload():
+    payload = narrative_payload()
+    source = copy.deepcopy(payload["moments"][1])
+    moments = []
+    for index in range(16):
+        moment = copy.deepcopy(source)
+        moment["moment_id"] = f"large-moment-{index}"
+        moment["interaction_intent"] = (
+            "诊断一个关键判断。"
+            if index == 0
+            else None
+        )
+        moment["board_actions"] = [
+            {
+                "type": "write",
+                "target": f"target-{action_index}",
+                "content": "x" * 500,
+            }
+            for action_index in range(12)
+        ]
+        moments.append(moment)
+    payload["moments"] = moments
+    return payload
+
+
+def test_aggregate_narrative_size_gate_retries_once_with_safe_error():
+    oversized = oversized_narrative_payload()
+    client = FakeClient([oversized, copy.deepcopy(oversized)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError, match="教学主线整体内容过长"):
+        asyncio.run(service.generate(problem()))
+
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        DIRECTOR_SYSTEM,
+    ]
+    retry_payload = json.loads(client.all_calls[1][1])
+    assert retry_payload["previous_validation_error"] == (
+        "教学主线整体内容过长。"
+    )
+    assert "x" * 100 not in json.dumps(
+        retry_payload["output_contract"]["retry"],
+        ensure_ascii=False,
+    )
+
+
+def test_compose_deep_copies_nested_narrative_board_actions():
+    narrative = NarrativeDraft.model_validate(narrative_payload())
+    materials = MaterialsDraft.model_validate(materials_payload())
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+    before = narrative.model_dump()
+
+    draft = service._compose_draft(narrative, materials)
+    draft.moments[0].board_actions[0].target = "mutated-target"
+
+    assert narrative.model_dump() == before
+    assert narrative.moments[0].board_actions[0].target != "mutated-target"
+
+
 def test_service_composes_materials_before_reviewer_and_reviewer_sees_whole_draft():
     client = FakeClient(
         [narrative_payload(), materials_payload(), approved_review()]
@@ -138,7 +217,7 @@ def test_materials_reject_zero_or_four_interactions_after_one_retry(count):
     invalid = materials_payload()
     invalid["interactions"] = [
         {
-                    "moment_id": f"moment-{index % 2}",
+            "moment_id": f"moment-{index % 2}",
             "interaction": {
                 **copy.deepcopy(
                     valid_draft()["moments"][0]["interaction"]
@@ -346,6 +425,41 @@ def test_revision_rebuilds_narrative_then_regenerates_all_materials():
     regenerated_materials = json.loads(client.all_calls[4][1])
     assert regenerated_materials["review"]["must_fix"] == (
         revision_review()["must_fix"]
+    )
+
+
+def test_oversized_revision_retries_before_regenerating_materials():
+    revised = narrative_payload()
+    revised["opening"] = "先明确条件，再寻找满足条件的因数对。"
+    client = FakeClient(
+        [
+            narrative_payload(),
+            materials_payload(),
+            revision_review(),
+            oversized_narrative_payload(),
+            revised,
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["revision_count"] == 1
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+        REVISION_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    retry_payload = json.loads(client.all_calls[4][1])
+    assert retry_payload["previous_validation_error"] == (
+        "教学主线整体内容过长。"
     )
 
 

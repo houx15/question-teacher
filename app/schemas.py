@@ -30,6 +30,7 @@ METHOD_NAME_MAX_LENGTH = 8
 METHOD_DEFINITION_MAX_LENGTH = 36
 METHOD_TARGET_FORM_MAX_LENGTH = 80
 METHOD_WHY_MAX_LENGTH = 32
+MAX_NARRATIVE_SERIALIZED_BYTES = 64 * 1024
 MethodName = Annotated[
     str,
     StringConstraints(
@@ -99,6 +100,38 @@ GeneratedMathAnswer = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
 ]
+NarrativeTitle = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+]
+NarrativeLearningGoal = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=240),
+]
+NarrativeRationale = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
+]
+NarrativePurpose = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+]
+NarrativeMathText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+]
+NarrativeReason = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
+]
+NarrativeBoardTarget = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+]
+NarrativeBoardContent = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+]
 MathOperation = Literal[
     "simplify",
     "add_both_sides",
@@ -165,6 +198,23 @@ class MathStep(SchemaModel):
         elif self.operands:
             raise ValueError(f"{self.operation} does not accept operands")
         return self
+
+
+class NarrativeMathStep(MathStep):
+    purpose: NarrativePurpose
+    operands: List[NarrativeMathText] = Field(
+        default_factory=list,
+        max_length=1,
+    )
+    state_before: List[NarrativeMathText] = Field(
+        min_length=1,
+        max_length=4,
+    )
+    state_after: List[NarrativeMathText] = Field(
+        min_length=1,
+        max_length=4,
+    )
+    reason: NarrativeReason
 
 
 class ReferenceMaterialAudit(SchemaModel):
@@ -235,6 +285,13 @@ class BoardAction(SchemaModel):
         return self
 
 
+class NarrativeBoardAction(BoardAction):
+    target: Optional[NarrativeBoardTarget] = None
+    content: Optional[NarrativeBoardContent] = None
+    source: Optional[NarrativeBoardTarget] = None
+    relation_target: Optional[NarrativeBoardTarget] = None
+
+
 class InteractionOption(SchemaModel):
     option_id: NonEmptyString
     label: NonEmptyString
@@ -300,9 +357,12 @@ class LessonMoment(SchemaModel):
 
 class NarrativeMoment(SchemaModel):
     moment_id: GeneratedId
-    purpose: NonEmptyString
+    purpose: NarrativePurpose
     narration: MomentNarration
-    board_actions: List[BoardAction] = Field(default_factory=list)
+    board_actions: List[NarrativeBoardAction] = Field(
+        default_factory=list,
+        max_length=12,
+    )
     layer: NarrativeLayer = "base"
     interaction_intent: Optional[InteractionIntentText] = None
 
@@ -369,14 +429,20 @@ class MethodIntroduction(SchemaModel):
 
 
 class NarrativeDraft(SchemaModel):
-    title: NonEmptyString
-    learning_goal: NonEmptyString
-    opening: NonEmptyString
-    method_rationale: NonEmptyString
+    title: NarrativeTitle
+    learning_goal: NarrativeLearningGoal
+    opening: MomentNarration
+    method_rationale: NarrativeRationale
     method_introduction: MethodIntroduction
-    math_steps: List[MathStep] = Field(min_length=1)
-    moments: List[NarrativeMoment] = Field(min_length=1)
-    summary: NonEmptyString
+    math_steps: List[NarrativeMathStep] = Field(
+        min_length=1,
+        max_length=16,
+    )
+    moments: List[NarrativeMoment] = Field(
+        min_length=1,
+        max_length=16,
+    )
+    summary: MomentNarration
 
     @model_validator(mode="after")
     def validate_moment_slots(self) -> "NarrativeDraft":
