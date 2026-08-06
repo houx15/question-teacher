@@ -6,6 +6,7 @@ from typing import Optional
 from app.math_engine import (
     MathEngine,
     MathValidationError,
+    MathValidationReason,
     ProblemValidation,
 )
 
@@ -13,20 +14,11 @@ from app.math_engine import (
 _MAX_PROBLEM_LENGTH = 4000
 _MAX_ANSWER_LENGTH = 1000
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_CODE_LIKE_SYNTAX = re.compile(
-    r"__|//|\*\*|[A-Za-z_][A-Za-z0-9_]*\s*"
-    r"(?:\[|\.\s*[A-Za-z_])"
-)
+_DANGEROUS_PROTOCOL = re.compile(r"__[A-Za-z0-9_]+__\s*\(")
 _CJK_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _MATH_ONLY = re.compile(r"[0-9A-Za-z+\-*/^().=＝×÷−－–—＋²\s]+")
 _DIRECT_EQUATION_COMMAND = re.compile(
     r"^[\u3400-\u4dbf\u4e00-\u9fff\s，,、]+方程\s*(.+)$"
-)
-_CAPABILITY_LIMIT_MESSAGES = (
-    "暂仅支持一元多项式方程。",
-    "暂仅支持一次或二次方程。",
-    "暂不支持未知数位于分母。",
-    "暂不支持未知数的根式幂。",
 )
 
 
@@ -70,8 +62,12 @@ class ProblemCapabilityProbe:
                 problem_text,
                 reference_answer,
             )
-        except MathValidationError:
-            pass
+        except MathValidationError as error:
+            if error.reason == MathValidationReason.CONTRADICTION:
+                return ProblemIntakeAssessment(
+                    ProblemIntakeStatus.CONTRADICTION,
+                    public_message="参考答案与题目实际结果不一致。",
+                )
         else:
             return ProblemIntakeAssessment(
                 ProblemIntakeStatus.SYMBOLIC_VERIFIED,
@@ -139,8 +135,8 @@ def _safe_broad_input(problem_text: str, reference_answer: str) -> bool:
         and 1 <= len(reference_answer) <= _MAX_ANSWER_LENGTH
         and _CONTROL_CHARACTERS.search(problem_text) is None
         and _CONTROL_CHARACTERS.search(reference_answer) is None
-        and _CODE_LIKE_SYNTAX.search(problem_text) is None
-        and _CODE_LIKE_SYNTAX.search(reference_answer) is None
+        and _DANGEROUS_PROTOCOL.search(problem_text) is None
+        and _DANGEROUS_PROTOCOL.search(reference_answer) is None
     )
 
 
@@ -148,11 +144,11 @@ def _is_safe_unsupported_task(
     problem_text: str,
     validation_error: MathValidationError,
 ) -> bool:
+    if validation_error.reason == MathValidationReason.UNSUPPORTED:
+        return True
     if _looks_like_narrative_task(problem_text):
         return True
-    if str(validation_error) in _CAPABILITY_LIMIT_MESSAGES:
-        return True
-    return _uses_only_extra_single_letter_symbols(problem_text)
+    return False
 
 
 def _looks_like_narrative_task(problem_text: str) -> bool:
@@ -168,7 +164,17 @@ def _looks_like_narrative_task(problem_text: str) -> bool:
 def _looks_like_direct_math_input(text: str) -> bool:
     colon_index = max(text.rfind(":"), text.rfind("："))
     if colon_index >= 0:
+        prefix = text[:colon_index]
         suffix = text[colon_index + 1 :].strip()
+        suffix_has_equality = "=" in suffix or "＝" in suffix
+        if (
+            suffix_has_equality
+            and _CJK_CHARACTER.search(suffix) is None
+            and not _has_english_prose(suffix)
+        ):
+            return True
+        if "方程" in prefix and suffix_has_equality:
+            return True
         if (
             suffix
             and _MATH_ONLY.fullmatch(suffix)
@@ -182,26 +188,15 @@ def _looks_like_direct_math_input(text: str) -> bool:
         return True
 
     command_match = _DIRECT_EQUATION_COMMAND.fullmatch(text)
+    if command_match is None:
+        return False
+    command_suffix = command_match.group(1).lstrip(":：").strip()
     return bool(
-        command_match
-        and _MATH_ONLY.fullmatch(command_match.group(1).strip())
+        _MATH_ONLY.fullmatch(command_suffix)
+        or "=" in command_suffix
+        or "＝" in command_suffix
     )
 
 
 def _has_english_prose(text: str) -> bool:
     return len(re.findall(r"\b[A-Za-z]{2,}\b", text)) >= 2
-
-
-def _uses_only_extra_single_letter_symbols(problem_text: str) -> bool:
-    if problem_text.count("=") + problem_text.count("＝") != 1:
-        return False
-    identifiers = re.findall(r"[A-Za-z]+", problem_text)
-    extra_identifiers = [
-        identifier
-        for identifier in identifiers
-        if identifier not in {"x", "sqrt"}
-    ]
-    return bool(extra_identifiers) and all(
-        len(identifier) == 1 or identifier == "sqrt"
-        for identifier in extra_identifiers
-    )

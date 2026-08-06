@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, Optional, Tuple
 
 from sympy import (
@@ -41,8 +42,22 @@ from sympy.sets.sets import Set
 from app.schemas import MathStep
 
 
+class MathValidationReason(str, Enum):
+    INVALID_INPUT = "invalid_input"
+    UNSUPPORTED = "unsupported"
+    CONTRADICTION = "contradiction"
+
+
 class MathValidationError(ValueError):
     """Raised when math input is unsafe, malformed, or unsupported."""
+
+    def __init__(
+        self,
+        message: str,
+        reason: MathValidationReason = MathValidationReason.INVALID_INPUT,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class _ImmutableList(list):
@@ -99,6 +114,9 @@ class MathEngine:
         rationalize,
     )
     _CHARACTER_PATTERN = re.compile(r"[0-9A-Za-z+\-*/^().\s]+")
+    _CHARACTER_OR_ABSOLUTE_VALUE_PATTERN = re.compile(
+        r"[0-9A-Za-z+\-*/^().|\s]+"
+    )
     _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z]+")
     _ANSWER_SEPARATOR = re.compile(r"\s*(?:或|(?i:\bor\b))\s*")
     _NORMALIZATION_TABLE = str.maketrans(
@@ -163,11 +181,17 @@ class MathEngine:
                     domain=S.Reals,
                 )
             except Exception as exc:
-                raise MathValidationError("暂不支持求解这个方程。") from exc
+                raise MathValidationError(
+                    "暂不支持求解这个方程。",
+                    MathValidationReason.UNSUPPORTED,
+                ) from exc
             combined = combined.union(solutions)
 
         if combined.is_finite_set is not True:
-            raise MathValidationError("暂仅支持有限实数解集。")
+            raise MathValidationError(
+                "暂仅支持有限实数解集。",
+                MathValidationReason.UNSUPPORTED,
+            )
         return combined
 
     def validate_problem(
@@ -184,7 +208,10 @@ class MathEngine:
         actual_solutions = self.solution_set([equation_text])
         reference_solutions = self._answer_solution_set(reference_answer)
         if actual_solutions != reference_solutions:
-            raise MathValidationError("参考答案与题目实际解集不一致。")
+            raise MathValidationError(
+                "参考答案与题目实际解集不一致。",
+                MathValidationReason.CONTRADICTION,
+            )
 
         solution_strings = [
             sstr(solution)
@@ -303,7 +330,10 @@ class MathEngine:
         if not isinstance(expression, Expr):
             raise MathValidationError("数学表达式格式不正确。")
         if expression.free_symbols - {self.x}:
-            raise MathValidationError("数学表达式中只能使用未知数 x。")
+            raise MathValidationError(
+                "数学表达式中只能使用未知数 x。",
+                MathValidationReason.UNSUPPORTED,
+            )
         return unevaluated, expression
 
     def _answer_solution_set(self, answer: str) -> Set:
@@ -347,7 +377,17 @@ class MathEngine:
         if len(normalized) > self._MAX_EXPRESSION_LENGTH:
             raise MathValidationError("数学表达式过长。")
         if self._CHARACTER_PATTERN.fullmatch(normalized) is None:
-            raise MathValidationError("数学表达式包含不支持的字符。")
+            reason = (
+                MathValidationReason.UNSUPPORTED
+                if self._CHARACTER_OR_ABSOLUTE_VALUE_PATTERN.fullmatch(
+                    normalized
+                )
+                else MathValidationReason.INVALID_INPUT
+            )
+            raise MathValidationError(
+                "数学表达式包含不支持的字符。",
+                reason,
+            )
         if re.search(r"\*\s*\*|/\s*/", normalized):
             raise MathValidationError("数学表达式包含不支持的运算符。")
 
@@ -368,7 +408,10 @@ class MathEngine:
 
         identifiers = self._IDENTIFIER_PATTERN.findall(normalized)
         if any(identifier not in {"x", "sqrt"} for identifier in identifiers):
-            raise MathValidationError("数学表达式中只能使用未知数 x 和 sqrt。")
+            raise MathValidationError(
+                "数学表达式中只能使用未知数 x 和 sqrt。",
+                MathValidationReason.UNSUPPORTED,
+            )
         if "sqrt" in identifiers and re.search(
             r"\bsqrt\b(?!\s*\()",
             normalized,
@@ -380,7 +423,10 @@ class MathEngine:
         if not isinstance(expression, Expr):
             raise MathValidationError("数学表达式格式不正确。")
         if expression.free_symbols - {self.x}:
-            raise MathValidationError("数学表达式中只能使用未知数 x。")
+            raise MathValidationError(
+                "数学表达式中只能使用未知数 x。",
+                MathValidationReason.UNSUPPORTED,
+            )
         if count_ops(expression, visual=False) > self._MAX_OPERATIONS:
             raise MathValidationError("数学表达式运算过多。")
 
@@ -389,15 +435,24 @@ class MathEngine:
                 continue
             exponent = node.exp
             if node.base.has(self.x) and exponent.is_negative:
-                raise MathValidationError("暂不支持未知数位于分母。")
+                raise MathValidationError(
+                    "暂不支持未知数位于分母。",
+                    MathValidationReason.UNSUPPORTED,
+                )
             if exponent.is_Integer:
                 if abs(int(exponent)) > self._MAX_LITERAL_EXPONENT:
                     raise MathValidationError("指数绝对值不能超过四。")
             elif exponent.is_Rational:
                 if node.base.has(self.x):
-                    raise MathValidationError("暂不支持未知数的根式幂。")
+                    raise MathValidationError(
+                        "暂不支持未知数的根式幂。",
+                        MathValidationReason.UNSUPPORTED,
+                    )
             else:
-                raise MathValidationError("暂不支持这个指数形式。")
+                raise MathValidationError(
+                    "暂不支持这个指数形式。",
+                    MathValidationReason.UNSUPPORTED,
+                )
         if expression.is_real is not True:
             raise MathValidationError("数学表达式必须在实数范围内。")
 
@@ -797,11 +852,17 @@ class MathEngine:
             polynomial = Poly(left - right, self.x)
             degree = polynomial.degree()
         except (PolynomialError, TypeError, ValueError) as exc:
-            raise MathValidationError("暂仅支持一元多项式方程。") from exc
+            raise MathValidationError(
+                "暂仅支持一元多项式方程。",
+                MathValidationReason.UNSUPPORTED,
+            ) from exc
         if degree is not S.NegativeInfinity and (
             degree > self._MAX_POLYNOMIAL_DEGREE
         ):
-            raise MathValidationError("暂仅支持一次或二次方程。")
+            raise MathValidationError(
+                "暂仅支持一次或二次方程。",
+                MathValidationReason.UNSUPPORTED,
+            )
         if any(
             coefficient.is_real is not True
             for coefficient in polynomial.all_coeffs()

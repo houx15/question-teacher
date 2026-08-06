@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 from sympy import S
 
-from app.math_engine import MathEngine, MathValidationError
+from app.math_engine import (
+    MathEngine,
+    MathValidationError,
+    MathValidationReason,
+)
 from app.schemas import MathStep, ProblemInput
 
 
@@ -767,6 +771,41 @@ def test_parse_equation_rejects_malformed_input(engine, malformed_equation):
 def test_parse_equation_rejects_prompt_prefix_and_colon(engine):
     with pytest.raises(MathValidationError):
         engine.parse_equation("请解方程：x=1")
+
+
+@pytest.mark.parametrize(
+    "equation",
+    (
+        "sin(x)=0",
+        "xy=1",
+        "|x|=1",
+    ),
+)
+def test_parse_equation_marks_valid_unsupported_math_structurally(
+    engine,
+    equation,
+):
+    with pytest.raises(MathValidationError) as error:
+        engine.parse_equation(equation)
+
+    assert error.value.reason is MathValidationReason.UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    "equation",
+    (
+        "x@=1",
+        "x%2=0",
+    ),
+)
+def test_parse_equation_marks_malformed_syntax_as_invalid(
+    engine,
+    equation,
+):
+    with pytest.raises(MathValidationError) as error:
+        engine.parse_equation(equation)
+
+    assert error.value.reason is MathValidationReason.INVALID_INPUT
 
 
 def test_validate_problem_alone_extracts_final_colon_suffix(engine):

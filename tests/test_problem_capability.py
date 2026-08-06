@@ -52,6 +52,59 @@ def test_parameter_root_task_is_unsupported_not_invalid(probe):
 
 
 @pytest.mark.parametrize(
+    "problem_text",
+    (
+        "sin(x)=0",
+        "xy=1",
+        "|x|=1",
+    ),
+)
+def test_valid_math_beyond_legacy_capability_is_unsupported(
+    probe,
+    problem_text,
+):
+    result = probe.assess(problem_text, "x=0")
+
+    assert result.status == ProblemIntakeStatus.UNSUPPORTED
+    assert result.problem_validation is None
+
+
+@pytest.mark.parametrize(
+    "problem_text",
+    (
+        "解方程：x@=1",
+        "解方程：x%2=0",
+        "请计算：x@=1",
+    ),
+)
+def test_explicit_equation_protocol_with_malformed_suffix_is_invalid(
+    probe,
+    problem_text,
+):
+    result = probe.assess(problem_text, "x=1")
+
+    assert result.status == ProblemIntakeStatus.INVALID_INPUT
+    assert result.problem_validation is None
+
+
+@pytest.mark.parametrize(
+    "problem_text",
+    (
+        "已知数列A[1]=1，求A[2]的值。",
+        "在几何记号A.B中，说明点A与点B的关系。",
+    ),
+)
+def test_broad_math_notation_is_not_rejected_as_code_like_input(
+    probe,
+    problem_text,
+):
+    result = probe.assess(problem_text, "依据题目条件判断")
+
+    assert result.status == ProblemIntakeStatus.UNSUPPORTED
+    assert result.problem_validation is None
+
+
+@pytest.mark.parametrize(
     ("problem_text", "reference_answer", "expected_message"),
     (
         ("", "1/2", "题目不能为空。"),
