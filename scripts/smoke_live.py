@@ -1,10 +1,12 @@
 import asyncio
 import argparse
+from fractions import Fraction
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
-from typing import List
+from typing import List, Optional
 
 import httpx
 
@@ -116,11 +118,83 @@ def assert_model_call_contract(
         )
 
 
+def assert_common_lesson_contract(lesson) -> dict:
+    """Assert shared lesson structure without using symbolic math tools."""
+    beats = lesson.beats
+    _require_contract(
+        bool(beats),
+        "生成课程没有可播放的节拍。",
+    )
+
+    interactions = [
+        beat.interaction for beat in beats if beat.interaction is not None
+    ]
+    interaction_kinds = [interaction.kind for interaction in interactions]
+    _require_contract(
+        bool(interactions),
+        "生成课程没有互动。",
+    )
+    _require_contract(
+        all(kind == "choice" for kind in interaction_kinds),
+        "生成课程未保持选择式互动。",
+    )
+
+    choices = interactions
+    for choice in choices:
+        _require_contract(
+            len(choice.options) in {3, 4},
+            "生成选择互动的选项数量不符合 smoke 合同。",
+        )
+        for option in choice.options:
+            _require_contract(
+                bool(option.feedback),
+                "生成选择互动缺少诊断反馈。",
+            )
+            _require_contract(
+                bool(option.feedback_audio_url),
+                "生成选择互动缺少诊断反馈语音。",
+            )
+
+    final_interaction = beats[-1].interaction
+    _require_contract(
+        final_interaction is not None
+        and final_interaction.kind == "choice",
+        "生成课程未以选择式近迁移互动结束。",
+    )
+    transfer_options = lesson.transfer_item.options
+    _require_contract(
+        len(final_interaction.options) == len(transfer_options),
+        "近迁移选项数量与内部课程记录不一致。",
+    )
+    for transfer_option, runtime_option in zip(
+        transfer_options,
+        final_interaction.options,
+    ):
+        _require_contract(
+            transfer_option.option_id == runtime_option.option_id,
+            "近迁移选项顺序或标识与内部课程记录不一致。",
+        )
+        _require_contract(
+            runtime_option.label == transfer_option.label,
+            "近迁移选项显示标签与内部课程记录不一致。",
+        )
+
+    audio_ready = all(bool(beat.audio_url) for beat in beats)
+    _require_contract(audio_ready, "生成课程缺少讲解语音。")
+    return {
+        "interaction_kinds": interaction_kinds,
+        "diagnostic_choice_count": len(choices),
+        "option_feedback_audio_ready": True,
+        "audio_ready": audio_ready,
+    }
+
+
 def assert_generated_lesson_contract(
     lesson,
     math_engine: MathEngine = None,
 ) -> dict:
-    """Assert structural teaching and audio guarantees without exposing content."""
+    """Assert the core complete-the-square smoke contract."""
+    common = assert_common_lesson_contract(lesson)
     beats = lesson.beats
     _require_contract(
         len(beats) >= 2,
@@ -148,55 +222,12 @@ def assert_generated_lesson_contract(
         "方法介绍口语讲稿含有反斜杠。",
     )
 
-    interactions = [
-        beat.interaction for beat in beats if beat.interaction is not None
-    ]
-    interaction_kinds = [interaction.kind for interaction in interactions]
-    _require_contract(
-        not {"expression", "transfer"}.intersection(interaction_kinds),
-        "新生成课程包含已弃用的数学输入互动。",
-    )
-
-    choices = [
-        interaction
-        for interaction in interactions
-        if interaction.kind == "choice"
-    ]
-    for choice in choices:
-        _require_contract(
-            len(choice.options) in {3, 4},
-            "生成选择互动的选项数量不符合 smoke 合同。",
-        )
-        for option in choice.options:
-            _require_contract(
-                bool(option.feedback),
-                "生成选择互动缺少诊断反馈。",
-            )
-            _require_contract(
-                bool(option.feedback_audio_url),
-                "生成选择互动缺少诊断反馈语音。",
-            )
-
-    final_interaction = beats[-1].interaction
-    _require_contract(
-        final_interaction is not None
-        and final_interaction.kind == "choice",
-        "生成课程未以选择式近迁移互动结束。",
-    )
-    transfer_options = lesson.transfer_item.options
-    _require_contract(
-        len(final_interaction.options) == len(transfer_options),
-        "近迁移选项数量与内部课程记录不一致。",
-    )
     engine = math_engine or MathEngine()
+    final_options = beats[-1].interaction.options
     for transfer_option, runtime_option in zip(
-        transfer_options,
-        final_interaction.options,
+        lesson.transfer_item.options,
+        final_options,
     ):
-        _require_contract(
-            transfer_option.option_id == runtime_option.option_id,
-            "近迁移选项顺序或标识与内部课程记录不一致。",
-        )
         try:
             expected_label = engine.format_answer_label(
                 transfer_option.canonical_answer
@@ -211,32 +242,90 @@ def assert_generated_lesson_contract(
             "近迁移选项标签与内部答案不一致。",
         )
 
-    audio_ready = all(bool(beat.audio_url) for beat in beats)
-    _require_contract(audio_ready, "生成课程缺少讲解语音。")
     return {
         "method_first": True,
-        "interaction_kinds": interaction_kinds,
-        "diagnostic_choice_count": len(choices),
-        "option_feedback_audio_ready": True,
+        **common,
         "formula_labels_ready": True,
-        "audio_ready": audio_ready,
     }
 
 
-def _normalize_math_fragment(value: str) -> str:
-    return (
-        value.replace(" ", "")
-        .replace("\n", "")
-        .replace("$", "")
-        .replace(r"\(", "")
-        .replace(r"\)", "")
-        .replace(r"\[", "")
-        .replace(r"\]", "")
+def _strip_outer_math_delimiters(value: str) -> str:
+    text = value.strip()
+    delimiters = (
+        ("$$", "$$"),
+        ("$", "$"),
+        (r"\(", r"\)"),
+        (r"\[", r"\]"),
     )
+    changed = True
+    while changed:
+        changed = False
+        for opening, closing in delimiters:
+            if (
+                text.startswith(opening)
+                and text.endswith(closing)
+                and len(text) > len(opening) + len(closing)
+            ):
+                text = text[len(opening) : -len(closing)].strip()
+                changed = True
+                break
+    return text
+
+
+def _parse_half_expression(value: str) -> Optional[Fraction]:
+    latex_fraction = re.fullmatch(
+        r"\\(?:dfrac|tfrac|frac)\{([+-]?\d+)\}\{([+-]?\d+)\}",
+        value,
+    )
+    short_latex_fraction = re.fullmatch(
+        r"\\frac([+-]?\d)([+-]?\d)",
+        value,
+    )
+    plain_fraction = re.fullmatch(r"([+-]?\d+)/([+-]?\d+)", value)
+    match = latex_fraction or short_latex_fraction or plain_fraction
+    try:
+        if match:
+            return Fraction(int(match.group(1)), int(match.group(2)))
+        if re.fullmatch(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)", value):
+            return Fraction(value)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return None
+
+
+def _is_parameter_root_conclusion(value: str) -> bool:
+    text = _strip_outer_math_delimiters(value)
+    rejected_markers = (
+        "错误",
+        "错解",
+        "不等于",
+        "不是",
+        "并非",
+        "!=",
+        "≠",
+        "≤",
+        "≥",
+        "<",
+        ">",
+        r"\ne",
+        r"\neq",
+        r"\le",
+        r"\ge",
+    )
+    if any(marker in text for marker in rejected_markers):
+        return False
+    compact = re.sub(r"\s+", "", text).replace("−", "-")
+    if compact.count("=") != 1:
+        return False
+    left, right = compact.split("=", 1)
+    if left != "m-n":
+        return False
+    return _parse_half_expression(right) == Fraction(1, 2)
 
 
 def assert_grounded_parameter_root_contract(lesson) -> dict:
     """Check a grounded live lesson without returning private lesson content."""
+    common = assert_common_lesson_contract(lesson)
     report = lesson.validation_report
     mode = report.get("verification_mode")
     _require_contract(
@@ -257,38 +346,15 @@ def assert_grounded_parameter_root_contract(lesson) -> dict:
         "参数根课程未通过整篇审稿。",
     )
 
-    interactions = [
-        beat.interaction
-        for beat in lesson.beats
-        if beat.interaction is not None
-    ]
-    interaction_kinds = [
-        interaction.kind for interaction in interactions
-    ]
-    _require_contract(
-        bool(interaction_kinds)
-        and all(kind == "choice" for kind in interaction_kinds),
-        "参数根课程未保持选择式互动。",
-    )
-
-    audio_ready = bool(lesson.beats) and all(
-        bool(beat.audio_url) for beat in lesson.beats
-    )
-    _require_contract(audio_ready, "参数根课程缺少讲解语音。")
-
-    expected = _normalize_math_fragment(
-        GROUNDED_PARAMETER_ROOT_ANSWER
-    )
     board_contents = (
         action.content
         for beat in lesson.beats
         for action in beat.board_actions
-        if action.type == "write"
+        if action.type in {"write", "transform"}
         and isinstance(action.content, str)
     )
     conclusion_present = any(
-        expected in _normalize_math_fragment(content)
-        for content in board_contents
+        _is_parameter_root_conclusion(content) for content in board_contents
     )
     _require_contract(
         conclusion_present,
@@ -298,10 +364,10 @@ def assert_grounded_parameter_root_contract(lesson) -> dict:
     return {
         "lesson_id": lesson.lesson_id,
         "beat_count": len(lesson.beats),
-        "interaction_kinds": interaction_kinds,
+        "interaction_kinds": common["interaction_kinds"],
         "mode": mode,
         "review_status": review_status,
-        "audio_ready": audio_ready,
+        "audio_ready": common["audio_ready"],
         "conclusion_present": conclusion_present,
     }
 

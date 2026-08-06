@@ -172,12 +172,21 @@ def _grounded_smoke_contract_lesson():
                 board_actions=[
                     SimpleNamespace(
                         type="write",
-                        content=r"$\frac{1}{2}$",
+                        content=r"$m-n=\frac{1}{2}$",
                     )
                 ],
                 audio_url="/audio/conclusion.mp3",
             ),
         ],
+        transfer_item=SimpleNamespace(
+            options=[
+                SimpleNamespace(
+                    option_id=option.option_id,
+                    label=option.label,
+                )
+                for option in choice.options
+            ]
+        ),
         validation_report={
             "verification_mode": "model_cross_checked",
             "consistency_status": "consistent",
@@ -238,6 +247,82 @@ def test_grounded_parameter_root_contract_requires_choice_only_audio_and_conclus
     lesson.beats[1].board_actions[0].content = "另一个结论"
     with pytest.raises(smoke_live.SmokeContractError, match="参考结论"):
         smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+def test_grounded_parameter_root_contract_rejects_empty_choice_options():
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[-1].interaction.options = []
+    lesson.transfer_item.options = []
+
+    with pytest.raises(smoke_live.SmokeContractError, match="选项数量"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+def test_grounded_parameter_root_contract_requires_final_transfer_choice():
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats.append(
+        SimpleNamespace(
+            interaction=None,
+            board_actions=[],
+            audio_url="/audio/after-transfer.mp3",
+        )
+    )
+
+    with pytest.raises(smoke_live.SmokeContractError, match="近迁移"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+@pytest.mark.parametrize(
+    "invalid_conclusion",
+    (
+        r"错误：m-n=\frac{1}{2}",
+        r"m-n=\frac{1}{2}（错误）",
+        r"m-n\ne\frac{1}{2}",
+        "m-n!=0.5",
+        r"m-n=\frac{1}{2}=0.5",
+        r"n-m=-\frac{1}{2}",
+        r"m-n\le\frac{1}{2}",
+    ),
+)
+def test_grounded_parameter_root_contract_rejects_false_conclusion_matches(
+    invalid_conclusion,
+):
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[1].board_actions[0].content = invalid_conclusion
+
+    with pytest.raises(smoke_live.SmokeContractError, match="参考结论"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+@pytest.mark.parametrize(
+    ("action_type", "conclusion"),
+    [
+        ("write", r"m-n=\frac{1}{2}"),
+        ("transform", "m - n = 1/2"),
+        ("transform", "m-n=0.5"),
+    ],
+)
+def test_grounded_parameter_root_contract_accepts_independent_equivalent_conclusion(
+    monkeypatch,
+    action_type,
+    conclusion,
+):
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[1].board_actions[0].type = action_type
+    lesson.beats[1].board_actions[0].content = conclusion
+
+    def fail_if_grounded_uses_symbolic_label(*_args, **_kwargs):
+        raise AssertionError("grounded smoke called format_answer_label")
+
+    monkeypatch.setattr(
+        smoke_live.MathEngine,
+        "format_answer_label",
+        fail_if_grounded_uses_symbolic_label,
+    )
+
+    assert smoke_live.assert_grounded_parameter_root_contract(
+        lesson
+    )["conclusion_present"] is True
 
 
 def test_grounded_parameter_root_cli_prints_only_safe_contract_fields(
