@@ -272,6 +272,7 @@ class LessonGenerationService:
             )
             self._validate_reference_audit(problem, reference_audit)
 
+        await self._emit(on_stage, "正在规划数学路线")
         verified_route = await self._create_validated_route(
             problem,
             problem_report.solution_strings,

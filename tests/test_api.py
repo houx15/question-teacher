@@ -6,7 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api import run_generation, safe_generation_error
+from app.api import (
+    _PUBLIC_GENERATION_STAGES,
+    run_generation,
+    safe_generation_error,
+)
 from app.compiler import LessonCompiler
 from app.config import Settings
 from app.generation import LessonInputError
@@ -215,6 +219,12 @@ def test_generation_job_completes_with_public_stage_sequence():
         "正在生成讲解语音",
         "已完成",
     ]
+
+
+def test_internal_route_planning_reuses_existing_public_math_stage():
+    assert _PUBLIC_GENERATION_STAGES["正在规划数学路线"] == (
+        "正在验证数学路线"
+    )
 
 
 def test_generation_with_reference_solution_exposes_audit_stage():

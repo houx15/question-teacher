@@ -1615,6 +1615,7 @@ def test_sync_stage_callback_receives_generation_stages_in_order():
 
     assert stages == [
         "正在验证数学路线",
+        "正在规划数学路线",
         "正在设计完整讲解",
         "正在准备互动素材",
         "正在进行整篇审稿",
@@ -1635,7 +1636,7 @@ def test_async_stage_callback_is_awaited():
     asyncio.run(service.generate(problem(), on_stage=on_stage))
 
     assert stages[-1] == "正在编译课堂"
-    assert len(stages) == 5
+    assert len(stages) == 6
 
 
 def test_prompt_contracts_state_teaching_and_output_constraints():
