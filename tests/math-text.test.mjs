@@ -113,7 +113,7 @@ test("multiple legacy math fragments preserve source order", () => {
 
 
 test("legacy detection keeps dates labels and prose-like hyphens as text", () => {
-  for (const value of ("2026-08-06", "第1-2步", "A-B 测试", "foo-bar@example.com")) {
+  for (const value of ["2026-08-06", "第1-2步", "A-B 测试", "foo-bar@example.com"]) {
     assert.deepEqual(mathSegments(value), [textSegment(value)]);
   }
   assert.equal(mathSegments("先算 x-3")[1].type, "math");
