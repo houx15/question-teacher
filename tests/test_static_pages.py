@@ -573,7 +573,10 @@ def test_lesson_page_has_fullscreen_classroom_regions():
 def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
     source = page_client().get("/static/lesson.js").text
 
-    assert 'import { renderMathText } from "./math-text.mjs";' in source
+    assert (
+        'import { mathTextToPlainText, renderMathText } from "./math-text.mjs";'
+        in source
+    )
     assert "renderMathText(dom.title, lesson.title)" in source
     assert "renderMathText(dom.problem, lesson.problem.problem_text)" in source
     assert "renderMathText(dom.narration, beat.narration)" in source
@@ -593,6 +596,21 @@ def test_choice_submission_passes_selected_option_without_exposing_answer_key():
     assert "resolveInteractionPresentation" in source
     assert "expected: interaction.expected_answer" not in source
     assert "interaction.expected_answer" not in source
+
+
+def test_choice_buttons_use_nonempty_plain_text_accessible_names():
+    source = page_client().get("/static/lesson.js").text
+
+    assert (
+        'import { mathTextToPlainText, renderMathText } from "./math-text.mjs";'
+        in source
+    )
+    assert "for (const [optionIndex, option] of" in source
+    assert "const accessibleLabel = mathTextToPlainText(option.label);" in source
+    assert 'button.setAttribute(' in source
+    assert '"aria-label",' in source
+    assert "accessibleLabel || `选项 ${optionIndex + 1}`" in source
+    assert "option.canonical_answer" not in source
 
 
 def test_static_pages_include_accessibility_and_responsive_contracts():

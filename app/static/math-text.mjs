@@ -130,6 +130,44 @@ export function mathSegments(value) {
 }
 
 
+function mathExpressionToPlainText(value) {
+  let plain = value
+    .replace(/\\(?:times|cdot)\b/g, "×")
+    .replace(/\\div\b/g, "÷")
+    .replace(/\\pm\b/g, "±")
+    .replace(/\\neq\b/g, "≠")
+    .replace(/\\leq?\b/g, "≤")
+    .replace(/\\geq?\b/g, "≥")
+    .replace(/\\(?:left|right)\b/g, "");
+
+  for (let pass = 0; pass < MAX_NORMALIZATION_PASSES; pass += 1) {
+    const next = plain
+      .replace(/\\(?:text|mathrm|mathbf|operatorname)\{([^{}]*)\}/g, "$1")
+      .replace(/\\sqrt\{([^{}]*)\}/g, "√($1)")
+      .replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, "($1)/($2)")
+      .replace(/\^\{([^{}]*)\}/g, "^$1")
+      .replace(/_\{([^{}]*)\}/g, "_$1");
+    if (next === plain) break;
+    plain = next;
+  }
+
+  return plain.replace(/[{}]/g, "");
+}
+
+
+export function mathTextToPlainText(value) {
+  return mathSegments(value)
+    .map((segment) => (
+      segment.type === "math"
+        ? mathExpressionToPlainText(segment.value)
+        : segment.value
+    ))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
 export function renderMathText(
   container,
   value,

@@ -9,7 +9,7 @@ import {
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs";
-import { renderMathText } from "./math-text.mjs";
+import { mathTextToPlainText, renderMathText } from "./math-text.mjs";
 
 
 const dom = {
@@ -730,9 +730,14 @@ function showInteraction(interaction) {
 
   if (controlType === "options") {
     const optionGrid = element("div", "interaction-options");
-    for (const option of interaction.options || []) {
+    for (const [optionIndex, option] of (interaction.options || []).entries()) {
       const button = element("button", "interaction-option");
       renderMathText(button, option.label);
+      const accessibleLabel = mathTextToPlainText(option.label);
+      button.setAttribute(
+        "aria-label",
+        accessibleLabel || `选项 ${optionIndex + 1}`,
+      );
       button.type = "button";
       button.addEventListener(
         "click",

@@ -5,9 +5,28 @@ import {
   MAX_MATH_TEXT_LENGTH,
   MAX_NORMALIZATION_PASSES,
   mathSegments,
+  mathTextToPlainText,
   normalizeLegacyMath,
   renderMathText,
 } from "../app/static/math-text.mjs";
+
+
+test("plain-text accessibility helper removes visual math wrappers without duplication", () => {
+  assert.equal(mathTextToPlainText(String.raw`\(9\)`), "9");
+  assert.equal(
+    mathTextToPlainText(String.raw`\(x=3\) 或 \(x=4\)`),
+    "x=3 或 x=4",
+  );
+  assert.equal(
+    mathTextToPlainText(String.raw`\(\text{无实数解}\)`),
+    "无实数解",
+  );
+});
+
+
+test("plain-text accessibility helper preserves ordinary option labels", () => {
+  assert.equal(mathTextToPlainText("两边同时加 9"), "两边同时加 9");
+});
 
 
 test("explicit inline and display delimiters preserve surrounding text", () => {
