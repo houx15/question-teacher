@@ -312,6 +312,17 @@ class ReferenceGroundingBrief(SchemaModel):
     check_requests: List[GroundingCheckRequest] = Field(max_length=8)
     audit_notes: List[GeneratedFeedbackText] = Field(max_length=8)
 
+    @classmethod
+    def validate_for_reference_answer(
+        cls,
+        value: object,
+        reference_answer: str,
+    ) -> "ReferenceGroundingBrief":
+        return cls.model_validate(
+            value,
+            context={"reference_answer": reference_answer},
+        )
+
     @model_validator(mode="before")
     @classmethod
     def require_reference_answer_context(
@@ -345,8 +356,23 @@ class ReferenceGroundingBrief(SchemaModel):
 
         conclusion = _normalize_reference_text(value)
         answer = _normalize_reference_text(reference_answer)
-        conclusion_answer = conclusion.rsplit("=", 1)[-1]
-        if answer not in {conclusion, conclusion_answer}:
+        target = _normalize_reference_text(info.data.get("target", ""))
+
+        if "=" in answer:
+            agrees = conclusion == answer
+        elif conclusion == answer:
+            agrees = True
+        elif conclusion.count("=") == 1:
+            conclusion_target, conclusion_answer = conclusion.split("=")
+            agrees = (
+                bool(target)
+                and conclusion_target == target
+                and conclusion_answer == answer
+            )
+        else:
+            agrees = False
+
+        if not agrees:
             raise ValueError(
                 "reference_conclusion must agree with reference_answer"
             )

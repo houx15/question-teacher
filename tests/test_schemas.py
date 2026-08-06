@@ -220,6 +220,58 @@ def test_reference_conclusion_rejects_mismatch_with_supplied_answer():
 
 
 @pytest.mark.parametrize(
+    "reference_conclusion",
+    [
+        r"\(m+n=\frac12\)",
+        r"\(\text{错误目标}=\frac12\)",
+        r"\(m-n=q=\frac12\)",
+    ],
+)
+def test_reference_conclusion_rejects_wrong_lhs_or_multiple_equal_signs(
+    reference_conclusion,
+):
+    payload = grounding_brief_payload()
+    payload["reference_conclusion"] = reference_conclusion
+
+    with pytest.raises(ValidationError, match="reference_conclusion"):
+        ReferenceGroundingBrief.validate_for_reference_answer(
+            payload,
+            r"$\frac12$",
+        )
+
+
+def test_reference_conclusion_accepts_pure_rhs_through_context_helper():
+    payload = grounding_brief_payload()
+    payload["reference_conclusion"] = r"\(\frac12\)"
+
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        payload,
+        r"$\frac12$",
+    )
+
+    assert brief.reference_conclusion == r"\(\frac12\)"
+
+
+def test_equation_reference_answer_requires_whole_conclusion_match():
+    payload = grounding_brief_payload()
+    payload["reference_conclusion"] = r"\(m-n=\frac12\)"
+
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        payload,
+        r"$m-n=\frac12$",
+    )
+    assert brief.reference_conclusion == r"\(m-n=\frac12\)"
+
+    for invalid_conclusion in (r"\(\frac12\)", r"\(m+n=\frac12\)"):
+        payload["reference_conclusion"] = invalid_conclusion
+        with pytest.raises(ValidationError, match="reference_conclusion"):
+            ReferenceGroundingBrief.validate_for_reference_answer(
+                payload,
+                r"$m-n=\frac12$",
+            )
+
+
+@pytest.mark.parametrize(
     "context",
     [
         None,
