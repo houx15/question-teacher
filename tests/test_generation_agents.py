@@ -113,6 +113,11 @@ def test_materials_contract_is_small_and_receives_validated_narrative():
     assert "互动前" in MATERIALS_SYSTEM
 
 
+def test_reviewer_contract_uses_frozen_resolved_method_display():
+    assert "resolved_method.display_name" in REVIEWER_SYSTEM
+    assert "名称与 required_method 不一致" not in REVIEWER_SYSTEM
+
+
 def test_narrative_schema_bounds_tts_fields_lists_and_board_actions():
     schema = NarrativeDraft.model_json_schema()
     properties = schema["properties"]

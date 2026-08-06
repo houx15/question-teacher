@@ -220,7 +220,7 @@ def test_verified_route_thaw_is_deep_copy_and_fingerprint_protected():
     assert verified.fingerprint
 
 
-def test_resolved_method_is_hard_bound_into_director_and_materials():
+def test_unspecified_quadratic_resolved_method_reaches_all_teaching_agents():
     source = ProblemInput(
         problem_text="解方程：x^2-5*x+6=0",
         reference_answer="x=2 或 x=3",
@@ -237,11 +237,13 @@ def test_resolved_method_is_hard_bound_into_director_and_materials():
 
     director = json.loads(client.all_calls[0][1])
     materials = json.loads(client.all_calls[1][1])
+    reviewer = json.loads(client.all_calls[2][1])
     assert director["resolved_method"] == {
         "family": "quadratic_formula",
         "display_name": "公式法",
     }
     assert materials["resolved_method"] == director["resolved_method"]
+    assert reviewer["resolved_method"] == director["resolved_method"]
     assert materials["output_contract"]["transfer_item"][
         "method_profile"
     ]["required_method"] == "quadratic_formula"
@@ -273,7 +275,7 @@ def test_resolved_formula_route_rejects_other_method_narrative(
     ]
 
 
-def test_linear_resolved_method_uses_basic_transfer_profile():
+def test_unspecified_linear_resolved_method_reaches_reviewer_and_transfer():
     source = ProblemInput(
         problem_text="解方程：2*x+3=7",
         reference_answer="x=2",
@@ -294,9 +296,14 @@ def test_linear_resolved_method_uses_basic_transfer_profile():
     )
 
     materials = json.loads(client.all_calls[1][1])
+    reviewer = json.loads(client.all_calls[2][1])
     profile = materials["output_contract"]["transfer_item"][
         "method_profile"
     ]
     assert profile["resolved_method_family"] == "basic_equation_operations"
     assert profile["required_method"] is None
     assert profile["equation_template"] == "a*x+b=0"
+    assert reviewer["resolved_method"] == {
+        "family": "basic_equation_operations",
+        "display_name": "等式基本变形",
+    }

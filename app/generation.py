@@ -319,7 +319,12 @@ class LessonGenerationService:
             self._validate_draft(problem, draft, verified_route)
             self._assert_route_fingerprint(draft, verified_route)
             await self._emit(on_stage, "正在进行整篇审稿")
-            review = await self._review(problem, draft, reference_audit)
+            review = await self._review(
+                problem,
+                draft,
+                reference_audit,
+                verified_route,
+            )
             if review.status == "approved":
                 break
             if revision_count >= self.MAX_REVISIONS:
@@ -687,10 +692,19 @@ class LessonGenerationService:
         problem: ProblemInput,
         draft: LessonDraft,
         reference_audit: Optional[ReferenceMaterialAudit],
+        verified_route: _VerifiedMathRoute,
     ) -> ReviewDecision:
         payload = await self._complete_json(
             REVIEWER_SYSTEM,
-            reviewer_prompt(problem, draft, reference_audit),
+            reviewer_prompt(
+                problem,
+                draft,
+                reference_audit,
+                resolved_method_family=verified_route.method_family,
+                resolved_method_display_name=(
+                    self._resolved_method_display_name(verified_route)
+                ),
+            ),
         )
         try:
             return ReviewDecision.model_validate(payload)
