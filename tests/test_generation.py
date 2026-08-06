@@ -17,7 +17,7 @@ from app.prompts import (
     REVISION_SYSTEM,
     reference_audit_prompt,
 )
-from app.schemas import ProblemInput
+from app.schemas import ProblemInput, ReferenceMaterialAudit
 
 
 class FakeClient:
@@ -248,6 +248,38 @@ def test_reference_material_invalid_key_step_blocks_generation():
         )
 
     assert len(client.calls) == 1
+
+
+def test_reference_material_accepts_valid_branchwise_final_step():
+    audit = ReferenceMaterialAudit.model_validate(
+        {
+            "status": "approved",
+            "claimed_answer": "x=1 或 x=5",
+            "method_summary": "配方法",
+            "key_steps": [
+                {
+                    "purpose": "分别解两个一次方程",
+                    "operation": "add_both_sides",
+                    "operands": ["3"],
+                    "state_before": ["x-3=2", "x-3=-2"],
+                    "state_after": ["x=5", "x=1"],
+                    "reason": "两个分支都在等式两边加 3。",
+                }
+            ],
+            "teaching_assets": [],
+            "warnings": [],
+            "blocking_issues": [],
+            "evidence": ["即 x=5 或 x=1。"],
+        }
+    )
+    source_problem = ProblemInput(
+        problem_text="用配方法解方程：x^2-6x+5=0",
+        reference_answer="x=1 或 x=5",
+        reference_solution_text="最终得到 x=1 或 x=5。",
+    )
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+
+    service._validate_reference_audit(source_problem, audit)
 
 
 def test_reference_material_invalid_schema_is_not_blamed_on_user():

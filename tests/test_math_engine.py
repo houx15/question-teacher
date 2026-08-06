@@ -277,6 +277,40 @@ def test_validate_step_accepts_completing_the_square(engine):
     engine.validate_step(step)
 
 
+def test_add_both_sides_accepts_same_operation_across_branches(engine):
+    step = make_step(
+        "add_both_sides",
+        ["x-3=2", "x-3=-2"],
+        ["x=5", "x=1"],
+        ["3"],
+    )
+
+    engine.validate_step(step)
+
+
+@pytest.mark.parametrize(
+    "after",
+    (
+        ["x=5"],
+        ["x=5", "x=2"],
+        ["x=1", "x=5"],
+    ),
+)
+def test_add_both_sides_rejects_invalid_branchwise_transition(
+    engine,
+    after,
+):
+    step = make_step(
+        "add_both_sides",
+        ["x-3=2", "x-3=-2"],
+        after,
+        ["3"],
+    )
+
+    with pytest.raises(MathValidationError):
+        engine.validate_step(step)
+
+
 def test_complete_square_accepts_positive_operand_and_new_square(engine):
     step = make_step(
         "complete_the_square",

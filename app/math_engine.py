@@ -446,8 +446,9 @@ class MathEngine:
         if (
             not isinstance(operand_texts, list)
             or len(operand_texts) != 1
-            or len(before) != 1
-            or len(after) != 1
+            or not before
+            or len(before) != len(after)
+            or (operation == "complete_the_square" and len(before) != 1)
         ):
             return False
 
@@ -466,30 +467,37 @@ class MathEngine:
         ):
             return False
 
-        if operation in {"add_both_sides", "complete_the_square"}:
-            expected_left = before[0].left + operand
-            expected_right = before[0].right + operand
-        elif operation == "subtract_both_sides":
-            expected_left = before[0].left - operand
-            expected_right = before[0].right - operand
-        elif operation == "multiply_both_sides":
-            expected_left = before[0].left * operand
-            expected_right = before[0].right * operand
-        else:
-            expected_left = before[0].left / operand
-            expected_right = before[0].right / operand
+        for before_part, after_part in zip(before, after):
+            if operation in {"add_both_sides", "complete_the_square"}:
+                expected_left = before_part.left + operand
+                expected_right = before_part.right + operand
+            elif operation == "subtract_both_sides":
+                expected_left = before_part.left - operand
+                expected_right = before_part.right - operand
+            elif operation == "multiply_both_sides":
+                expected_left = before_part.left * operand
+                expected_right = before_part.right * operand
+            else:
+                expected_left = before_part.left / operand
+                expected_right = before_part.right / operand
 
-        if (
-            simplify(after[0].left - expected_left) != 0
-            or simplify(after[0].right - expected_right) != 0
-            or self._corresponding_sides_equal(before[0], after[0])
-        ):
-            return False
-        if operation == "complete_the_square":
-            return self._newly_introduces_squared_binomial(
-                before[0],
-                after[0],
-            )
+            if (
+                simplify(after_part.left - expected_left) != 0
+                or simplify(after_part.right - expected_right) != 0
+                or self._corresponding_sides_equal(
+                    before_part,
+                    after_part,
+                )
+            ):
+                return False
+            if (
+                operation == "complete_the_square"
+                and not self._newly_introduces_squared_binomial(
+                    before_part,
+                    after_part,
+                )
+            ):
+                return False
         return True
 
     def _is_canonical_operation(
