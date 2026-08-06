@@ -1145,11 +1145,17 @@ def test_pre_interaction_correct_option_id_is_rejected():
 @pytest.mark.parametrize(
     "announcement",
     [
+        "选A。",
+        "选择A。",
+        "答案是A。",
+        "正确答案为A。",
+        "A项。",
+        "A选项。",
+        "A是正确选项。",
         "A就是正确答案。",
-        "正确答案就是A。",
     ],
 )
-def test_pre_interaction_short_option_id_answer_announcement_is_rejected(
+def test_pre_interaction_explicit_short_option_syntax_is_rejected(
     announcement,
 ):
     narrative = narrative_payload()
@@ -1170,11 +1176,10 @@ def test_pre_interaction_short_option_id_answer_announcement_is_rejected(
         )
 
 
-def test_pre_interaction_bare_option_letter_far_from_cue_is_allowed():
+def test_pre_interaction_bare_letter_without_option_syntax_is_allowed():
     narrative = narrative_payload()
     narrative["moments"][0]["narration"] = (
-        "把A项移到等号右边，再合并同类项并逐步检查每一步变形是否保持"
-        "等式两边相等，完成整理以后再选择下一步。"
+        "先记录字母A代表的量，再选择正确答案。"
     )
     materials = materials_payload()
     interaction = materials["interactions"][0]["interaction"]
@@ -1191,6 +1196,55 @@ def test_pre_interaction_bare_option_letter_far_from_cue_is_allowed():
     )
 
     assert lesson.validation_report["review_status"] == "approved"
+
+
+@pytest.mark.parametrize(
+    "narration",
+    [
+        "比较A+B的值，再选择正确答案。",
+        "先计算ax的值，再选择正确答案。",
+        "比较A+B与0的关系，答案是A+B。",
+    ],
+)
+def test_pre_interaction_short_option_id_in_math_expression_is_allowed(
+    narration,
+):
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = narration
+    materials = materials_payload()
+    interaction = materials["interactions"][0]["interaction"]
+    interaction["expected_answer"] = "A"
+    for option, option_id in zip(
+        interaction["options"],
+        ["A", "B", "C"],
+    ):
+        option["option_id"] = option_id
+    client = FakeClient([narrative, materials, approved_review()])
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["review_status"] == "approved"
+
+
+def test_pre_interaction_explicit_short_numeric_option_is_rejected():
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = "答案是2。"
+    materials = materials_payload()
+    interaction = materials["interactions"][0]["interaction"]
+    interaction["expected_answer"] = "2"
+    for option, option_id in zip(
+        interaction["options"],
+        ["1", "2", "3"],
+    ):
+        option["option_id"] = option_id
+    client = FakeClient([narrative, materials, copy.deepcopy(materials)])
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
 
 
 def test_pre_interaction_math_delimiters_do_not_hide_answer_announcement():

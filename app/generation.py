@@ -1399,13 +1399,20 @@ class LessonGenerationService:
                 explicit_option_id = option_id in visible
             else:
                 option_id_pattern = (
-                    r"(?<![a-z0-9_-])"
+                    r"(?<![a-z0-9_+\-*/^=×÷−－–—＋])"
                     + re.escape(option_id)
-                    + r"(?![a-z0-9_-])"
+                    + r"(?![a-z0-9_+\-*/^=×÷−－–—＋])"
                 )
                 explicit_option_id = re.search(
-                    rf"(?:{cue}.{{0,32}}{option_id_pattern}|"
-                    rf"{option_id_pattern}.{{0,32}}{cue})",
+                    rf"(?:"
+                    rf"(?:选择|应选|选){option_id_pattern}|"
+                    rf"(?:正确答案|答案)"
+                    rf"(?:就是|应该是|应为|是|为){option_id_pattern}|"
+                    rf"{option_id_pattern}(?:选项|项)|"
+                    rf"{option_id_pattern}"
+                    rf"(?:就是|应该是|应为|是|为)"
+                    rf"(?:正确答案|正确选项)"
+                    rf")",
                     visible,
                 ) is not None
             if option_id and explicit_option_id:
