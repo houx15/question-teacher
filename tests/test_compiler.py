@@ -192,21 +192,23 @@ def test_compiler_rejects_missing_canonicalized_transfer_label_safely():
     assert private_option_id not in str(exc_info.value)
 
 
-def test_compiler_rejects_overlong_method_spoken_narration():
+def test_compiler_keeps_max_budget_method_narration_within_beat_limit():
     draft = valid_draft()
-    private_narration = "私有方法说明" * 20
-    draft["method_introduction"]["student_definition"] = private_narration
-    draft["method_introduction"]["why_it_helps"] = "便于求根"
+    introduction = draft["method_introduction"]
+    introduction["method_name"] = "方" * 8
+    introduction["student_definition"] = "定义" * 18
+    introduction["target_form"] = "t" * 80
+    introduction["why_it_helps"] = "作用" * 16
 
-    with pytest.raises(LessonCompileError) as exc_info:
-        LessonCompiler().compile(
-            problem(),
-            LessonDraft.model_validate(draft),
-            {"review_status": "approved"},
-        )
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
+    )
 
-    assert str(exc_info.value) == "方法介绍的口语讲稿过长。"
-    assert private_narration not in str(exc_info.value)
+    assert len(lesson.beats[1].narration) <= 90
+    assert introduction["student_definition"] in lesson.beats[1].narration
+    assert introduction["why_it_helps"] in lesson.beats[1].narration
 
 
 @pytest.mark.parametrize(

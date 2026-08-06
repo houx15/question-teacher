@@ -26,6 +26,42 @@ MomentNarration = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=90),
 ]
+METHOD_NAME_MAX_LENGTH = 8
+METHOD_DEFINITION_MAX_LENGTH = 36
+METHOD_TARGET_FORM_MAX_LENGTH = 80
+METHOD_WHY_MAX_LENGTH = 32
+MethodName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=METHOD_NAME_MAX_LENGTH,
+    ),
+]
+MethodDefinition = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=METHOD_DEFINITION_MAX_LENGTH,
+    ),
+]
+MethodTargetForm = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=METHOD_TARGET_FORM_MAX_LENGTH,
+    ),
+]
+MethodBenefit = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=METHOD_WHY_MAX_LENGTH,
+    ),
+]
 MathOperation = Literal[
     "simplify",
     "add_both_sides",
@@ -258,10 +294,10 @@ class TransferItem(SchemaModel):
 
 
 class MethodIntroduction(SchemaModel):
-    method_name: NonEmptyString
-    student_definition: NonEmptyString
-    target_form: NonEmptyString
-    why_it_helps: NonEmptyString
+    method_name: MethodName
+    student_definition: MethodDefinition
+    target_form: MethodTargetForm
+    why_it_helps: MethodBenefit
 
     @property
     def spoken_narration(self) -> str:

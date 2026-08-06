@@ -454,6 +454,11 @@ def test_revision_required_returns_whole_lesson_to_director():
     assert revision_payload["output_contract"]["moment_choice"] == (
         json.loads(client.calls[0][1])["output_contract"]["moment_choice"]
     )
+    assert revision_payload["output_contract"]["method_introduction"] == (
+        json.loads(client.calls[0][1])["output_contract"][
+            "method_introduction"
+        ]
+    )
     assert lesson.validation_report["revision_count"] == 1
     assert [
         option.label for option in lesson.transfer_item.options
@@ -709,22 +714,54 @@ def test_invalid_transfer_item_stops_before_review():
     assert len(client.calls) == 2
 
 
-def test_overlong_method_spoken_narration_is_regenerated_safely():
+def test_overlong_method_introduction_gets_targeted_safe_retry():
     invalid_draft = valid_draft()
     private_narration = "私有方法说明" * 20
     invalid_draft["method_introduction"]["student_definition"] = (
         private_narration
     )
-    invalid_draft["method_introduction"]["why_it_helps"] = "便于求根"
-    client = FakeClient([invalid_draft, copy.deepcopy(invalid_draft)])
+    client = FakeClient(
+        [invalid_draft, valid_draft(), approved_review()]
+    )
     service = LessonGenerationService(client, MathEngine())
 
-    with pytest.raises(LessonQualityError) as exc_info:
-        asyncio.run(service.generate(problem()))
+    lesson = asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "方法介绍的口语讲稿过长。"
-    assert private_narration not in str(exc_info.value)
-    assert len(client.calls) == 2
+    assert lesson.validation_report["review_status"] == "approved"
+    retry_payload = json.loads(client.calls[1][1])
+    summary = json.loads(retry_payload["previous_validation_error"])
+    assert summary["issues"] == [
+        {
+            "path": "method_introduction.student_definition",
+            "type": "string_too_long",
+        }
+    ]
+    retry = retry_payload["output_contract"]["retry"]
+    assert retry["failed_gate"] == "method_introduction_length_validation"
+    assert "method_introduction" in " ".join(retry["required_action"])
+    assert "why_it_helps" in " ".join(retry["required_action"])
+    assert "Do not truncate" in " ".join(retry["forbidden"])
+    assert "Do not rename" in " ".join(retry["forbidden"])
+    assert private_narration not in json.dumps(
+        retry_payload["output_contract"]["retry"],
+        ensure_ascii=False,
+    )
+
+
+def test_quality_gate_method_length_gets_targeted_retry_contract():
+    payload = json.loads(
+        director_prompt(
+            problem(),
+            ["2", "3"],
+            previous_validation_error="方法介绍的口语讲稿过长。",
+        )
+    )
+
+    retry = payload["output_contract"]["retry"]
+
+    assert retry["failed_gate"] == "method_introduction_length_validation"
+    assert "why_it_helps" in " ".join(retry["required_action"])
+    assert "complete LessonDraft" in " ".join(retry["required_action"])
 
 
 def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
@@ -751,6 +788,30 @@ def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
     assert retry_payload["previous_validation_error"] == (
         "近迁移题未通过数学验证。"
     )
+
+
+def test_director_prompt_gives_executable_method_introduction_budgets():
+    payload = json.loads(
+        director_prompt(
+            problem("complete_the_square"),
+            ["2", "3"],
+        )
+    )
+
+    contract = payload["output_contract"]["method_introduction"]
+
+    assert contract["field_max_characters"] == {
+        "method_name": 8,
+        "student_definition": 36,
+        "target_form": 80,
+        "why_it_helps": 32,
+    }
+    assert contract["spoken_narration"]["max_characters"] == 90
+    rules = " ".join(contract["rules"])
+    assert "student_definition" in rules
+    assert "target_form" in rules
+    assert "why_it_helps" in rules
+    assert "Do not truncate" in rules
 
 
 def test_director_prompt_separates_answer_syntax_from_non_reusable_examples():
@@ -1595,6 +1656,9 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "Reference Material Auditor" in DIRECTOR_SYSTEM
     assert "方法介绍" in DIRECTOR_SYSTEM
     assert "配方法" in DIRECTOR_SYSTEM
+    assert "student_definition 最多 36 个字符" in DIRECTOR_SYSTEM
+    assert "target_form 最多 80 个字符" in DIRECTOR_SYSTEM
+    assert "why_it_helps 最多 32 个字符" in DIRECTOR_SYSTEM
     assert "自动判分互动只能使用 choice" in DIRECTOR_SYSTEM
     assert "point_select 只用于读取旧课程" in DIRECTOR_SYSTEM
     assert "LaTeX" in DIRECTOR_SYSTEM
@@ -1610,6 +1674,9 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "完整 LessonDraft JSON" in REVISION_SYSTEM
     assert "参考解析审阅" in REVISION_SYSTEM
     assert "方法介绍" in REVISION_SYSTEM
+    assert "student_definition 最多 36 个字符" in REVISION_SYSTEM
+    assert "target_form 最多 80 个字符" in REVISION_SYSTEM
+    assert "why_it_helps 最多 32 个字符" in REVISION_SYSTEM
     assert "自动判分互动只能使用 choice" in REVISION_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in DIRECTOR_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVIEWER_SYSTEM

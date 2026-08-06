@@ -55,6 +55,49 @@ def test_method_introduction_accepts_student_facing_complete_square_contract():
     assert introduction.target_form == r"\((x-a)^2=b\)"
 
 
+def test_method_introduction_field_budgets_keep_spoken_narration_bounded():
+    introduction = MethodIntroduction(
+        method_name="方" * 8,
+        student_definition="定义" * 18,
+        target_form="t" * 80,
+        why_it_helps="作用" * 16,
+    )
+
+    assert len(introduction.method_name) == 8
+    assert len(introduction.student_definition) == 36
+    assert len(introduction.target_form) == 80
+    assert len(introduction.why_it_helps) == 32
+    assert len(introduction.spoken_narration) <= 90
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("method_name", "方" * 9),
+        ("student_definition", "定义" * 18 + "多"),
+        ("target_form", "t" * 81),
+        ("why_it_helps", "作用" * 16 + "多"),
+    ],
+)
+def test_method_introduction_rejects_fields_over_their_budget(
+    field,
+    value,
+):
+    payload = {
+        "method_name": "配方法",
+        "student_definition": "把二次式整理成完全平方。",
+        "target_form": r"\((x-a)^2=b\)",
+        "why_it_helps": "这样可以直接开平方求根。",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError) as exc_info:
+        MethodIntroduction.model_validate(payload)
+
+    assert exc_info.value.errors()[0]["type"] == "string_too_long"
+    assert exc_info.value.errors()[0]["loc"] == (field,)
+
+
 @pytest.mark.parametrize(
     ("student_definition", "why_it_helps", "expected_narration"),
     [
