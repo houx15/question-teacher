@@ -9,6 +9,50 @@ from app.prompts import (
 )
 
 
+def cover_symbolic_narrative_route(response, user_prompt):
+    """Make broad legacy fixtures behave like a route-following Director."""
+    if not (
+        isinstance(response, dict)
+        and isinstance(response.get("moments"), list)
+        and response["moments"]
+    ):
+        return response
+    try:
+        route = json.loads(user_prompt)["teaching_route"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return response
+    if route.get("verification_mode") != "symbolic_verified":
+        return response
+
+    covered = copy.deepcopy(response)
+    steps = list(route.get("steps", []))
+    available = sum(
+        12 - len(moment.get("board_actions", []))
+        for moment in covered["moments"]
+    )
+    if available < len(steps):
+        return covered
+
+    moment_index = 0
+    for index, step in enumerate(steps, start=1):
+        while len(
+            covered["moments"][moment_index].get("board_actions", [])
+        ) >= 12:
+            moment_index += 1
+        board_actions = covered["moments"][moment_index].setdefault(
+            "board_actions",
+            [],
+        )
+        board_actions.append(
+            {
+                "type": "write",
+                "target": f"fake-symbolic-route-step-{index}",
+                "content": step["statement_after"],
+            }
+        )
+    return covered
+
+
 class FakeClient:
     """Compatibility fake that decomposes legacy whole-lesson fixtures."""
 
@@ -61,7 +105,10 @@ class FakeClient:
         ):
             response = self._pending_narrative
             self._pending_narrative = None
-            return copy.deepcopy(response)
+            return cover_symbolic_narrative_route(
+                response,
+                user_prompt,
+            )
         if (
             system_prompt == MATERIALS_SYSTEM
             and self._pending_materials is not None
@@ -88,7 +135,10 @@ class FakeClient:
         if system_prompt in {DIRECTOR_SYSTEM, REVISION_SYSTEM}:
             narrative = self._decompose_narrative_source(response)
             if narrative is not None:
-                return narrative
+                return cover_symbolic_narrative_route(
+                    narrative,
+                    user_prompt,
+                )
         if system_prompt == MATERIALS_SYSTEM:
             materials = self._extract_materials(response)
             if materials is not None:

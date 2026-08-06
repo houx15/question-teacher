@@ -30,6 +30,7 @@ from app.schemas import (
     NarrativeDraft,
     ReferenceGroundingBrief,
 )
+from app.teaching_route import freeze_symbolic_route
 from tests.generation_fakes import FakeClient
 from tests.test_generation import (
     approved_review,
@@ -977,7 +978,7 @@ def test_grounded_director_must_cover_route_steps_in_order():
 
     with pytest.raises(
         LessonQualityError,
-        match="按顺序覆盖参考路线",
+        match="按顺序覆盖冻结路线",
     ):
         asyncio.run(
             LessonGenerationService(client, MathEngine()).generate(
@@ -1021,3 +1022,145 @@ def test_grounded_generation_never_requests_symbolic_solution_set():
     assert lesson.validation_report["verification_mode"] == (
         "model_cross_checked"
     )
+
+
+def symbolic_route_with_steps(math_steps):
+    verified = _VerifiedMathRoute.freeze(
+        MathRouteDraft.model_validate({"math_steps": math_steps}),
+        "factor",
+    )
+    return verified, freeze_symbolic_route(
+        verified,
+        method_name="因式分解法",
+        equation_degree=2,
+        independent_solutions=["2", "3"],
+    )
+
+
+def test_symbolic_director_must_cover_route_step():
+    narrative = narrative_payload()
+    narrative["moments"][1]["board_actions"][0]["content"] = (
+        "这里省略已验证的因式分解结果"
+    )
+    verified, route = symbolic_route_with_steps(valid_draft()["math_steps"])
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+
+    with pytest.raises(
+        LessonQualityError,
+        match="按顺序覆盖.*路线",
+    ):
+        service._validate_narrative(
+            problem(),
+            NarrativeDraft.model_validate(narrative),
+            verified,
+            route,
+        )
+
+
+def test_symbolic_director_must_cover_route_steps_in_order():
+    steps = [
+        {
+            "purpose": "两边减六",
+            "operation": "subtract_both_sides",
+            "operands": ["6"],
+            "state_before": ["x^2-5x+6=0"],
+            "state_after": ["x^2-5x=-6"],
+            "reason": "等式两边同时减六。",
+        },
+        {
+            "purpose": "两边加六",
+            "operation": "add_both_sides",
+            "operands": ["6"],
+            "state_before": ["x^2-5x=-6"],
+            "state_after": ["x^2-5x+6=0"],
+            "reason": "等式两边同时加六。",
+        },
+        valid_draft()["math_steps"][0],
+    ]
+    narrative = narrative_payload()
+    narrative["moments"][1]["board_actions"].insert(
+        0,
+        {
+            "type": "write",
+            "target": "subtracted-state",
+            "content": "x^2-5x=-6",
+        },
+    )
+    verified, route = symbolic_route_with_steps(steps)
+    service = LessonGenerationService(FakeClient([]), MathEngine())
+
+    with pytest.raises(
+        LessonQualityError,
+        match="按顺序覆盖.*路线",
+    ):
+        service._validate_narrative(
+            problem(),
+            NarrativeDraft.model_validate(narrative),
+            verified,
+            route,
+        )
+
+
+def test_pre_interaction_explicit_correct_answer_announcement_is_rejected():
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = "正确答案就是负二和负三。"
+    materials = materials_payload()
+    materials["interactions"][0]["interaction"]["options"][0][
+        "label"
+    ] = "负二和负三"
+    client = FakeClient([narrative, materials, copy.deepcopy(materials)])
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
+
+    assert REVIEWER_SYSTEM not in client.system_prompts
+
+
+def test_pre_interaction_correct_option_id_is_rejected():
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = (
+        "这一题应选negative-two-negative-three。"
+    )
+    materials = materials_payload()
+    client = FakeClient([narrative, materials, copy.deepcopy(materials)])
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
+
+
+def test_pre_interaction_math_delimiters_do_not_hide_answer_announcement():
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = (
+        r"答案为 \( -2 \) 和 \( -3 \)。"
+    )
+    materials = materials_payload()
+    client = FakeClient([narrative, materials, copy.deepcopy(materials)])
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
+
+
+def test_pre_interaction_formula_reuse_without_answer_claim_is_allowed():
+    narrative = narrative_payload()
+    narrative["moments"][0]["board_actions"].append(
+        {
+            "type": "write",
+            "target": "candidate-factor-pair",
+            "content": r"\(-2\) 和 \(-3\)",
+        }
+    )
+    client = FakeClient(
+        [narrative, materials_payload(), approved_review()]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["review_status"] == "approved"

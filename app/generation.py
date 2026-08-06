@@ -1086,11 +1086,8 @@ class LessonGenerationService:
             )
         if len(narrative.method_introduction.spoken_narration) > 90:
             raise LessonQualityError("方法介绍的口语讲稿过长。")
-        if (
-            teaching_route is not None
-            and teaching_route.mode != TeachingRouteMode.SYMBOLIC_VERIFIED
-        ):
-            self._validate_grounded_narrative_route(
+        if teaching_route is not None:
+            self._validate_narrative_route(
                 narrative,
                 teaching_route,
             )
@@ -1287,6 +1284,8 @@ class LessonGenerationService:
         if len(interaction_ids) != len(set(interaction_ids)):
             raise LessonQualityError("学生互动标识必须全课唯一。")
 
+        self._validate_pre_interaction_answer_leakage(draft.moments)
+
         for interaction in interactions:
             if interaction.kind != "choice":
                 raise LessonQualityError(
@@ -1325,7 +1324,7 @@ class LessonGenerationService:
         ):
             raise LessonQualityError("讲解没有真正使用指定方法。")
 
-    def _validate_grounded_narrative_route(
+    def _validate_narrative_route(
         self,
         narrative: NarrativeDraft,
         teaching_route: FrozenTeachingRoute,
@@ -1345,13 +1344,84 @@ class LessonGenerationService:
             marker = self._normalize_grounded_text(step["statement_after"])
             found = searchable.find(marker, position)
             if found < 0:
-                raise LessonQualityError("教学主线没有按顺序覆盖参考路线。")
+                raise LessonQualityError("教学主线没有按顺序覆盖冻结路线。")
             position = found + len(marker)
         conclusion = self._normalize_grounded_text(
             payload["final_conclusion"]
         )
         if conclusion not in searchable:
             raise LessonQualityError("教学主线没有呈现参考结论。")
+
+    def _validate_pre_interaction_answer_leakage(
+        self,
+        moments: Any,
+    ) -> None:
+        visible_parts = []
+        for moment in moments:
+            visible_parts.append(moment.narration)
+            visible_parts.extend(
+                action.content
+                for action in moment.board_actions
+                if action.content is not None
+            )
+            interaction = moment.interaction
+            if interaction is None or interaction.kind != "choice":
+                continue
+            correct_option = next(
+                (
+                    option
+                    for option in interaction.options
+                    if option.option_id == interaction.expected_answer
+                ),
+                None,
+            )
+            if correct_option is None:
+                continue
+
+            raw_visible = " ".join(visible_parts)
+            visible = self._normalize_answer_leak_text(raw_visible)
+            option_id = self._normalize_answer_leak_text(
+                correct_option.option_id
+            )
+            explicit_option_id = (
+                option_id in visible
+                if len(option_id) >= 4
+                else re.search(
+                    r"(?:正确答案|答案|应选|选择).{0,32}"
+                    + re.escape(option_id),
+                    visible,
+                )
+                is not None
+            )
+            if option_id and explicit_option_id:
+                raise LessonQualityError("互动前明确泄露了正确选项。")
+
+            label = self._normalize_answer_leak_text(
+                correct_option.label
+            )
+            if not label or label not in visible:
+                continue
+            announcement = re.compile(
+                r"(?:正确答案|答案|应选|选择)"
+                r".{0,32}(?:就是|应为|应该是|是|为)?"
+                + re.escape(label)
+            )
+            if announcement.search(visible):
+                raise LessonQualityError("互动前明确泄露了正确选项。")
+
+    @staticmethod
+    def _normalize_answer_leak_text(value: str) -> str:
+        normalized = value.lower()
+        normalized = re.sub(
+            r"\\(?:left|right|text|mathrm|mathbf)",
+            "",
+            normalized,
+        )
+        return re.sub(
+            r"[\s$\\()\[\]{}，。；：、,.!?！？;:]",
+            "",
+            normalized,
+        )
 
     def _validate_grounded_review_evidence(
         self,

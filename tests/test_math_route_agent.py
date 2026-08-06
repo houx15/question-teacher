@@ -30,6 +30,7 @@ from tests.test_generation import (
     valid_draft,
 )
 from tests.test_generation_agents import materials_payload, narrative_payload
+from tests.generation_fakes import cover_symbolic_narrative_route
 
 
 def route_payload(source=None):
@@ -50,6 +51,11 @@ class AgentClient:
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
             raise response
+        if system_prompt in {DIRECTOR_SYSTEM, REVISION_SYSTEM}:
+            response = cover_symbolic_narrative_route(
+                response,
+                user_prompt,
+            )
         return copy.deepcopy(response)
 
 
