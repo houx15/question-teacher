@@ -1,10 +1,98 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from scripts.smoke_live import assert_generated_lesson_contract
 
 
 def page_client():
     return TestClient(create_app())
+
+
+def test_live_smoke_asserts_method_first_choice_contract_without_answers():
+    choice = SimpleNamespace(
+        kind="choice",
+        options=[
+            SimpleNamespace(
+                label=rf"\\(x={value}\\)",
+                feedback="诊断反馈。",
+                feedback_audio_url=f"/audio/option-{value}.mp3",
+            )
+            for value in ("1", "2", "3")
+        ],
+    )
+    lesson = SimpleNamespace(
+        beats=[
+            SimpleNamespace(
+                purpose="进入问题",
+                layer="base",
+                narration="先看题目。",
+                board_actions=[],
+                interaction=None,
+                audio_url="/audio/opening.mp3",
+            ),
+            SimpleNamespace(
+                purpose="先认识方法",
+                layer="micro_explanation",
+                narration="今天用配方法。",
+                board_actions=[SimpleNamespace(content="配方法")],
+                interaction=None,
+                audio_url="/audio/method.mp3",
+            ),
+            SimpleNamespace(
+                purpose="诊断",
+                layer="interaction",
+                narration="请选择。",
+                board_actions=[],
+                interaction=choice,
+                audio_url="/audio/diagnostic.mp3",
+            ),
+            SimpleNamespace(
+                purpose="完成近迁移",
+                layer="interaction",
+                narration="现在迁移。",
+                board_actions=[],
+                interaction=choice,
+                audio_url="/audio/transfer.mp3",
+            ),
+        ]
+    )
+
+    summary = assert_generated_lesson_contract(lesson)
+
+    assert summary == {
+        "method_first": True,
+        "interaction_kinds": ["choice", "choice"],
+        "diagnostic_choice_count": 2,
+        "option_feedback_audio_ready": True,
+        "formula_labels_ready": True,
+        "audio_ready": True,
+    }
+    assert "expected_answer" not in summary
+
+
+def test_readme_documents_method_first_choice_generation_and_local_katex():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    for phrase in (
+        "先认识方法",
+        "配方法",
+        "选择或点选",
+        "兼容读取",
+        "诊断",
+        "选项",
+        "KaTeX",
+        "npm install",
+        "npm test",
+        "package-lock.json",
+        "CDN",
+        "python -m compileall -q app scripts tests",
+        "浏览器",
+        "教学",
+    ):
+        assert phrase in readme
 
 
 def test_generation_page_has_focused_authoring_form():

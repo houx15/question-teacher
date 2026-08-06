@@ -19,6 +19,99 @@ from app.tts_client import OpenAISpeechClient
 from app.volcengine_tts_client import VolcengineSpeechClient
 
 
+class SmokeContractError(RuntimeError):
+    """Raised when a live lesson misses a safe, structural smoke contract."""
+
+
+def _require_contract(condition: bool, message: str) -> None:
+    if not condition:
+        raise SmokeContractError(message)
+
+
+def assert_generated_lesson_contract(lesson) -> dict:
+    """Assert structural teaching and audio guarantees without exposing content."""
+    beats = lesson.beats
+    _require_contract(
+        len(beats) >= 2,
+        "生成课程缺少方法介绍节拍。",
+    )
+    method_beat = beats[1]
+    _require_contract(
+        method_beat.purpose == "先认识方法"
+        and method_beat.layer == "micro_explanation",
+        "生成课程未以方法介绍作为第二个节拍。",
+    )
+    _require_contract(
+        bool(method_beat.board_actions)
+        and method_beat.board_actions[0].content == "配方法",
+        "方法介绍的首个板书动作不符合配方法 smoke 合同。",
+    )
+    _require_contract(
+        method_beat.narration.startswith("今天用配方法"),
+        "方法介绍口语讲稿未以配方法开头。",
+    )
+    _require_contract(
+        r"\(" not in method_beat.narration
+        and r"\[" not in method_beat.narration,
+        "方法介绍口语讲稿含有未渲染公式分隔符。",
+    )
+
+    interactions = [
+        beat.interaction for beat in beats if beat.interaction is not None
+    ]
+    interaction_kinds = [interaction.kind for interaction in interactions]
+    _require_contract(
+        not {"expression", "transfer"}.intersection(interaction_kinds),
+        "新生成课程包含已弃用的数学输入互动。",
+    )
+
+    choices = [
+        interaction
+        for interaction in interactions
+        if interaction.kind == "choice"
+    ]
+    for choice in choices:
+        _require_contract(
+            len(choice.options) in {3, 4},
+            "生成选择互动的选项数量不符合 smoke 合同。",
+        )
+        for option in choice.options:
+            _require_contract(
+                bool(option.feedback),
+                "生成选择互动缺少诊断反馈。",
+            )
+            _require_contract(
+                bool(option.feedback_audio_url),
+                "生成选择互动缺少诊断反馈语音。",
+            )
+
+    final_interaction = beats[-1].interaction
+    _require_contract(
+        final_interaction is not None
+        and final_interaction.kind == "choice",
+        "生成课程未以选择式近迁移互动结束。",
+    )
+    formula_labels_ready = all(
+        r"\(" in option.label and r"\)" in option.label
+        for option in final_interaction.options
+    )
+    _require_contract(
+        formula_labels_ready,
+        "近迁移选择标签缺少明确的公式分隔符。",
+    )
+
+    audio_ready = all(bool(beat.audio_url) for beat in beats)
+    _require_contract(audio_ready, "生成课程缺少讲解语音。")
+    return {
+        "method_first": True,
+        "interaction_kinds": interaction_kinds,
+        "diagnostic_choice_count": len(choices),
+        "option_feedback_audio_ready": True,
+        "formula_labels_ready": formula_labels_ready,
+        "audio_ready": audio_ready,
+    }
+
+
 def missing_environment(settings: Settings) -> List[str]:
     missing = list(settings.missing_model_settings)
     if settings.tts_provider == "volcengine":
@@ -100,15 +193,14 @@ async def main() -> None:
             speech_client,
             REPOSITORY_ROOT / "var" / "audio",
         ).attach_audio(lesson)
+        smoke_contract = assert_generated_lesson_contract(lesson)
         report = lesson.validation_report
         print(
             json.dumps(
                 {
                     "lesson_id": lesson.lesson_id,
                     "beat_count": len(lesson.beats),
-                    "audio_ready": all(
-                        bool(beat.audio_url) for beat in lesson.beats
-                    ),
+                    **smoke_contract,
                     "math_status": report.get("math_status"),
                     "review_status": report.get("review_status"),
                     "reference_material_status": report.get(
