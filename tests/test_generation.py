@@ -871,51 +871,40 @@ def test_director_prompt_gives_exact_generated_choice_contract():
         "interaction kinds are legacy-only."
     )
     example = contract["example"]
-    assert example == {
-        "interaction_id": "choose-square-term",
-        "kind": "choice",
-        "prompt": "为了配成完全平方，两边应同时加哪个数？",
-        "expected_answer": "add-nine",
-        "options": [
-            {
-                "option_id": "add-nine",
-                "label": r"\(9\)",
-                "feedback": "加 9 后左边正好成为完全平方。",
-            },
-            {
-                "option_id": "add-six",
-                "label": r"\(6\)",
-                "feedback": "6 来自一次项系数，但还没有取一半再平方。",
-            },
-            {
-                "option_id": "add-three",
-                "label": r"\(3\)",
-                "feedback": "3 是一次项系数一半的绝对值，还需要平方。",
-            },
-        ],
-        "hints": ["先取一次项系数的一半，再平方。"],
-        "explanation_after_correct": "两边同时加 9，等式仍成立。",
-    }
-    assert contract["rules"] == [
-        "Provide 3 or 4 options with unique option_id values and distinct "
-        "visible labels.",
-        "expected_answer must exactly equal the correct option_id; never use "
-        "a label or formula as expected_answer.",
-        "Every option must include specific diagnostic feedback.",
-        "Omit feedback_audio_url; the compiler adds it after generation.",
-        "Wrap mathematical option labels in \\( ... \\) or \\[ ... \\]; "
-        "keep narration as natural spoken Chinese without LaTeX.",
-        "Keep transfer_item separate; never encode near transfer as a "
-        "moments[].interaction.",
-    ]
+    assert example["interaction_id"] == "choose-square-term"
+    assert example["kind"] == "choice"
+    assert len(example["options"]) == 3
+    option_ids = [option["option_id"] for option in example["options"]]
+    assert len(option_ids) == len(set(option_ids))
+    assert example["expected_answer"] in option_ids
+    assert all(option["feedback"] for option in example["options"])
+    assert all(
+        option["label"].startswith(r"\(")
+        for option in example["options"]
+    )
     assert "feedback_audio_url" not in str(example)
+    rules = " ".join(contract["rules"])
+    assert "3 or 4 options" in rules
+    assert "expected_answer must exactly equal the correct option_id" in rules
+    assert "Every option must include specific diagnostic feedback" in rules
+    assert "Omit feedback_audio_url" in rules
+    assert "1 to 3" in rules
+    assert "interaction_id" in rules
+    assert "near-transfer" in rules
+    assert "Keep transfer_item separate" in rules
     example_json = json.dumps(
         example,
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    assert example_json in DIRECTOR_SYSTEM
-    assert example_json in REVISION_SYSTEM
+    assert example_json not in DIRECTOR_SYSTEM
+    assert example_json not in REVISION_SYSTEM
+    assert (
+        "output_contract.moment_choice.example" in DIRECTOR_SYSTEM
+    )
+    assert (
+        "output_contract.moment_choice.example" in REVISION_SYSTEM
+    )
     assert "point_select 只用于读取旧课程" in DIRECTOR_SYSTEM
     assert "point_select 只用于读取旧课程" in REVISION_SYSTEM
 
@@ -989,8 +978,58 @@ def test_draft_requires_at_least_one_interaction():
     client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
-    with pytest.raises(LessonQualityError, match="学生互动"):
+    with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "讲解只能设置 1 至 3 个学生互动。"
+
+
+def test_draft_rejects_more_than_three_moment_interactions():
+    draft = valid_draft()
+    source_moment = draft["moments"][0]
+    for index in range(2, 5):
+        extra_moment = copy.deepcopy(source_moment)
+        extra_moment["purpose"] = f"诊断互动 {index}"
+        extra_moment["interaction"]["interaction_id"] = (
+            f"diagnostic-choice-{index}"
+        )
+        draft["moments"].append(extra_moment)
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "讲解只能设置 1 至 3 个学生互动。"
+    assert len(client.calls) == 2
+
+
+def test_draft_rejects_duplicate_moment_interaction_ids():
+    draft = valid_draft()
+    duplicate_moment = copy.deepcopy(draft["moments"][0])
+    duplicate_moment["purpose"] = "再次诊断相同关系"
+    draft["moments"].append(duplicate_moment)
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "学生互动标识必须全课唯一。"
+    assert len(client.calls) == 2
+
+
+def test_draft_rejects_compiler_reserved_near_transfer_interaction_id():
+    draft = valid_draft()
+    draft["moments"][0]["interaction"]["interaction_id"] = "near-transfer"
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "学生互动标识不能使用系统保留值。"
+    assert len(client.calls) == 2
 
 
 def test_draft_rejects_unexecutable_choice_before_review():

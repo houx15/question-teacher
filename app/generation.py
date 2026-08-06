@@ -5,7 +5,11 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 from pydantic import ValidationError
 
-from app.compiler import LessonCompileError, LessonCompiler
+from app.compiler import (
+    NEAR_TRANSFER_INTERACTION_ID,
+    LessonCompileError,
+    LessonCompiler,
+)
 from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
 from app.prompts import (
@@ -512,8 +516,21 @@ class LessonGenerationService:
             for moment in draft.moments
             if moment.interaction is not None
         ]
-        if not interactions:
-            raise LessonQualityError("讲解没有设置学生互动。")
+        if len(interactions) not in {1, 2, 3}:
+            raise LessonQualityError(
+                "讲解只能设置 1 至 3 个学生互动。"
+            )
+
+        interaction_ids = [
+            interaction.interaction_id
+            for interaction in interactions
+        ]
+        if NEAR_TRANSFER_INTERACTION_ID in interaction_ids:
+            raise LessonQualityError(
+                "学生互动标识不能使用系统保留值。"
+            )
+        if len(interaction_ids) != len(set(interaction_ids)):
+            raise LessonQualityError("学生互动标识必须全课唯一。")
 
         for interaction in interactions:
             if interaction.kind != "choice":

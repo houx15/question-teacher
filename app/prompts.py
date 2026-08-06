@@ -34,12 +34,12 @@ _MOMENT_CHOICE_EXAMPLE = {
     "hints": ["先取一次项系数的一半，再平方。"],
     "explanation_after_correct": "两边同时加 9，等式仍成立。",
 }
-_MOMENT_CHOICE_EXAMPLE_JSON = json.dumps(
-    _MOMENT_CHOICE_EXAMPLE,
-    ensure_ascii=False,
-    separators=(",", ":"),
-)
 _MOMENT_CHOICE_RULES = [
+    "Create 1 to 3 moments[].interaction objects in the entire lesson.",
+    (
+        "Use an interaction_id unique across all moments; never use the "
+        "reserved compiler id near-transfer."
+    ),
     (
         "Provide 3 or 4 options with unique option_id values and distinct "
         "visible labels."
@@ -100,7 +100,8 @@ DIRECTOR_SYSTEM = """
 你必须遵守以下契约：
 1. 只返回一个符合 LessonDraft JSON Schema 的 JSON 对象，不返回 Markdown 或额外文字；
 2. 每个 moment 只承担一个主要认知动作，narration 最多 90 个字符；
-3. 在真实认知转折点设置 1 至 3 个 choice 互动，并给学生留下可理解、可作答的思考空间；
+3. 在真实认知转折点设置 1 至 3 个 choice 互动；每个 interaction_id 必须全课唯一，
+   且禁止使用编译器保留值 near-transfer；给学生留下可理解、可作答的思考空间；
 4. 互动发生前，不得在 narration 或 board_actions 中泄露 expected_answer；
 5. math_steps 必须覆盖所有结论关键步骤，状态必须保持同一解集；
 6. add_both_sides、subtract_both_sides、multiply_both_sides、
@@ -144,8 +145,10 @@ DIRECTOR_SYSTEM = """
 18. transfer_item 是独立的近迁移选择题，不得塞入 moments[].interaction；
 19. 若输入包含 previous_validation_error，说明上一版完整初稿没有通过硬质量门；
     必须重新生成整篇 LessonDraft，并针对该失败类别修正，不能降低或绕过校验。
-20. choice 的精确 JSON 形状如下，字段与 option_id/expected_answer 关系必须照此执行：
-""".strip() + "\n" + _MOMENT_CHOICE_EXAMPLE_JSON
+20. choice 的精确 JSON 形状由 user payload 中
+    output_contract.moment_choice.example 提供；字段与 option_id/expected_answer
+    关系必须逐项遵守。
+""".strip()
 
 
 REVIEWER_SYSTEM = """
@@ -159,7 +162,9 @@ REVIEWER_SYSTEM = """
 方法介绍 method_introduction 未在首次实质代数变形前完整出现，或名称与 required_method 不一致；
 配方法没有先强调“配方法”再说明配方目标；board_actions、interaction、summary 的数学
 未用 `\\( ... \\)` 或 `\\[ ... \\]`；narration 必须是自然口语中文，禁止包含 LaTeX 命令，
-任何不符合此要求的讲稿都必须列为 must_fix；新生成的自动判分互动不是 choice；
+任何不符合此要求的讲稿都必须列为 must_fix；moment 互动总数不在 1 至 3 个之间；
+interaction_id 在全课重复或占用编译器保留值 near-transfer；
+新生成的自动判分互动不是 choice；
 point_select 只用于读取旧课程，生成时出现也必须列为 must_fix；
 choice 不含 3 至 4 个不同选项；任一 choice 选项缺少针对所选推理的具体诊断 feedback，或
 预填 feedback_audio_url；expected_answer 不严格等于正确 option_id，或使用 label/公式；
@@ -183,6 +188,8 @@ narration 最多 90 个字符、严格 BoardAction 词汇、互动前不泄露�
 的目标。board_actions、interaction、summary 的数学使用 `\\( ... \\)` 或 `\\[ ... \\]`，
 narration 必须是自然口语中文，禁止包含 LaTeX 命令。新生成的自动判分互动只能使用 choice；
 point_select 只用于读取旧课程，修订时禁止生成，同时禁止 expression、free_text 与 transfer。
+全课必须设置 1 至 3 个 moment 互动；每个 interaction_id 必须全课唯一，且禁止使用
+编译器保留值 near-transfer。
 choice 必须有 3 至 4 个 option_id 唯一且可见 label 不同的选项；expected_answer 必须严格
 等于正确 option_id，不能填写 label 或公式；必须重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback，
 且不得生成 feedback_audio_url，音频地址只由编译后的
@@ -194,8 +201,9 @@ canonical_answer 确定性覆盖。删除无信息增益的整式圈注；画面
 对象。若存在参考解析审阅结果，继续只使用其中批准的素材，不得在修订中重新引入
 warnings 指出的缺口或被阻断的原始表述。transfer_item 必须保持为独立近迁移选择题，
 不得塞入 moments[].interaction。只返回完整 LessonDraft JSON 对象，不返回 Markdown
-或额外文字。choice 的精确 JSON 形状如下：
-""".strip() + "\n" + _MOMENT_CHOICE_EXAMPLE_JSON
+或额外文字。choice 的精确 JSON 形状由 user payload 中
+output_contract.moment_choice.example 提供，必须逐字段遵守。
+""".strip()
 
 
 _TRANSFER_METHOD_PROFILES = {

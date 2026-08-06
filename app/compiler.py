@@ -12,6 +12,8 @@ from app.schemas import (
     RuntimeLesson,
 )
 
+NEAR_TRANSFER_INTERACTION_ID = "near-transfer"
+
 
 class LessonCompileError(RuntimeError):
     """Raised when a validated lesson cannot be compiled safely."""
@@ -93,7 +95,7 @@ class LessonCompiler:
         transfer_item = draft.transfer_item
         transfer_interaction = (
             Interaction(
-                interaction_id="near-transfer",
+                interaction_id=NEAR_TRANSFER_INTERACTION_ID,
                 kind="choice",
                 prompt=transfer_item.problem_text,
                 expected_answer=transfer_item.correct_option_id,
@@ -110,7 +112,7 @@ class LessonCompiler:
             )
             if transfer_item.options
             else Interaction(
-                interaction_id="near-transfer",
+                interaction_id=NEAR_TRANSFER_INTERACTION_ID,
                 kind="transfer",
                 prompt=transfer_item.problem_text,
                 expected_answer=transfer_item.expected_answer,
