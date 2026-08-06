@@ -122,10 +122,12 @@ def test_primary_control_uses_runtime_intent_for_ended_pause_beats():
 def test_local_katex_assets_are_served_with_the_math_text_module():
     client = page_client()
 
-    for path in (
-        "/static/math-text.mjs",
-        "/static/vendor/katex/katex.mjs",
-        "/static/vendor/katex/katex.min.css",
-        "/static/vendor/katex/fonts/KaTeX_Main-Regular.woff2",
+    for path, media_type in (
+        ("/static/math-text.mjs", "text/javascript"),
+        ("/static/vendor/katex/katex.mjs", "text/javascript"),
+        ("/static/vendor/katex/katex.min.css", "text/css"),
+        ("/static/vendor/katex/fonts/KaTeX_Main-Regular.woff2", "font/woff2"),
     ):
-        assert client.get(path).status_code == 200
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(media_type)

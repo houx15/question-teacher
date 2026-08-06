@@ -14,8 +14,11 @@ const SUPERSCRIPTS = {
   "⁹": "9",
 };
 
+export const MAX_MATH_TEXT_LENGTH = 4096;
+export const MAX_NORMALIZATION_PASSES = 8;
+
 const LEGACY_CANDIDATE = /[A-Za-z0-9√⁰¹²³⁴⁵⁶⁷⁸⁹+\-−×÷*/^=()（）\s]+/g;
-const LEGACY_MATH_MARKER = /[=^⁰¹²³⁴⁵⁶⁷⁸⁹√×÷]|\bsqrt\s*\(|[A-Za-z0-9)]\s*[+\-−]\s*[A-Za-z0-9(]/;
+const LEGACY_MATH_MARKER = /[=^⁰¹²³⁴⁵⁶⁷⁸⁹√×÷]|\bsqrt\s*\(|x\s*[+\-−*/]\s*(?:\d|\(|x\b)|(?:\d|\))\s*[+*/]\s*x\b/i;
 
 
 function textSegment(value) {
@@ -72,13 +75,15 @@ function explicitMathSegments(value) {
 
 export function normalizeLegacyMath(value) {
   let normalized = String(value).trim()
-    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (character) => `^${SUPERSCRIPTS[character]}`)
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, (characters) => `^{${[...characters].map((character) => SUPERSCRIPTS[character]).join("")}}`)
     .replace(/−/g, "-")
     .replace(/×/g, "\\times")
     .replace(/÷/g, "\\div");
 
-  while (/sqrt\s*\(([^()]*)\)/.test(normalized)) {
-    normalized = normalized.replace(/sqrt\s*\(([^()]*)\)/g, "\\sqrt{$1}");
+  for (let pass = 0; pass < MAX_NORMALIZATION_PASSES; pass += 1) {
+    const next = normalized.replace(/sqrt\s*\(([^()]*)\)/g, "\\sqrt{$1}");
+    if (next === normalized) break;
+    normalized = next;
   }
   return normalized;
 }
@@ -112,24 +117,36 @@ function legacyMathSegments(value) {
 
 export function mathSegments(value) {
   const source = String(value ?? "");
+  if (source.length > MAX_MATH_TEXT_LENGTH) return [textSegment(source)];
+
   const explicit = explicitMathSegments(source);
   if (explicit === null) return [textSegment(source)];
-  if (explicit) return explicit;
+  if (explicit) {
+    return explicit.flatMap((segment) => (
+      segment.type === "text" ? legacyMathSegments(segment.value) : [segment]
+    ));
+  }
   return legacyMathSegments(source);
 }
 
 
-export function renderMathText(container, value) {
+export function renderMathText(
+  container,
+  value,
+  { documentImpl = document, renderImpl = katex.render } = {},
+) {
   const nodes = mathSegments(value).map((segment) => {
-    if (segment.type === "text") return document.createTextNode(segment.value);
+    if (segment.type === "text") return documentImpl.createTextNode(segment.value);
 
-    const node = document.createElement("span");
+    const node = documentImpl.createElement("span");
     try {
-      katex.render(segment.value, node, {
+      renderImpl(segment.value, node, {
         displayMode: segment.displayMode,
         throwOnError: false,
         trust: false,
         strict: "warn",
+        maxSize: 20,
+        maxExpand: 200,
       });
     } catch {
       node.className = "math-fallback";
