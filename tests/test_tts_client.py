@@ -8,6 +8,7 @@ from app.audio_service import LessonAudioService
 from app.config import Settings
 from app.schemas import (
     Interaction,
+    InteractionOption,
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
@@ -102,6 +103,37 @@ def runtime_lesson(
         ),
         validation_report={"math_valid": True},
     )
+
+
+def choice_runtime_lesson(*, with_feedback=True):
+    options = [
+        InteractionOption(
+            option_id="option/with-path-like-id",
+            label="两边同时减一",
+            feedback=("对，先消去常数项。" if with_feedback else None),
+        ),
+        InteractionOption(
+            option_id="wrong-sign",
+            label="两边同时加一",
+            feedback=("这会让常数项更远离零。" if with_feedback else None),
+        ),
+        InteractionOption(
+            option_id="divide-first",
+            label="两边同时除以一",
+            feedback=("除以一没有改变等式。" if with_feedback else None),
+        ),
+    ]
+    lesson = runtime_lesson()
+    interaction = lesson.beats[1].interaction.model_copy(
+        update={
+            "kind": "choice",
+            "expected_answer": options[0].option_id,
+            "options": options,
+        }
+    )
+    beats = list(lesson.beats)
+    beats[1] = beats[1].model_copy(update={"interaction": interaction})
+    return lesson.model_copy(update={"beats": beats})
 
 
 class FakeSpeechClient:
@@ -362,6 +394,57 @@ def test_audio_service_writes_every_narration_hint_and_feedback(tmp_path):
     assert voiced.problem == lesson.problem
     assert voiced.validation_report == {"math_valid": True}
     assert lesson.model_dump() == original_dump
+
+
+def test_audio_service_writes_choice_feedback_with_numeric_asset_ids(tmp_path):
+    lesson = choice_runtime_lesson()
+    original_dump = lesson.model_dump()
+    client = FakeSpeechClient()
+
+    voiced = run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    interaction = voiced.beats[1].interaction
+    assert interaction is not None
+    assert [option.feedback_audio_url for option in interaction.options] == [
+        "/audio/lesson-001/beat-002-option-1.mp3",
+        "/audio/lesson-001/beat-002-option-2.mp3",
+        "/audio/lesson-001/beat-002-option-3.mp3",
+    ]
+    assert client.texts == [
+        "先观察未知数和常数项的位置。",
+        "现在判断第一步应该做什么。",
+        "观察常数项。",
+        "等式两边要做相同运算。",
+        "对，先消去常数项。",
+        "这会让常数项更远离零。",
+        "除以一没有改变等式。",
+        "对，先把未知数项集中到等号左边。",
+    ]
+    for index, option in enumerate(interaction.options, start=1):
+        assert (
+            tmp_path
+            / "lesson-001"
+            / f"beat-002-option-{index}.mp3"
+        ).read_bytes() == f"audio:{option.feedback}".encode()
+    assert not (tmp_path / "lesson-001" / "option").exists()
+    assert lesson.model_dump() == original_dump
+
+
+def test_audio_service_skips_legacy_choice_options_without_feedback(tmp_path):
+    lesson = choice_runtime_lesson(with_feedback=False)
+    client = FakeSpeechClient()
+
+    voiced = run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    interaction = voiced.beats[1].interaction
+    assert interaction is not None
+    assert [option.feedback_audio_url for option in interaction.options] == [
+        None,
+        None,
+        None,
+    ]
+    assert "" not in client.texts
+    assert not list((tmp_path / "lesson-001").glob("beat-002-option-*.mp3"))
 
 
 def test_audio_service_skips_empty_correct_explanation(tmp_path):

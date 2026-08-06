@@ -142,6 +142,26 @@ class LessonAudioService:
                             )
                         )
 
+                    voiced_options = []
+                    for index, option in enumerate(
+                        interaction.options,
+                        start=1,
+                    ):
+                        feedback_audio_url = None
+                        if option.feedback:
+                            feedback_audio_url = await self._write(
+                                lesson.lesson_id,
+                                f"{beat.beat_id}-option-{index}",
+                                option.feedback,
+                            )
+                        voiced_options.append(
+                            option.model_copy(
+                                update={
+                                    "feedback_audio_url": feedback_audio_url,
+                                }
+                            )
+                        )
+
                     correct_audio_url = None
                     if interaction.explanation_after_correct:
                         correct_audio_url = await self._write(
@@ -153,6 +173,7 @@ class LessonAudioService:
                         update={
                             "hint_audio_urls": hint_audio_urls,
                             "correct_audio_url": correct_audio_url,
+                            "options": voiced_options,
                         }
                     )
 
