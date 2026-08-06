@@ -1387,23 +1387,27 @@ class LessonGenerationService:
             if correct_option is None:
                 continue
 
-            raw_visible = " ".join(
+            raw_visible = "|".join(
                 [*visible_parts, interaction.prompt]
             )
             visible = self._normalize_answer_leak_text(raw_visible)
             option_id = self._normalize_answer_leak_text(
                 correct_option.option_id
             )
-            explicit_option_id = (
-                option_id in visible
-                if len(option_id) >= 4
-                else re.search(
-                    r"(?:正确答案|答案|应选|选择).{0,32}"
-                    + re.escape(option_id),
-                    visible,
+            cue = r"(?:正确答案|答案|应选|选择)"
+            if len(option_id) >= 4:
+                explicit_option_id = option_id in visible
+            else:
+                option_id_pattern = (
+                    r"(?<![a-z0-9_-])"
+                    + re.escape(option_id)
+                    + r"(?![a-z0-9_-])"
                 )
-                is not None
-            )
+                explicit_option_id = re.search(
+                    rf"(?:{cue}.{{0,32}}{option_id_pattern}|"
+                    rf"{option_id_pattern}.{{0,32}}{cue})",
+                    visible,
+                ) is not None
             if option_id and explicit_option_id:
                 raise LessonQualityError("互动前明确泄露了正确选项。")
 
@@ -1412,7 +1416,6 @@ class LessonGenerationService:
             )
             if not label or label not in visible:
                 continue
-            cue = r"(?:正确答案|答案|应选|选择)"
             label_pattern = re.escape(label)
             announcement = re.compile(
                 rf"(?:{cue}.{{0,32}}{label_pattern}|"

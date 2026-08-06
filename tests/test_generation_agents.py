@@ -1142,6 +1142,57 @@ def test_pre_interaction_correct_option_id_is_rejected():
         )
 
 
+@pytest.mark.parametrize(
+    "announcement",
+    [
+        "A就是正确答案。",
+        "正确答案就是A。",
+    ],
+)
+def test_pre_interaction_short_option_id_answer_announcement_is_rejected(
+    announcement,
+):
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = announcement
+    materials = materials_payload()
+    interaction = materials["interactions"][0]["interaction"]
+    interaction["expected_answer"] = "A"
+    for option, option_id in zip(
+        interaction["options"],
+        ["A", "B", "C"],
+    ):
+        option["option_id"] = option_id
+    client = FakeClient([narrative, materials, copy.deepcopy(materials)])
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
+
+
+def test_pre_interaction_bare_option_letter_far_from_cue_is_allowed():
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = (
+        "把A项移到等号右边，再合并同类项并逐步检查每一步变形是否保持"
+        "等式两边相等，完成整理以后再选择下一步。"
+    )
+    materials = materials_payload()
+    interaction = materials["interactions"][0]["interaction"]
+    interaction["expected_answer"] = "A"
+    for option, option_id in zip(
+        interaction["options"],
+        ["A", "B", "C"],
+    ):
+        option["option_id"] = option_id
+    client = FakeClient([narrative, materials, approved_review()])
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["review_status"] == "approved"
+
+
 def test_pre_interaction_math_delimiters_do_not_hide_answer_announcement():
     narrative = narrative_payload()
     narrative["moments"][0]["narration"] = (
@@ -1274,4 +1325,29 @@ def test_grounded_checker_nonavailability_errors_propagate(checker_error):
     with pytest.raises(type(checker_error), match=str(checker_error)):
         asyncio.run(
             generate_grounded_lesson(claim_checker=BrokenChecker())
+        )
+
+
+@pytest.mark.parametrize(
+    "checker_error",
+    [
+        MemoryError("out of memory"),
+        PermissionError("permission denied"),
+    ],
+)
+def test_generation_propagates_internal_claim_checker_errors(
+    monkeypatch,
+    checker_error,
+):
+    def broken_parse_expr(*args, **kwargs):
+        raise checker_error
+
+    monkeypatch.setattr(
+        "app.claim_checker.parse_expr",
+        broken_parse_expr,
+    )
+
+    with pytest.raises(type(checker_error), match=str(checker_error)):
+        asyncio.run(
+            generate_grounded_lesson(claim_checker=ClaimChecker())
         )

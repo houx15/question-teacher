@@ -3,6 +3,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum
+from tokenize import TokenError
 from typing import Dict, Optional, Set, Tuple
 
 from sympy import (
@@ -19,6 +20,7 @@ from sympy import (
     preorder_traversal,
     simplify,
 )
+from sympy.core.sympify import SympifyError
 from sympy.parsing.sympy_parser import (
     convert_xor,
     implicit_multiplication_application,
@@ -28,6 +30,17 @@ from sympy.parsing.sympy_parser import (
 )
 
 from app.schemas import GroundingCheckRequest
+
+
+_SUPPORTED_PARSE_ERRORS = (
+    SyntaxError,
+    ValueError,
+    TypeError,
+    NameError,
+    ArithmeticError,
+    TokenError,
+    SympifyError,
+)
 
 
 class ClaimStatus(str, Enum):
@@ -147,7 +160,7 @@ class ClaimChecker:
                 ClaimStatus.UNSUPPORTED,
                 str(exc),
             )
-        except Exception:
+        except _SUPPORTED_PARSE_ERRORS:
             return self._result(
                 request,
                 ClaimStatus.UNSUPPORTED,
@@ -197,7 +210,7 @@ class ClaimChecker:
             )
         except _UnsupportedClaim:
             raise
-        except Exception as exc:
+        except _SUPPORTED_PARSE_ERRORS as exc:
             raise _UnsupportedClaim("unsupported_expression") from exc
 
         return expression

@@ -272,6 +272,38 @@ def test_checker_enforces_its_expression_length_boundary_defensively():
 
 
 @pytest.mark.parametrize(
+    "checker_error",
+    [
+        MemoryError("out of memory"),
+        PermissionError("permission denied"),
+    ],
+)
+def test_checker_propagates_system_parser_errors(
+    monkeypatch,
+    checker_error,
+):
+    def broken_parse_expr(*args, **kwargs):
+        raise checker_error
+
+    monkeypatch.setattr(
+        "app.claim_checker.parse_expr",
+        broken_parse_expr,
+    )
+
+    with pytest.raises(type(checker_error), match=str(checker_error)):
+        ClaimChecker().check(check_payload())
+
+
+def test_checker_converts_malformed_expression_to_unsupported():
+    result = ClaimChecker().check(
+        check_payload(expression="x+", expected="0")
+    )
+
+    assert result.status == ClaimStatus.UNSUPPORTED
+    assert result.reason_code == "unsupported_expression"
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("expected", "sin(x)"),
@@ -308,3 +340,9 @@ def test_checker_never_uses_python_eval_or_exec():
     source = inspect.getsource(ClaimChecker)
     assert "eval(" not in source
     assert "exec(" not in source
+
+
+def test_checker_does_not_use_a_broad_exception_handler():
+    source = inspect.getsource(ClaimChecker)
+
+    assert "except Exception" not in source
