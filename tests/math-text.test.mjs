@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  MAX_ACCESSIBLE_TEXT_LENGTH,
   MAX_MATH_TEXT_LENGTH,
   MAX_NORMALIZATION_PASSES,
   mathSegments,
@@ -26,6 +27,40 @@ test("plain-text accessibility helper removes visual math wrappers without dupli
 
 test("plain-text accessibility helper preserves ordinary option labels", () => {
   assert.equal(mathTextToPlainText("两边同时加 9"), "两边同时加 9");
+});
+
+
+test("plain-text accessibility helper leaves blank labels for indexed UI fallback", () => {
+  assert.equal(mathTextToPlainText(" \n\t "), "");
+});
+
+
+test("plain-text accessibility helper truncates by code point with one ellipsis", () => {
+  const atLimit = "x".repeat(MAX_ACCESSIBLE_TEXT_LENGTH);
+  const overLimitWithEmoji = `${"x".repeat(158)}😀tail`;
+
+  assert.equal(MAX_ACCESSIBLE_TEXT_LENGTH, 160);
+  assert.equal(mathTextToPlainText(atLimit), atLimit);
+  assert.equal(
+    mathTextToPlainText(overLimitWithEmoji),
+    `${"x".repeat(158)}😀…`,
+  );
+  assert.equal(
+    [...mathTextToPlainText(overLimitWithEmoji)].length,
+    MAX_ACCESSIBLE_TEXT_LENGTH,
+  );
+  assert.equal(mathTextToPlainText(overLimitWithEmoji).includes("�"), false);
+});
+
+
+test("plain-text accessibility helper bounds hostile markup-like input", () => {
+  const hostilePrefix = String.raw`\(\htmlClass{evil}{x}\)<img src=x onerror=alert(1)>`;
+  const hostile = `${hostilePrefix}${"😀".repeat(MAX_MATH_TEXT_LENGTH + 1)}`;
+  const result = mathTextToPlainText(hostile);
+
+  assert.equal([...result].length, MAX_ACCESSIBLE_TEXT_LENGTH);
+  assert.equal(result.endsWith("…"), true);
+  assert.equal(result.includes("�"), false);
 });
 
 

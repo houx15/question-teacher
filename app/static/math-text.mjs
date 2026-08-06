@@ -16,6 +16,7 @@ const SUPERSCRIPTS = {
 
 export const MAX_MATH_TEXT_LENGTH = 4096;
 export const MAX_NORMALIZATION_PASSES = 8;
+export const MAX_ACCESSIBLE_TEXT_LENGTH = 160;
 
 const LEGACY_CANDIDATE = /[A-Za-z0-9√⁰¹²³⁴⁵⁶⁷⁸⁹+\-−×÷*/^=()（）\s]+/g;
 const LEGACY_MATH_MARKER = /[=^⁰¹²³⁴⁵⁶⁷⁸⁹√×÷]|\bsqrt\s*\(|x\s*[+\-−*/]\s*(?:\d|\(|x\b)|(?:\d|\))\s*[+*/]\s*x\b/i;
@@ -155,8 +156,24 @@ function mathExpressionToPlainText(value) {
 }
 
 
+function truncateCodePoints(value, limit) {
+  const codePoints = [];
+  for (const character of value) {
+    if (codePoints.length === limit) {
+      return `${codePoints.slice(0, limit - 1).join("")}…`;
+    }
+    codePoints.push(character);
+  }
+  return value;
+}
+
+
 export function mathTextToPlainText(value) {
-  return mathSegments(value)
+  const boundedSource = truncateCodePoints(
+    String(value ?? ""),
+    MAX_MATH_TEXT_LENGTH,
+  );
+  const plainText = mathSegments(boundedSource)
     .map((segment) => (
       segment.type === "math"
         ? mathExpressionToPlainText(segment.value)
@@ -165,6 +182,7 @@ export function mathTextToPlainText(value) {
     .join("")
     .replace(/\s+/g, " ")
     .trim();
+  return truncateCodePoints(plainText, MAX_ACCESSIBLE_TEXT_LENGTH);
 }
 
 
