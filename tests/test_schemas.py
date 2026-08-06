@@ -963,6 +963,27 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
         problem_text="解方程 x² - 7x + 12 = 0",
         expected_answer="x = 3 或 x = 4",
         method_signal="寻找乘积为常数项、和为一次项系数的两个数。",
+        options=[
+            TransferOption(
+                option_id="both-roots",
+                label="x = 3 或 x = 4",
+                canonical_answer="x = 3 或 x = 4",
+                feedback="两个根都能使原方程成立。",
+            ),
+            TransferOption(
+                option_id="only-three",
+                label="x = 3",
+                canonical_answer="x = 3",
+                feedback="还遗漏了另一个根。",
+            ),
+            TransferOption(
+                option_id="only-four",
+                label="x = 4",
+                canonical_answer="x = 4",
+                feedback="还遗漏了另一个根。",
+            ),
+        ],
+        correct_option_id="both-roots",
     )
     draft = LessonDraft(
         title="用因式分解法解一元二次方程",
@@ -1013,4 +1034,6 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
     assert runtime.problem.required_method == "factor"
     assert runtime.problem.reference_answer == "x = 2 或 x = 3"
     assert runtime.validation_report == {"math_valid": True}
+    assert runtime.transfer_item.correct_option_id == "both-roots"
+    assert len(runtime.transfer_item.options) == 3
     assert job.status == "completed"

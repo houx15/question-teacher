@@ -329,6 +329,10 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
                             {
                                 "option_id": "other-option",
                                 "label": "其他方法",
+                                "feedback": "这个式子已经是完全平方。",
+                                "feedback_audio_url": (
+                                    "/audio/lesson-public/other-option.mp3"
+                                ),
                             },
                         ],
                     },
@@ -380,7 +384,14 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
     assert payload["beats"][0]["interaction"]["correct_audio_url"]
     assert payload["beats"][1]["interaction"]["options"] == [
         {"option_id": "correct-option", "label": "配方法"},
-        {"option_id": "other-option", "label": "其他方法"},
+        {
+            "option_id": "other-option",
+            "label": "其他方法",
+            "feedback": "这个式子已经是完全平方。",
+            "feedback_audio_url": (
+                "/audio/lesson-public/other-option.mp3"
+            ),
+        },
     ]
 
     evaluation = client.post(

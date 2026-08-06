@@ -60,6 +60,11 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
         interaction = beat.get("interaction")
         if interaction is not None:
             interaction.pop("expected_answer", None)
+            for option in interaction.get("options", []):
+                if option.get("feedback") is None:
+                    option.pop("feedback", None)
+                if option.get("feedback_audio_url") is None:
+                    option.pop("feedback_audio_url", None)
     return payload
 
 
