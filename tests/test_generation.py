@@ -13,25 +13,83 @@ from app.math_engine import MathEngine
 from app.llm_client import ModelResponseError
 from app.prompts import (
     DIRECTOR_SYSTEM,
+    MATERIALS_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
     director_prompt,
+    materials_prompt,
     reference_audit_prompt,
 )
-from app.schemas import ProblemInput, ReferenceMaterialAudit
+from app.schemas import NarrativeDraft, ProblemInput, ReferenceMaterialAudit
 
 
 class FakeClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
+        self.all_calls = []
+        self._pending_materials = None
 
     async def complete_json(self, system_prompt, user_prompt):
-        self.calls.append((system_prompt, user_prompt))
+        call = (system_prompt, user_prompt)
+        self.all_calls.append(call)
+        if system_prompt != MATERIALS_SYSTEM:
+            self.calls.append(call)
+        if (
+            system_prompt == MATERIALS_SYSTEM
+            and self._pending_materials is not None
+        ):
+            response = self._pending_materials
+            self._pending_materials = None
+            return response
+
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
             raise response
+        if (
+            isinstance(response, dict)
+            and "transfer_item" in response
+            and "moments" in response
+        ):
+            materials = {
+                "interactions": [
+                    {
+                        "moment_id": f"moment-{index}",
+                        "interaction": copy.deepcopy(
+                            moment["interaction"]
+                        ),
+                    }
+                    for index, moment in enumerate(response["moments"])
+                    if moment.get("interaction") is not None
+                ],
+                "transfer_item": copy.deepcopy(
+                    response["transfer_item"]
+                ),
+            }
+            for option in materials["transfer_item"].get("options", []):
+                option.pop("label", None)
+            if system_prompt == MATERIALS_SYSTEM:
+                return materials
+            if system_prompt in {DIRECTOR_SYSTEM, REVISION_SYSTEM}:
+                self._pending_materials = materials
+                narrative = copy.deepcopy(response)
+                narrative.pop("transfer_item")
+                for index, moment in enumerate(narrative["moments"]):
+                    moment["moment_id"] = f"moment-{index}"
+                    if self._pending_materials and any(
+                        binding["moment_id"] == f"moment-{index}"
+                        for binding in self._pending_materials[
+                            "interactions"
+                        ]
+                    ):
+                        moment["interaction_intent"] = (
+                            "诊断这个关键认知转折。"
+                        )
+                    moment.pop("interaction", None)
+                    if moment.get("layer") == "interaction":
+                        moment["layer"] = "base"
+                return narrative
         return response
 
 
@@ -124,6 +182,34 @@ def valid_draft():
             "correct_option_id": "both-roots",
         },
     }
+
+
+def valid_narrative():
+    payload = copy.deepcopy(valid_draft())
+    payload.pop("transfer_item")
+    for index, moment in enumerate(payload["moments"]):
+        moment["moment_id"] = f"moment-{index}"
+        if moment.get("interaction") is not None:
+            moment["interaction_intent"] = "诊断这个关键认知转折。"
+        moment.pop("interaction", None)
+        if moment.get("layer") == "interaction":
+            moment["layer"] = "base"
+    return NarrativeDraft.model_validate(payload)
+
+
+def materials_contract_payload(
+    source_problem,
+    solution_strings,
+    original_equation_degree,
+):
+    return json.loads(
+        materials_prompt(
+            source_problem,
+            valid_narrative(),
+            solution_strings,
+            original_equation_degree=original_equation_degree,
+        )
+    )
 
 
 def valid_diagnostic_choice():
@@ -418,7 +504,7 @@ def test_approved_draft_is_compiled_without_rewrite():
 
     lesson = asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
     assert client.calls[0][0] == DIRECTOR_SYSTEM
     assert client.calls[1][0] == REVIEWER_SYSTEM
     assert lesson.validation_report == {
@@ -431,7 +517,8 @@ def test_approved_draft_is_compiled_without_rewrite():
     director_payload = json.loads(client.calls[0][1])
     assert director_payload["problem"]["required_method"] == "factor"
     assert director_payload["independent_solutions"] == ["2", "3"]
-    assert "lesson_schema" in director_payload
+    assert "narrative_schema" in director_payload
+    assert "transfer_item" not in director_payload["output_contract"]
 
 
 def test_revision_required_returns_whole_lesson_to_director():
@@ -449,16 +536,15 @@ def test_revision_required_returns_whole_lesson_to_director():
     assert len(client.calls) == 4
     assert client.calls[2][0] == REVISION_SYSTEM
     revision_payload = json.loads(client.calls[2][1])
-    assert revision_payload["current_whole_lesson"]["title"] == valid_draft()["title"]
+    assert revision_payload["current_narrative"]["title"] == valid_draft()["title"]
     assert revision_payload["review"]["must_fix"] == revision_review()["must_fix"]
-    assert revision_payload["output_contract"]["moment_choice"] == (
-        json.loads(client.calls[0][1])["output_contract"]["moment_choice"]
-    )
     assert revision_payload["output_contract"]["method_introduction"] == (
         json.loads(client.calls[0][1])["output_contract"][
             "method_introduction"
         ]
     )
+    assert "moment_choice" not in revision_payload["output_contract"]
+    assert "transfer_item" not in revision_payload["output_contract"]
     assert lesson.validation_report["revision_count"] == 1
     assert [
         option.label for option in lesson.transfer_item.options
@@ -514,7 +600,10 @@ def test_invalid_math_step_stops_before_review_with_safe_error():
 
     assert "数学步骤" in str(exc_info.value)
     assert "(x-1)(x-6)" not in str(exc_info.value)
-    assert len(client.calls) == 2
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        DIRECTOR_SYSTEM,
+    ]
 
 
 def test_math_route_rejects_unrelated_first_step_with_safe_error():
@@ -529,7 +618,7 @@ def test_math_route_rejects_unrelated_first_step_with_safe_error():
 
     assert "数学路线" in str(exc_info.value)
     assert "x^2-9" not in str(exc_info.value)
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 2
 
 
 def test_math_route_rejects_disconnected_consecutive_steps():
@@ -550,7 +639,7 @@ def test_math_route_rejects_disconnected_consecutive_steps():
     with pytest.raises(LessonQualityError, match="数学路线"):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 2
 
 
 def test_math_route_rejects_final_solution_mismatch():
@@ -571,7 +660,7 @@ def test_math_route_rejects_final_solution_mismatch():
 
     assert "数学路线" in str(exc_info.value)
     assert "x=99" not in str(exc_info.value)
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 2
 
 
 def test_math_route_accepts_contiguous_normalized_steps():
@@ -601,7 +690,7 @@ def test_math_route_accepts_contiguous_normalized_steps():
     lesson = asyncio.run(service.generate(problem()))
 
     assert lesson.validation_report["math_status"] == "verified"
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 def test_math_route_preserves_valid_multi_branch_final_state():
@@ -686,7 +775,7 @@ def test_required_method_must_be_used_as_an_operation():
     with pytest.raises(LessonQualityError, match="指定方法"):
         asyncio.run(service.generate(problem("complete_the_square")))
 
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 2
 
 
 def test_required_method_requires_matching_method_introduction_name():
@@ -699,7 +788,7 @@ def test_required_method_requires_matching_method_introduction_name():
         asyncio.run(service.generate(problem("complete_the_square")))
 
     assert str(exc_info.value) == "讲解的方法介绍与指定方法不一致。"
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 2
 
 
 def test_invalid_transfer_item_stops_before_review():
@@ -711,7 +800,7 @@ def test_invalid_transfer_item_stops_before_review():
     with pytest.raises(LessonQualityError, match="近迁移题"):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 def test_overlong_method_introduction_gets_targeted_safe_retry():
@@ -761,7 +850,7 @@ def test_quality_gate_method_length_gets_targeted_retry_contract():
 
     assert retry["failed_gate"] == "method_introduction_length_validation"
     assert "why_it_helps" in " ".join(retry["required_action"])
-    assert "complete LessonDraft" in " ".join(retry["required_action"])
+    assert "complete NarrativeDraft" in " ".join(retry["required_action"])
 
 
 def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
@@ -779,14 +868,18 @@ def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
     lesson = asyncio.run(service.generate(problem()))
 
     assert lesson.validation_report["review_status"] == "approved"
-    assert [call[0] for call in client.calls] == [
+    assert [call[0] for call in client.all_calls] == [
         DIRECTOR_SYSTEM,
-        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        MATERIALS_SYSTEM,
         REVIEWER_SYSTEM,
     ]
-    retry_payload = json.loads(client.calls[1][1])
-    assert retry_payload["previous_validation_error"] == (
-        "近迁移题未通过数学验证。"
+    retry_payload = json.loads(client.all_calls[2][1])
+    summary = json.loads(retry_payload["previous_validation_error"])
+    assert summary["category"] == "materials_draft_schema_validation"
+    assert any(
+        issue["path"].startswith("transfer_item")
+        for issue in summary["issues"]
     )
 
 
@@ -814,13 +907,11 @@ def test_director_prompt_gives_executable_method_introduction_budgets():
     assert "Do not truncate" in rules
 
 
-def test_director_prompt_separates_answer_syntax_from_non_reusable_examples():
-    payload = json.loads(
-        director_prompt(
-            problem("complete_the_square"),
-            ["2", "3"],
-            original_equation_degree=2,
-        )
+def test_materials_prompt_separates_answer_syntax_from_non_reusable_examples():
+    payload = materials_contract_payload(
+        problem("complete_the_square"),
+        ["2", "3"],
+        2,
     )
 
     contract = payload["output_contract"]["transfer_item"]
@@ -850,12 +941,10 @@ def test_director_prompt_separates_answer_syntax_from_non_reusable_examples():
 def test_transfer_method_profile_examples_are_math_engine_verifiable(
     required_method,
 ):
-    payload = json.loads(
-        director_prompt(
-            problem(required_method),
-            ["2", "3"],
-            original_equation_degree=2,
-        )
+    payload = materials_contract_payload(
+        problem(required_method),
+        ["2", "3"],
+        2,
     )
     example = payload["output_contract"]["transfer_item"][
         "method_profile"
@@ -886,12 +975,10 @@ def test_unspecified_method_transfer_contract_preserves_original_degree(
         problem_text=problem_text,
         reference_answer=reference_answer,
     )
-    payload = json.loads(
-        director_prompt(
-            source,
-            ["2"],
-            original_equation_degree=degree,
-        )
+    payload = materials_contract_payload(
+        source,
+        ["2"],
+        degree,
     )
     profile = payload["output_contract"]["transfer_item"][
         "method_profile"
@@ -903,14 +990,14 @@ def test_unspecified_method_transfer_contract_preserves_original_degree(
     assert "quadratic_formula" not in json.dumps(profile)
 
 
-def test_generation_passes_validated_original_degree_to_director_contract():
+def test_generation_passes_validated_original_degree_to_materials_contract():
     source = problem(None)
     client = FakeClient([valid_draft(), approved_review()])
     service = LessonGenerationService(client, MathEngine())
 
     asyncio.run(service.generate(source))
 
-    payload = json.loads(client.calls[0][1])
+    payload = json.loads(client.all_calls[1][1])
     profile = payload["output_contract"]["transfer_item"][
         "method_profile"
     ]
@@ -918,12 +1005,11 @@ def test_generation_passes_validated_original_degree_to_director_contract():
     assert profile["original_equation_degree"] == 2
 
 
-def test_director_prompt_gives_exact_generated_choice_contract():
-    payload = json.loads(
-        director_prompt(
-            problem("complete_the_square"),
-            ["2", "3"],
-        )
+def test_materials_prompt_gives_exact_generated_choice_contract():
+    payload = materials_contract_payload(
+        problem("complete_the_square"),
+        ["2", "3"],
+        2,
     )
 
     contract = payload["output_contract"]["moment_choice"]
@@ -959,40 +1045,31 @@ def test_director_prompt_gives_exact_generated_choice_contract():
         separators=(",", ":"),
     )
     assert example_json not in DIRECTOR_SYSTEM
+    assert example_json not in MATERIALS_SYSTEM
     assert example_json not in REVISION_SYSTEM
     assert (
-        "output_contract.moment_choice.example" in DIRECTOR_SYSTEM
+        "expected_answer=option_id" in MATERIALS_SYSTEM
     )
-    assert (
-        "output_contract.moment_choice.example" in REVISION_SYSTEM
-    )
-    assert "point_select 只用于读取旧课程" in DIRECTOR_SYSTEM
-    assert "point_select 只用于读取旧课程" in REVISION_SYSTEM
+    assert "禁止复用旧素材" in REVISION_SYSTEM
+    assert "只能是 choice" in MATERIALS_SYSTEM
+    assert "不得返回互动" in REVISION_SYSTEM
 
 
 def test_transfer_math_retry_prompt_requires_recomputing_equation_answer_pair():
     payload = json.loads(
-        director_prompt(
+        materials_prompt(
             problem("complete_the_square"),
+            valid_narrative(),
             ["2", "3"],
             previous_validation_error="近迁移题未通过数学验证。",
+            original_equation_degree=2,
         )
     )
 
     retry = payload["output_contract"]["retry"]
-    assert retry["failed_gate"] == "transfer_item_math_validation"
-    assert retry["required_action"] == [
-        "Discard the previous transfer_item.",
-        "Create a different supported equation using method_profile.",
-        "Solve that exact equation before writing expected_answer.",
-        "Rebuild 3 or 4 options with exactly one equivalent answer.",
-        "Return a complete new LessonDraft; do not weaken any other field.",
-    ]
-    assert retry["forbidden"] == [
-        "Do not reuse the failed equation-answer pair.",
-        "Do not alter the original problem or reference answer.",
-        "Do not guess, silently rewrite, or copy an unchecked answer.",
-    ]
+    assert retry["failed_gate"] == "materials_validation"
+    assert retry["safe_error"] == "近迁移题未通过数学验证。"
+    assert "Discard all previous materials" in retry["required_action"]
 
 
 def test_two_invalid_initial_drafts_still_fail_quality_gate():
@@ -1007,10 +1084,10 @@ def test_two_invalid_initial_drafts_still_fail_quality_gate():
     )
     service = LessonGenerationService(client, MathEngine())
 
-    with pytest.raises(LessonQualityError, match="近迁移题"):
+    with pytest.raises(LessonQualityError, match="互动素材结构无效"):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 def test_unsupported_transfer_equation_still_fails_quality_gate():
@@ -1028,7 +1105,7 @@ def test_unsupported_transfer_equation_still_fails_quality_gate():
         asyncio.run(service.generate(problem()))
 
     assert str(exc_info.value) == "近迁移题未通过数学验证。"
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 def test_draft_requires_at_least_one_interaction():
@@ -1042,7 +1119,7 @@ def test_draft_requires_at_least_one_interaction():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "讲解只能设置 1 至 3 个学生互动。"
+    assert str(exc_info.value) == "模型生成的讲解结构无效。"
 
 
 def test_draft_rejects_more_than_three_moment_interactions():
@@ -1061,8 +1138,8 @@ def test_draft_rejects_more_than_three_moment_interactions():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "讲解只能设置 1 至 3 个学生互动。"
-    assert len(client.calls) == 2
+    assert str(exc_info.value) == "模型生成的讲解结构无效。"
+    assert len(client.all_calls) == 2
 
 
 def test_draft_rejects_duplicate_moment_interaction_ids():
@@ -1077,7 +1154,7 @@ def test_draft_rejects_duplicate_moment_interaction_ids():
         asyncio.run(service.generate(problem()))
 
     assert str(exc_info.value) == "学生互动标识必须全课唯一。"
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 def test_draft_rejects_compiler_reserved_near_transfer_interaction_id():
@@ -1090,7 +1167,7 @@ def test_draft_rejects_compiler_reserved_near_transfer_interaction_id():
         asyncio.run(service.generate(problem()))
 
     assert str(exc_info.value) == "学生互动标识不能使用系统保留值。"
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 def test_draft_rejects_unexecutable_choice_before_review():
@@ -1108,9 +1185,9 @@ def test_draft_rejects_unexecutable_choice_before_review():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert "讲解结构无效" in str(exc_info.value)
+    assert "互动素材结构无效" in str(exc_info.value)
     assert "unusable-choice" not in str(exc_info.value)
-    assert len(client.calls) == 2
+    assert len(client.all_calls) == 3
 
 
 @pytest.mark.parametrize(
@@ -1139,8 +1216,8 @@ def test_draft_rejects_new_math_input_interaction_kinds_before_review(
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "新讲解中的自动判分互动必须使用选择题。"
-    assert len(client.calls) == 2
+    assert str(exc_info.value) == "互动素材结构无效。"
+    assert len(client.all_calls) == 3
 
 
 @pytest.mark.parametrize(
@@ -1168,8 +1245,8 @@ def test_new_drafts_reject_legacy_interaction_kinds_before_review(
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "新讲解中的自动判分互动必须使用选择题。"
-    assert len(client.calls) == 2
+    assert str(exc_info.value) == "互动素材结构无效。"
+    assert len(client.all_calls) == 3
 
 
 def test_new_draft_choice_rejects_model_supplied_feedback_audio_url():
@@ -1183,8 +1260,8 @@ def test_new_draft_choice_rejects_model_supplied_feedback_audio_url():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "选择互动不能预填反馈音频地址。"
-    assert len(client.calls) == 2
+    assert str(exc_info.value) == "互动素材结构无效。"
+    assert len(client.all_calls) == 3
 
 
 @pytest.mark.parametrize(
@@ -1221,7 +1298,7 @@ def test_choice_requires_three_or_four_diagnostic_options(option_count):
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "选择互动需要 3 至 4 个选项。"
+    assert str(exc_info.value) == "互动素材结构无效。"
 
 
 @pytest.mark.parametrize("missing_feedback", ["missing", None])
@@ -1241,7 +1318,7 @@ def test_choice_requires_feedback_for_every_diagnostic_option(
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "选择互动缺少诊断反馈。"
+    assert str(exc_info.value) == "互动素材结构无效。"
 
 
 def test_transfer_item_requires_diagnostic_options():
@@ -1254,7 +1331,7 @@ def test_transfer_item_requires_diagnostic_options():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "近迁移题必须提供 3 至 4 个诊断选项。"
+    assert str(exc_info.value) == "互动素材结构无效。"
 
 
 def test_transfer_item_rejects_a_second_equivalent_option():
@@ -1436,7 +1513,7 @@ def test_invalid_director_schema_is_regenerated_once_with_safe_summary():
     assert len(client.calls) == 3
     retry_payload = json.loads(client.calls[1][1])
     summary = json.loads(retry_payload["previous_validation_error"])
-    assert summary["category"] == "lesson_draft_schema_validation"
+    assert summary["category"] == "narrative_draft_schema_validation"
     assert summary["issue_count"] >= 1
     assert 1 <= len(summary["issues"]) <= 12
     assert all(
@@ -1461,32 +1538,15 @@ def test_choice_schema_error_gets_targeted_structure_retry_contract():
     lesson = asyncio.run(service.generate(problem()))
 
     assert lesson.validation_report["review_status"] == "approved"
-    retry_payload = json.loads(client.calls[1][1])
-    summary = json.loads(retry_payload["previous_validation_error"])
-    assert summary["issues"] == [
-        {
-            "path": "moments.[].interaction",
-            "type": "value_error",
-        }
-    ]
-    assert retry_payload["output_contract"]["retry"] == {
-        "failed_gate": "moment_choice_schema_validation",
-        "required_action": [
-            "Rebuild every moments[].interaction from the moment_choice "
-            "example.",
-            "Use kind=choice with 3 or 4 unique option_id values.",
-            "Set expected_answer to exactly the correct option_id, never its "
-            "label or formula.",
-            "Give every option feedback and omit feedback_audio_url.",
-            "Return a complete new LessonDraft without weakening other "
-            "fields.",
-        ],
-        "forbidden": [
-            "Do not reuse the malformed interaction object.",
-            "Do not move transfer_item into moments[].interaction.",
-            "Do not guess, silently rewrite, or bypass schema validation.",
-        ],
-    }
+    retry_payload = json.loads(client.all_calls[2][1])
+    retry = retry_payload["output_contract"]["retry"]
+    summary = json.loads(retry["safe_error"])
+    assert any(
+        issue["path"].startswith("interactions.[].interaction")
+        for issue in summary["issues"]
+    )
+    assert retry["failed_gate"] == "materials_validation"
+    assert "Discard all previous materials" in retry["required_action"]
 
 
 def test_transfer_schema_error_gets_targeted_retry_contract():
@@ -1502,17 +1562,15 @@ def test_transfer_schema_error_gets_targeted_retry_contract():
     lesson = asyncio.run(service.generate(problem()))
 
     assert lesson.validation_report["review_status"] == "approved"
-    retry_payload = json.loads(client.calls[1][1])
-    summary = json.loads(retry_payload["previous_validation_error"])
+    retry_payload = json.loads(client.all_calls[2][1])
+    retry = retry_payload["output_contract"]["retry"]
+    summary = json.loads(retry["safe_error"])
     assert any(
         issue["path"].startswith("transfer_item.options.[]")
         for issue in summary["issues"]
     )
-    retry = retry_payload["output_contract"]["retry"]
-    assert retry["failed_gate"] == "transfer_item_schema_validation"
-    actions = " ".join(retry["required_action"])
-    assert "canonical_answer" in actions
-    assert "Omit label" in actions
+    assert retry["failed_gate"] == "materials_validation"
+    assert "Discard all previous materials" in retry["required_action"]
 
 
 def test_two_invalid_director_schemas_stop_after_one_safe_retry():
@@ -1618,6 +1676,7 @@ def test_sync_stage_callback_receives_generation_stages_in_order():
     assert stages == [
         "正在验证数学路线",
         "正在设计完整讲解",
+        "正在准备互动素材",
         "正在进行整篇审稿",
         "正在编译课堂",
     ]
@@ -1636,14 +1695,15 @@ def test_async_stage_callback_is_awaited():
     asyncio.run(service.generate(problem(), on_stage=on_stage))
 
     assert stages[-1] == "正在编译课堂"
-    assert len(stages) == 4
+    assert len(stages) == 5
 
 
 def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "完整" in DIRECTOR_SYSTEM
     assert "一个主要认知动作" in DIRECTOR_SYSTEM
     assert "最多 90 个字符" in DIRECTOR_SYSTEM
-    assert "不得" in DIRECTOR_SYSTEM and "泄露" in DIRECTOR_SYSTEM
+    assert "不得包含 interaction" in DIRECTOR_SYSTEM
+    assert "互动前不泄露答案" in MATERIALS_SYSTEM
     assert "exactly one operand" in DIRECTOR_SYSTEM
     assert "write" in DIRECTOR_SYSTEM and "transform" in DIRECTOR_SYSTEM
     assert "只有一个" in DIRECTOR_SYSTEM
@@ -1659,34 +1719,34 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "student_definition 最多 36 个字符" in DIRECTOR_SYSTEM
     assert "target_form 最多 80 个字符" in DIRECTOR_SYSTEM
     assert "why_it_helps 最多 32 个字符" in DIRECTOR_SYSTEM
-    assert "自动判分互动只能使用 choice" in DIRECTOR_SYSTEM
-    assert "point_select 只用于读取旧课程" in DIRECTOR_SYSTEM
+    assert "只能是 choice" in MATERIALS_SYSTEM
     assert "LaTeX" in DIRECTOR_SYSTEM
-    assert "3 至 4" in DIRECTOR_SYSTEM
-    assert "canonical_answer" in DIRECTOR_SYSTEM
-    assert "近迁移" in DIRECTOR_SYSTEM
+    assert "3 至 4" in MATERIALS_SYSTEM
+    assert "canonical_answer" in MATERIALS_SYSTEM
+    assert "近迁移" in MATERIALS_SYSTEM
     assert "整节课" in REVIEWER_SYSTEM
     assert "参考解析审阅" in REVIEWER_SYSTEM
     assert "无信息增益" in REVIEWER_SYSTEM
     assert "整式圈注" in REVIEWER_SYSTEM
     assert "方法介绍" in REVIEWER_SYSTEM
     assert "自动判分互动不是 choice" in REVIEWER_SYSTEM
-    assert "完整 LessonDraft JSON" in REVISION_SYSTEM
+    assert "完整 NarrativeDraft JSON" in REVISION_SYSTEM
+    assert "禁止复用旧素材" in REVISION_SYSTEM
     assert "参考解析审阅" in REVISION_SYSTEM
     assert "方法介绍" in REVISION_SYSTEM
     assert "student_definition 最多 36 个字符" in REVISION_SYSTEM
     assert "target_form 最多 80 个字符" in REVISION_SYSTEM
     assert "why_it_helps 最多 32 个字符" in REVISION_SYSTEM
-    assert "自动判分互动只能使用 choice" in REVISION_SYSTEM
+    assert "不得返回互动" in REVISION_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in DIRECTOR_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVIEWER_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVISION_SYSTEM
-    assert "每个选项都要给出针对所选推理的具体 feedback" in DIRECTOR_SYSTEM
+    assert "每个选项必须提供针对该选择推理的具体 feedback" in MATERIALS_SYSTEM
     assert "任一 choice 选项缺少针对所选推理的具体诊断 feedback" in REVIEWER_SYSTEM
-    assert "重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback" in REVISION_SYSTEM
-    assert "TransferOption.label 应省略" in DIRECTOR_SYSTEM
+    assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM
+    assert "省略 label" in MATERIALS_SYSTEM
     assert "label 由服务端根据 canonical_answer" in REVIEWER_SYSTEM
-    assert "TransferOption.label 应省略" in REVISION_SYSTEM
-    assert "choice 的可见 label 不得重复" in DIRECTOR_SYSTEM
+    assert "不得返回互动、选项或 transfer_item" in REVISION_SYSTEM
+    assert "可见 label" in MATERIALS_SYSTEM
     assert "choice 的可见 label 重复" in REVIEWER_SYSTEM
-    assert "choice 的可见 label 不得重复" in REVISION_SYSTEM
+    assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM

@@ -14,16 +14,21 @@ from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
 from app.prompts import (
     DIRECTOR_SYSTEM,
+    MATERIALS_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
     director_prompt,
+    materials_prompt,
     reference_audit_prompt,
     reviewer_prompt,
     revision_prompt,
 )
 from app.schemas import (
+    LessonMoment,
     LessonDraft,
+    MaterialsDraft,
+    NarrativeDraft,
     ProblemInput,
     ReferenceMaterialAudit,
     ReviewDecision,
@@ -89,7 +94,15 @@ class _DraftSchemaValidationError(LessonQualityError):
         self.validation_summary = validation_summary
 
 
-def _lesson_draft_property_names() -> set:
+class _MaterialsValidationError(LessonQualityError):
+    """Carries a safe materials-only retry reason."""
+
+    def __init__(self, public_message: str, retry_summary: str) -> None:
+        super().__init__(public_message)
+        self.retry_summary = retry_summary
+
+
+def _schema_property_names(model: Any) -> set:
     names = set()
 
     def visit(value: Any) -> None:
@@ -103,15 +116,21 @@ def _lesson_draft_property_names() -> set:
             for child in value:
                 visit(child)
 
-    visit(LessonDraft.model_json_schema())
+    visit(model.model_json_schema())
     return names
 
 
-_LESSON_DRAFT_PROPERTY_NAMES = _lesson_draft_property_names()
+_NARRATIVE_DRAFT_PROPERTY_NAMES = _schema_property_names(NarrativeDraft)
+_MATERIALS_DRAFT_PROPERTY_NAMES = _schema_property_names(MaterialsDraft)
 _MAX_SCHEMA_RETRY_ISSUES = 12
 
 
-def _draft_schema_validation_summary(error: ValidationError) -> str:
+def _schema_validation_summary(
+    error: ValidationError,
+    *,
+    category: str,
+    property_names: set,
+) -> str:
     raw_issues = error.errors(
         include_url=False,
         include_context=False,
@@ -123,7 +142,7 @@ def _draft_schema_validation_summary(error: ValidationError) -> str:
         for part in raw_issue.get("loc", ()):
             if isinstance(part, int):
                 path_parts.append("[]")
-            elif part in _LESSON_DRAFT_PROPERTY_NAMES:
+            elif part in property_names:
                 path_parts.append(part)
             else:
                 path_parts.append("<unknown>")
@@ -142,7 +161,7 @@ def _draft_schema_validation_summary(error: ValidationError) -> str:
         )
     return json.dumps(
         {
-            "category": "lesson_draft_schema_validation",
+            "category": category,
             "issue_count": len(raw_issues),
             "issues": issues,
             "truncated": len(raw_issues) > len(issues),
@@ -150,6 +169,22 @@ def _draft_schema_validation_summary(error: ValidationError) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
+    )
+
+
+def _narrative_schema_validation_summary(error: ValidationError) -> str:
+    return _schema_validation_summary(
+        error,
+        category="narrative_draft_schema_validation",
+        property_names=_NARRATIVE_DRAFT_PROPERTY_NAMES,
+    )
+
+
+def _materials_schema_validation_summary(error: ValidationError) -> str:
+    return _schema_validation_summary(
+        error,
+        category="materials_draft_schema_validation",
+        property_names=_MATERIALS_DRAFT_PROPERTY_NAMES,
     )
 
 
@@ -193,10 +228,18 @@ class LessonGenerationService:
             self._validate_reference_audit(problem, reference_audit)
 
         await self._emit(on_stage, "正在设计完整讲解")
-        draft = await self._create_validated_draft(
+        narrative = await self._create_validated_narrative(
             problem,
             problem_report.solution_strings,
             reference_audit,
+            problem_report.equation_degree,
+        )
+        await self._emit(on_stage, "正在准备互动素材")
+        draft = await self._create_validated_materials(
+            problem,
+            narrative,
+            problem_report.solution_strings,
+            None,
             problem_report.equation_degree,
         )
         revision_count = 0
@@ -211,11 +254,19 @@ class LessonGenerationService:
                 raise LessonQualityError("整篇讲稿在两轮修订后仍未通过。")
 
             await self._emit(on_stage, "正在修订完整讲解")
-            draft = await self._revise(
+            narrative = await self._revise(
                 problem,
-                draft,
+                narrative,
                 review,
                 reference_audit,
+            )
+            self._validate_narrative(problem, narrative)
+            await self._emit(on_stage, "正在准备互动素材")
+            draft = await self._create_validated_materials(
+                problem,
+                narrative,
+                problem_report.solution_strings,
+                review,
                 problem_report.equation_degree,
             )
             revision_count += 1
@@ -243,14 +294,14 @@ class LessonGenerationService:
         except Exception:
             raise LessonQualityError("课堂编译失败。") from None
 
-    async def _create_draft(
+    async def _create_narrative(
         self,
         problem: ProblemInput,
         solution_strings: Any,
         reference_audit: Optional[ReferenceMaterialAudit],
         previous_validation_error: Optional[str] = None,
         original_equation_degree: Optional[int] = None,
-    ) -> LessonDraft:
+    ) -> NarrativeDraft:
         payload = await self._complete_json(
             DIRECTOR_SYSTEM,
             director_prompt(
@@ -262,24 +313,23 @@ class LessonGenerationService:
             ),
         )
         try:
-            draft = LessonDraft.model_validate(payload)
+            return NarrativeDraft.model_validate(payload)
         except ValidationError as error:
             raise _DraftSchemaValidationError(
-                _draft_schema_validation_summary(error)
+                _narrative_schema_validation_summary(error)
             ) from None
-        return self._canonicalize_transfer_labels(draft)
 
-    async def _create_validated_draft(
+    async def _create_validated_narrative(
         self,
         problem: ProblemInput,
         solution_strings: Any,
         reference_audit: Optional[ReferenceMaterialAudit],
         original_equation_degree: Optional[int],
-    ) -> LessonDraft:
+    ) -> NarrativeDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
             try:
-                draft = await self._create_draft(
+                narrative = await self._create_narrative(
                     problem,
                     solution_strings,
                     reference_audit,
@@ -292,13 +342,127 @@ class LessonGenerationService:
                 previous_validation_error = error.validation_summary
                 continue
             try:
-                self._validate_draft(problem, draft)
-                return draft
+                self._validate_narrative(problem, narrative)
+                return narrative
             except LessonQualityError as error:
                 if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
                     raise
                 previous_validation_error = str(error)
         raise LessonQualityError("完整讲解生成失败。")
+
+    async def _create_materials(
+        self,
+        problem: ProblemInput,
+        narrative: NarrativeDraft,
+        solution_strings: Any,
+        review: Optional[ReviewDecision],
+        previous_validation_error: Optional[str],
+        original_equation_degree: Optional[int],
+    ) -> MaterialsDraft:
+        payload = await self._complete_json(
+            MATERIALS_SYSTEM,
+            materials_prompt(
+                problem,
+                narrative,
+                list(solution_strings),
+                review,
+                previous_validation_error,
+                original_equation_degree,
+            ),
+        )
+        try:
+            return MaterialsDraft.model_validate(payload)
+        except ValidationError as error:
+            raise _MaterialsValidationError(
+                "互动素材结构无效。",
+                _materials_schema_validation_summary(error),
+            ) from None
+
+    async def _create_validated_materials(
+        self,
+        problem: ProblemInput,
+        narrative: NarrativeDraft,
+        solution_strings: Any,
+        review: Optional[ReviewDecision],
+        original_equation_degree: Optional[int],
+    ) -> LessonDraft:
+        previous_validation_error = None
+        last_error: Optional[LessonQualityError] = None
+        for attempt in range(2):
+            try:
+                materials = await self._create_materials(
+                    problem,
+                    narrative,
+                    solution_strings,
+                    review,
+                    previous_validation_error,
+                    original_equation_degree,
+                )
+                draft = self._compose_draft(narrative, materials)
+                draft = self._canonicalize_transfer_labels(draft)
+                self._validate_draft(problem, draft)
+                return draft
+            except _MaterialsValidationError as error:
+                last_error = error
+                previous_validation_error = error.retry_summary
+            except LessonQualityError as error:
+                last_error = error
+                previous_validation_error = str(error)
+            if attempt == 1:
+                assert last_error is not None
+                raise last_error
+        raise AssertionError("unreachable materials retry state")
+
+    def _compose_draft(
+        self,
+        narrative: NarrativeDraft,
+        materials: MaterialsDraft,
+    ) -> LessonDraft:
+        narrative_ids = {
+            moment.moment_id
+            for moment in narrative.moments
+        }
+        intended_ids = {
+            moment.moment_id
+            for moment in narrative.moments
+            if moment.interaction_intent is not None
+        }
+        bound_ids = [
+            binding.moment_id
+            for binding in materials.interactions
+        ]
+        if any(moment_id not in narrative_ids for moment_id in bound_ids):
+            raise LessonQualityError("互动素材的绑定位置无效。")
+        if len(bound_ids) != len(set(bound_ids)):
+            raise LessonQualityError("互动素材不能重复绑定同一时刻。")
+        if set(bound_ids) != intended_ids:
+            raise LessonQualityError(
+                "互动素材必须完整填写已声明的互动意图。"
+            )
+
+        by_id = {
+            binding.moment_id: binding.interaction
+            for binding in materials.interactions
+        }
+        moments = [
+            LessonMoment(
+                purpose=moment.purpose,
+                narration=moment.narration,
+                board_actions=moment.board_actions,
+                layer=moment.layer,
+                interaction=(
+                    by_id[moment.moment_id].model_dump()
+                    if moment.moment_id in by_id
+                    else None
+                ),
+            )
+            for moment in narrative.moments
+        ]
+        return LessonDraft(
+            **narrative.model_dump(exclude={"moments"}),
+            moments=moments,
+            transfer_item=materials.transfer_item.model_dump(),
+        )
 
     async def _review(
         self,
@@ -318,26 +482,23 @@ class LessonGenerationService:
     async def _revise(
         self,
         problem: ProblemInput,
-        draft: LessonDraft,
+        narrative: NarrativeDraft,
         review: ReviewDecision,
         reference_audit: Optional[ReferenceMaterialAudit],
-        original_equation_degree: Optional[int],
-    ) -> LessonDraft:
+    ) -> NarrativeDraft:
         payload = await self._complete_json(
             REVISION_SYSTEM,
             revision_prompt(
                 problem,
-                draft,
+                narrative,
                 review,
                 reference_audit,
-                original_equation_degree,
             ),
         )
         try:
-            revised_draft = LessonDraft.model_validate(payload)
+            return NarrativeDraft.model_validate(payload)
         except ValidationError:
             raise LessonQualityError("模型修订的讲解结构无效。") from None
-        return self._canonicalize_transfer_labels(revised_draft)
 
     def _canonicalize_transfer_labels(
         self,
@@ -423,6 +584,52 @@ class LessonGenerationService:
                 if attempt == 1:
                     raise
         raise AssertionError("unreachable model retry state")
+
+    def _validate_narrative(
+        self,
+        problem: ProblemInput,
+        narrative: NarrativeDraft,
+    ) -> None:
+        required_method = REQUIRED_METHODS.get(problem.required_method)
+        moment_ids = [
+            moment.moment_id
+            for moment in narrative.moments
+        ]
+        if len(moment_ids) != len(set(moment_ids)):
+            raise LessonQualityError("教学主线的时刻标识必须唯一。")
+        intent_count = sum(
+            moment.interaction_intent is not None
+            for moment in narrative.moments
+        )
+        if intent_count not in {1, 2, 3}:
+            raise LessonQualityError(
+                "教学主线必须声明 1 至 3 个互动意图。"
+            )
+        if (
+            required_method is not None
+            and narrative.method_introduction.method_name
+            != required_method["display_name"]
+        ):
+            raise LessonQualityError(
+                "讲解的方法介绍与指定方法不一致。"
+            )
+        if len(narrative.method_introduction.spoken_narration) > 90:
+            raise LessonQualityError("方法介绍的口语讲稿过长。")
+        for step in narrative.math_steps:
+            try:
+                self.math_engine.validate_step(step)
+            except MathValidationError:
+                raise LessonQualityError(
+                    "讲解中的数学步骤未通过验证。"
+                ) from None
+        self._validate_math_route(problem, narrative)
+        if (
+            required_method is not None
+            and required_method["operation"] not in {
+                step.operation for step in narrative.math_steps
+            }
+        ):
+            raise LessonQualityError("讲解没有真正使用指定方法。")
 
     def _validate_draft(
         self,

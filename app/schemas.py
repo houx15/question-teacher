@@ -62,6 +62,43 @@ MethodBenefit = Annotated[
         max_length=METHOD_WHY_MAX_LENGTH,
     ),
 ]
+GeneratedId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    ),
+]
+InteractionIntentText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+]
+GeneratedPromptText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+]
+GeneratedLabelText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+]
+GeneratedFeedbackText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=180),
+]
+GeneratedHintText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+]
+GeneratedProblemText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=3, max_length=500),
+]
+GeneratedMathAnswer = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+]
 MathOperation = Literal[
     "simplify",
     "add_both_sides",
@@ -81,6 +118,11 @@ LessonLayer = Literal[
     "micro_explanation",
     "comparison",
     "interaction",
+]
+NarrativeLayer = Literal[
+    "base",
+    "micro_explanation",
+    "comparison",
 ]
 
 
@@ -256,6 +298,15 @@ class LessonMoment(SchemaModel):
     interaction: Optional[Interaction] = None
 
 
+class NarrativeMoment(SchemaModel):
+    moment_id: GeneratedId
+    purpose: NonEmptyString
+    narration: MomentNarration
+    board_actions: List[BoardAction] = Field(default_factory=list)
+    layer: NarrativeLayer = "base"
+    interaction_intent: Optional[InteractionIntentText] = None
+
+
 class TransferOption(SchemaModel):
     option_id: NonEmptyString
     label: Optional[NonEmptyString] = None
@@ -315,6 +366,106 @@ class MethodIntroduction(SchemaModel):
         if fragment.endswith(("。", "！", "？", "!", "?")):
             return fragment
         return f"{fragment}。"
+
+
+class NarrativeDraft(SchemaModel):
+    title: NonEmptyString
+    learning_goal: NonEmptyString
+    opening: NonEmptyString
+    method_rationale: NonEmptyString
+    method_introduction: MethodIntroduction
+    math_steps: List[MathStep] = Field(min_length=1)
+    moments: List[NarrativeMoment] = Field(min_length=1)
+    summary: NonEmptyString
+
+    @model_validator(mode="after")
+    def validate_moment_slots(self) -> "NarrativeDraft":
+        moment_ids = [moment.moment_id for moment in self.moments]
+        if len(moment_ids) != len(set(moment_ids)):
+            raise ValueError("narrative moment ids must be unique")
+        intent_count = sum(
+            moment.interaction_intent is not None
+            for moment in self.moments
+        )
+        if intent_count not in {1, 2, 3}:
+            raise ValueError(
+                "narrative requires 1 to 3 interaction intents"
+            )
+        return self
+
+
+class GeneratedInteractionOption(SchemaModel):
+    option_id: GeneratedId
+    label: GeneratedLabelText
+    feedback: GeneratedFeedbackText
+
+
+class GeneratedChoiceInteraction(SchemaModel):
+    interaction_id: GeneratedId
+    kind: Literal["choice"]
+    prompt: GeneratedPromptText
+    expected_answer: GeneratedId
+    options: List[GeneratedInteractionOption] = Field(
+        min_length=3,
+        max_length=4,
+    )
+    hints: List[GeneratedHintText] = Field(default_factory=list, max_length=3)
+    explanation_after_correct: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, max_length=180),
+    ] = ""
+
+    @model_validator(mode="after")
+    def validate_choice(self) -> "GeneratedChoiceInteraction":
+        option_ids = [option.option_id for option in self.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("choice option ids must be unique")
+        if self.expected_answer not in option_ids:
+            raise ValueError(
+                "choice expected_answer must match an option_id"
+            )
+        return self
+
+
+class GeneratedTransferOption(SchemaModel):
+    option_id: GeneratedId
+    canonical_answer: GeneratedMathAnswer
+    feedback: GeneratedFeedbackText
+
+
+class GeneratedTransferItem(SchemaModel):
+    problem_text: GeneratedProblemText
+    expected_answer: GeneratedMathAnswer
+    method_signal: GeneratedHintText
+    options: List[GeneratedTransferOption] = Field(
+        min_length=3,
+        max_length=4,
+    )
+    correct_option_id: GeneratedId
+
+    @model_validator(mode="after")
+    def validate_options(self) -> "GeneratedTransferItem":
+        option_ids = [option.option_id for option in self.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("transfer option ids must be unique")
+        if self.correct_option_id not in option_ids:
+            raise ValueError(
+                "correct_option_id must match a transfer option_id"
+            )
+        return self
+
+
+class InteractionBinding(SchemaModel):
+    moment_id: GeneratedId
+    interaction: GeneratedChoiceInteraction
+
+
+class MaterialsDraft(SchemaModel):
+    interactions: List[InteractionBinding] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    transfer_item: GeneratedTransferItem
 
 
 class LessonDraft(SchemaModel):
