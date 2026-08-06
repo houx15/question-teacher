@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import os
 import shutil
@@ -142,25 +143,43 @@ class LessonAudioService:
                             )
                         )
 
-                    voiced_options = []
-                    for index, option in enumerate(
-                        interaction.options,
-                        start=1,
-                    ):
+                    option_feedback_semaphore = asyncio.Semaphore(2)
+
+                    async def voice_option(index, option):
                         feedback_audio_url = None
                         if option.feedback:
-                            feedback_audio_url = await self._write(
-                                lesson.lesson_id,
-                                f"{beat.beat_id}-option-{index}",
-                                option.feedback,
-                            )
-                        voiced_options.append(
-                            option.model_copy(
-                                update={
-                                    "feedback_audio_url": feedback_audio_url,
-                                }
-                            )
+                            async with option_feedback_semaphore:
+                                feedback_audio_url = await self._write(
+                                    lesson.lesson_id,
+                                    f"{beat.beat_id}-option-{index}",
+                                    option.feedback,
+                                )
+                        return option.model_copy(
+                            update={
+                                "feedback_audio_url": feedback_audio_url,
+                            }
                         )
+
+                    option_tasks = [
+                        asyncio.create_task(voice_option(index, option))
+                        for index, option in enumerate(
+                            interaction.options,
+                            start=1,
+                        )
+                    ]
+                    try:
+                        voiced_options = await asyncio.gather(
+                            *option_tasks
+                        )
+                    except BaseException:
+                        for task in option_tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(
+                            *option_tasks,
+                            return_exceptions=True,
+                        )
+                        raise
 
                     correct_audio_url = None
                     if interaction.explanation_after_correct:

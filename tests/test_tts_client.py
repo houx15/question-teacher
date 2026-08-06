@@ -151,6 +151,100 @@ class FakeSpeechClient:
         return f"audio:{text}".encode()
 
 
+class ControlledOptionFeedbackClient:
+    def __init__(self, feedbacks):
+        self.feedbacks = set(feedbacks)
+        self.releases = {
+            feedback: asyncio.Event() for feedback in feedbacks
+        }
+        self.active_feedback_calls = 0
+        self.max_active_feedback_calls = 0
+        self.started_feedbacks = []
+        self.completed_feedbacks = []
+        self._condition = asyncio.Condition()
+
+    async def synthesize(self, text):
+        if text not in self.feedbacks:
+            return f"audio:{text}".encode()
+
+        async with self._condition:
+            self.active_feedback_calls += 1
+            self.max_active_feedback_calls = max(
+                self.max_active_feedback_calls,
+                self.active_feedback_calls,
+            )
+            self.started_feedbacks.append(text)
+            self._condition.notify_all()
+        try:
+            await self.releases[text].wait()
+            async with self._condition:
+                self.completed_feedbacks.append(text)
+                self._condition.notify_all()
+            return f"audio:{text}".encode()
+        finally:
+            async with self._condition:
+                self.active_feedback_calls -= 1
+                self._condition.notify_all()
+
+    async def wait_for_started_feedbacks(self, count):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: len(self.started_feedbacks) >= count
+            )
+
+    async def wait_for_completed_feedbacks(self, count):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: len(self.completed_feedbacks) >= count
+            )
+
+
+class FailingOptionFeedbackClient:
+    def __init__(self, first_feedback, failing_feedback, blocked_feedback):
+        self.first_feedback = first_feedback
+        self.failing_feedback = failing_feedback
+        self.blocked_feedback = blocked_feedback
+        self.failure_release = asyncio.Event()
+        self.calls = []
+        self.cancelled_feedbacks = []
+        self.active_feedback_calls = 0
+        self._condition = asyncio.Condition()
+
+    async def synthesize(self, text):
+        self.calls.append(text)
+        if text not in {
+            self.first_feedback,
+            self.failing_feedback,
+            self.blocked_feedback,
+        }:
+            return f"audio:{text}".encode()
+
+        async with self._condition:
+            self.active_feedback_calls += 1
+            self._condition.notify_all()
+        try:
+            if text == self.first_feedback:
+                return f"audio:{text}".encode()
+            if text == self.failing_feedback:
+                await self.failure_release.wait()
+                raise SpeechGenerationError("private upstream detail")
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled_feedbacks.append(text)
+                raise
+        finally:
+            async with self._condition:
+                self.active_feedback_calls -= 1
+                self._condition.notify_all()
+
+    async def wait_for_active_feedback_calls(self, count):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: self.active_feedback_calls >= count
+            )
+
+
 def test_speech_client_posts_expected_request():
     async def scenario():
         def handler(request):
@@ -410,16 +504,18 @@ def test_audio_service_writes_choice_feedback_with_numeric_asset_ids(tmp_path):
         "/audio/lesson-001/beat-002-option-2.mp3",
         "/audio/lesson-001/beat-002-option-3.mp3",
     ]
-    assert client.texts == [
+    assert client.texts[:4] == [
         "先观察未知数和常数项的位置。",
         "现在判断第一步应该做什么。",
         "观察常数项。",
         "等式两边要做相同运算。",
+    ]
+    assert client.texts[-1] == "对，先把未知数项集中到等号左边。"
+    assert set(client.texts[4:-1]) == {
         "对，先消去常数项。",
         "这会让常数项更远离零。",
         "除以一没有改变等式。",
-        "对，先把未知数项集中到等号左边。",
-    ]
+    }
     for index, option in enumerate(interaction.options, start=1):
         assert (
             tmp_path
@@ -428,6 +524,92 @@ def test_audio_service_writes_choice_feedback_with_numeric_asset_ids(tmp_path):
         ).read_bytes() == f"audio:{option.feedback}".encode()
     assert not (tmp_path / "lesson-001" / "option").exists()
     assert lesson.model_dump() == original_dump
+
+
+def test_audio_service_limits_choice_feedback_concurrency_and_keeps_order(
+    tmp_path,
+):
+    lesson = choice_runtime_lesson()
+    feedbacks = [option.feedback for option in lesson.beats[1].interaction.options]
+
+    async def scenario():
+        client = ControlledOptionFeedbackClient(feedbacks)
+        task = asyncio.create_task(
+            LessonAudioService(client, tmp_path).attach_audio(lesson)
+        )
+        try:
+            await asyncio.wait_for(
+                client.wait_for_started_feedbacks(2),
+                timeout=0.5,
+            )
+        except asyncio.TimeoutError:
+            for release in client.releases.values():
+                release.set()
+            await task
+            return None, client
+        assert client.active_feedback_calls == 2
+        client.releases[feedbacks[1]].set()
+        await client.wait_for_started_feedbacks(3)
+        client.releases[feedbacks[2]].set()
+        await client.wait_for_completed_feedbacks(2)
+        client.releases[feedbacks[0]].set()
+        return await task, client
+
+    voiced, client = run(scenario())
+
+    assert client.max_active_feedback_calls == 2
+    assert client.completed_feedbacks == [
+        feedbacks[1],
+        feedbacks[2],
+        feedbacks[0],
+    ]
+    interaction = voiced.beats[1].interaction
+    assert interaction is not None
+    assert [option.feedback_audio_url for option in interaction.options] == [
+        "/audio/lesson-001/beat-002-option-1.mp3",
+        "/audio/lesson-001/beat-002-option-2.mp3",
+        "/audio/lesson-001/beat-002-option-3.mp3",
+    ]
+
+
+def test_audio_service_cancels_settles_and_cleans_up_failed_option_audio(
+    tmp_path,
+):
+    lesson = choice_runtime_lesson()
+    feedbacks = [option.feedback for option in lesson.beats[1].interaction.options]
+
+    async def scenario():
+        client = FailingOptionFeedbackClient(*feedbacks)
+        task = asyncio.create_task(
+            LessonAudioService(client, tmp_path).attach_audio(lesson)
+        )
+        try:
+            await asyncio.wait_for(
+                client.wait_for_active_feedback_calls(2),
+                timeout=0.5,
+            )
+        except asyncio.TimeoutError:
+            client.failure_release.set()
+            with pytest.raises(SpeechGenerationError) as error:
+                await task
+            return error.value, client
+        while not (tmp_path / "lesson-001" / "beat-002-option-1.mp3").exists():
+            await asyncio.sleep(0)
+        await client.wait_for_active_feedback_calls(2)
+        client.failure_release.set()
+        with pytest.raises(SpeechGenerationError) as error:
+            await task
+        return error.value, client
+
+    error, client = run(scenario())
+
+    assert str(error) == "Audio generation failed for beat-002-option-2"
+    assert "private upstream detail" not in str(error)
+    assert client.calls.count(feedbacks[1]) == 2
+    assert client.cancelled_feedbacks == [feedbacks[2]]
+    assert client.active_feedback_calls == 0
+    assert not (tmp_path / "lesson-001").exists()
+    assert not list(tmp_path.rglob("*.mp3"))
 
 
 def test_audio_service_skips_legacy_choice_options_without_feedback(tmp_path):
