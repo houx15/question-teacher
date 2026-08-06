@@ -14,6 +14,15 @@
   --rule: #c8beaa;
   --seal: #b84636;
   --shadow: rgba(5, 22, 18, 0.24);
+  --classroom-canvas: #f4efe5;
+  --classroom-panel: #fffdf8;
+  --board-surface: #fbfaf6;
+  --board-surface-deep: #f0ede5;
+  --board-ink: #203047;
+  --board-ink-soft: #657286;
+  --classroom-line: #d8d2c6;
+  --classroom-reason: #4f8b7b;
+  --classroom-focus: #e9b949;
   --serif: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC",
     "STSong", "SimSun", serif;
   --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
@@ -633,9 +642,18 @@ button {
   overflow: hidden;
   place-items: center;
   background:
-    radial-gradient(circle at 50% 40%, #183b32 0, var(--board-black) 64%),
-    #071612;
-  color: var(--chalk);
+    radial-gradient(
+      circle at 18% 12%,
+      rgba(233, 185, 73, 0.14),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 86% 88%,
+      rgba(79, 139, 123, 0.1),
+      transparent 30%
+    ),
+    var(--classroom-canvas);
+  color: var(--board-ink);
   font-family: var(--sans);
 }
 
@@ -648,8 +666,11 @@ button {
   max-height: 100vh;
   grid-template-rows: 50px 38px minmax(0, 1fr) 68px;
   overflow: hidden;
-  background: #0a201b;
-  box-shadow: 0 30px 100px #000;
+  background: var(--classroom-panel);
+  border: 1px solid rgba(116, 105, 87, 0.18);
+  box-shadow:
+    0 28px 80px rgba(68, 58, 43, 0.17),
+    0 2px 8px rgba(68, 58, 43, 0.08);
 }
 
 .lesson-topbar {
@@ -658,9 +679,9 @@ button {
   grid-template-columns: 120px 1fr 120px;
   align-items: center;
   padding: 0 18px;
-  color: #b8c9bf;
-  background: rgba(5, 20, 16, 0.92);
-  border-bottom: 1px solid rgba(239, 247, 232, 0.09);
+  color: var(--board-ink-soft);
+  background: rgba(255, 253, 248, 0.96);
+  border-bottom: 1px solid var(--classroom-line);
 }
 
 .classroom-exit {
@@ -696,7 +717,7 @@ button {
   max-width: 58vw;
   overflow: hidden;
   margin: 0;
-  color: var(--chalk);
+  color: var(--board-ink);
   font-family: var(--serif);
   font-size: 14px;
   text-overflow: ellipsis;
@@ -707,7 +728,7 @@ button {
   display: inline-flex;
   gap: 6px;
   align-items: center;
-  color: #8aa097;
+  color: var(--board-ink-soft);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
@@ -715,7 +736,7 @@ button {
 .lesson-progress i {
   width: 28px;
   height: 1px;
-  background: #516c62;
+  background: #b9b2a6;
 }
 
 .icon-button {
@@ -725,15 +746,16 @@ button {
   padding: 0;
   place-items: center;
   justify-self: end;
-  color: #b8c9bf;
+  color: var(--board-ink-soft);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 50%;
 }
 
 .icon-button:hover {
-  color: var(--chalk);
-  border-color: rgba(239, 247, 232, 0.24);
+  color: var(--board-ink);
+  background: var(--board-surface-deep);
+  border-color: var(--classroom-line);
 }
 
 .route-strip {
@@ -743,10 +765,10 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 0 22px;
-  color: #a8bdb2;
+  color: var(--board-ink-soft);
   font-size: 10px;
-  background: #102f28;
-  border-bottom: 1px solid rgba(239, 247, 232, 0.08);
+  background: #f7f3eb;
+  border-bottom: 1px solid var(--classroom-line);
 }
 
 .route-strip p {
@@ -763,14 +785,14 @@ button {
 
 .route-goal span {
   flex: 0 0 auto;
-  color: var(--reason);
+  color: var(--classroom-reason);
   font-size: 9px;
   letter-spacing: 0.1em;
 }
 
 .route-goal strong {
   overflow: hidden;
-  color: #d9e6dc;
+  color: var(--board-ink);
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -786,9 +808,9 @@ button {
 .route-pulse {
   width: 6px;
   height: 6px;
-  background: var(--focus);
+  background: var(--classroom-focus);
   border-radius: 50%;
-  box-shadow: 0 0 0 4px rgba(242, 200, 75, 0.1);
+  box-shadow: 0 0 0 4px rgba(233, 185, 73, 0.14);
 }
 
 .chalkboard-frame {
@@ -798,12 +820,12 @@ button {
   grid-template-rows: 44px minmax(0, 1fr) 44px;
   margin: 10px 14px 0;
   overflow: hidden;
-  background: var(--board);
-  border: 1px solid #385d52;
-  border-radius: 2px;
+  background: var(--board-surface);
+  border: 1px solid var(--classroom-line);
+  border-radius: 10px 10px 3px 3px;
   box-shadow:
-    inset 0 0 70px rgba(0, 0, 0, 0.28),
-    0 9px 28px rgba(0, 0, 0, 0.24);
+    inset 0 0 60px rgba(116, 105, 87, 0.035),
+    0 8px 24px rgba(68, 58, 43, 0.08);
 }
 
 .chalkboard-frame::before {
@@ -812,11 +834,16 @@ button {
   z-index: 0;
   content: "";
   pointer-events: none;
-  opacity: 0.33;
+  opacity: 0.22;
   background:
-    linear-gradient(93deg, transparent 0 48%, rgba(255, 255, 255, 0.02) 49% 51%, transparent 52%),
-    url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='c'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.7' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)' opacity='.15'/%3E%3C/svg%3E");
-  mix-blend-mode: screen;
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 31px,
+      rgba(32, 48, 71, 0.035) 32px
+    ),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='c'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)' opacity='.07'/%3E%3C/svg%3E");
+  mix-blend-mode: multiply;
 }
 
 .problem-display {
@@ -825,22 +852,23 @@ button {
   gap: 14px;
   align-items: center;
   padding: 0 22px;
-  border-bottom: 1px solid rgba(239, 247, 232, 0.16);
+  background: rgba(255, 253, 248, 0.72);
+  border-bottom: 1px solid var(--classroom-line);
 }
 
 .problem-display span {
   flex: 0 0 auto;
   padding: 3px 7px;
-  color: var(--board-deep);
+  color: #3d341f;
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.12em;
-  background: var(--focus);
+  background: #f1ce73;
 }
 
 .problem-display strong {
   overflow: hidden;
-  color: #f5f8ec;
+  color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: clamp(15px, 1.7vw, 22px);
   font-weight: 500;
@@ -869,9 +897,12 @@ button {
 
 .layer-stage {
   z-index: 5;
-  background: rgba(10, 39, 32, 0.96);
-  border: 1px solid rgba(145, 199, 136, 0.35);
-  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.24);
+  background:
+    linear-gradient(rgba(250, 253, 248, 0.97), rgba(246, 250, 246, 0.97));
+  border: 1px solid rgba(79, 139, 123, 0.36);
+  box-shadow:
+    inset 5px 0 0 rgba(79, 139, 123, 0.16),
+    0 10px 28px rgba(68, 58, 43, 0.1);
   animation: layer-enter 260ms ease-out;
 }
 
@@ -879,7 +910,7 @@ button {
   position: absolute;
   top: 14px;
   left: 18px;
-  color: var(--reason);
+  color: var(--classroom-reason);
   font-size: 9px;
   letter-spacing: 0.13em;
   content: "临时推演";
@@ -900,12 +931,12 @@ button {
   min-height: 48px;
   align-items: center;
   padding: 8px 10px;
-  color: var(--chalk);
+  color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: clamp(22px, 3.3vw, 44px);
   line-height: 1.25;
   letter-spacing: 0.02em;
-  text-shadow: 0 0 1px currentColor;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.76);
   transition:
     opacity 220ms ease,
     color 220ms ease,
@@ -918,18 +949,18 @@ button {
 }
 
 .board-object.is-transforming {
-  color: var(--focus);
+  color: #9c7110;
   transform: translateY(-2px);
 }
 
 .board-object.is-focused {
-  color: var(--focus);
-  filter: drop-shadow(0 0 8px rgba(242, 200, 75, 0.18));
+  color: #8c6510;
+  filter: drop-shadow(0 3px 4px rgba(186, 136, 26, 0.14));
   transform: scale(1.025);
 }
 
 .board-object.is-faded {
-  opacity: 0.28;
+  opacity: 0.34;
 }
 
 .board-object.is-masked .board-content {
@@ -944,12 +975,13 @@ button {
   background:
     repeating-linear-gradient(
       -8deg,
-      #5d766e 0,
-      #5d766e 4px,
-      #516a62 5px,
-      #516a62 8px
+      #d3cec4 0,
+      #d3cec4 4px,
+      #c2bcb0 5px,
+      #c2bcb0 8px
     );
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(101, 114, 134, 0.24);
+  box-shadow: 0 2px 5px rgba(68, 58, 43, 0.1);
 }
 
 .board-object.is-revealed {
@@ -984,7 +1016,7 @@ button {
 .annotation-highlight,
 .annotation-box {
   inset: 1px -3px;
-  border: 2px solid var(--focus);
+  border: 2px solid var(--classroom-focus);
 }
 
 .annotation-circle {
@@ -996,7 +1028,7 @@ button {
   top: 57%;
   bottom: 8%;
   z-index: -1;
-  background: rgba(242, 200, 75, 0.27);
+  background: rgba(233, 185, 73, 0.32);
   border: 0;
   transform: rotate(-1deg);
 }
@@ -1011,7 +1043,7 @@ button {
   bottom: 2px;
   left: 2px;
   height: 3px;
-  background: var(--focus);
+  background: var(--classroom-focus);
   border-radius: 60%;
   transform: rotate(-1.5deg);
 }
@@ -1021,14 +1053,14 @@ button {
   bottom: 7%;
   left: -7px;
   width: 8px;
-  border: solid var(--reason);
+  border: solid var(--classroom-reason);
   border-width: 2px 0 2px 2px;
 }
 
 .annotation-arrow {
   top: -16px;
   right: -16px;
-  color: var(--focus);
+  color: #9c7110;
   font-family: var(--sans);
   font-size: 13px;
   white-space: nowrap;
@@ -1041,7 +1073,7 @@ button {
 .annotation-label {
   top: -18px;
   left: 8px;
-  color: var(--reason);
+  color: var(--classroom-reason);
   font-family: var(--sans);
   font-size: 10px;
   white-space: nowrap;
@@ -1053,10 +1085,11 @@ button {
   grid-template-columns: 1fr 1fr;
   margin: 0 auto;
   overflow: hidden;
-  color: var(--chalk);
+  color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: clamp(20px, 3vw, 38px);
-  border: 1px solid rgba(239, 247, 232, 0.24);
+  background: rgba(255, 253, 248, 0.76);
+  border: 1px solid var(--classroom-line);
 }
 
 .comparison-sheet > div {
@@ -1065,13 +1098,13 @@ button {
 }
 
 .comparison-sheet > div + div {
-  border-left: 1px dashed rgba(242, 200, 75, 0.55);
+  border-left: 1px dashed rgba(186, 136, 26, 0.48);
 }
 
 .comparison-sheet small {
   display: block;
   margin-bottom: 13px;
-  color: var(--reason);
+  color: var(--classroom-reason);
   font-family: var(--sans);
   font-size: 9px;
   letter-spacing: 0.1em;
@@ -1079,14 +1112,15 @@ button {
 
 .board-object.is-selectable {
   cursor: pointer;
-  outline: 1px dashed rgba(242, 200, 75, 0.6);
+  outline: 1px dashed rgba(186, 136, 26, 0.62);
   outline-offset: 4px;
 }
 
 .board-object.is-selectable:hover,
 .board-object.is-selectable:focus-visible {
-  color: var(--focus);
-  outline: 3px solid var(--focus);
+  color: #8c6510;
+  background: rgba(233, 185, 73, 0.13);
+  outline: 3px solid var(--classroom-focus);
 }
 
 .teacher-presence {
@@ -1097,7 +1131,7 @@ button {
   display: flex;
   gap: 8px;
   align-items: center;
-  color: #8ba398;
+  color: var(--board-ink-soft);
   font-size: 9px;
   letter-spacing: 0.08em;
   opacity: 0.78;
@@ -1110,14 +1144,15 @@ button {
   gap: 2px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(145, 199, 136, 0.34);
+  background: rgba(79, 139, 123, 0.06);
+  border: 1px solid rgba(79, 139, 123, 0.34);
   border-radius: 50%;
 }
 
 .voice-orbit i {
   width: 2px;
   height: 7px;
-  background: var(--reason);
+  background: var(--classroom-reason);
   border-radius: 2px;
 }
 
@@ -1149,14 +1184,14 @@ button {
   padding: 0 12%;
   overflow: hidden;
   margin: 0;
-  color: #d8e5dc;
+  color: var(--board-ink);
   font-family: var(--serif);
   font-size: clamp(11px, 1.2vw, 15px);
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: rgba(7, 27, 23, 0.55);
-  border-top: 1px solid rgba(239, 247, 232, 0.12);
+  background: rgba(247, 243, 235, 0.92);
+  border-top: 1px solid var(--classroom-line);
 }
 
 .interaction-stage {
@@ -1166,9 +1201,11 @@ button {
   display: grid;
   place-items: center;
   padding: clamp(18px, 3vw, 38px);
-  background: rgba(9, 33, 27, 0.97);
-  border: 1px solid rgba(242, 200, 75, 0.48);
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+  background: rgba(255, 253, 248, 0.98);
+  border: 1px solid rgba(186, 136, 26, 0.42);
+  box-shadow:
+    0 22px 60px rgba(68, 58, 43, 0.18),
+    0 0 0 6px rgba(233, 185, 73, 0.06);
   animation: interaction-enter 260ms ease-out;
 }
 
@@ -1186,9 +1223,9 @@ button {
   width: min(620px, 100%);
   padding: 14px 22px;
   pointer-events: auto;
-  background: rgba(9, 33, 27, 0.97);
-  border: 1px solid rgba(242, 200, 75, 0.48);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+  background: rgba(255, 253, 248, 0.98);
+  border: 1px solid rgba(186, 136, 26, 0.42);
+  box-shadow: 0 12px 36px rgba(68, 58, 43, 0.16);
 }
 
 .interaction-stage.is-point-select .interaction-card h2 {
@@ -1214,7 +1251,7 @@ button {
 
 .interaction-kicker {
   margin: 0 0 10px;
-  color: var(--focus);
+  color: #9c7110;
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.18em;
@@ -1222,7 +1259,7 @@ button {
 
 .interaction-card h2 {
   margin: 0 auto clamp(18px, 3vw, 30px);
-  color: var(--chalk);
+  color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: clamp(22px, 3vw, 38px);
   font-weight: 500;
@@ -1240,18 +1277,19 @@ button {
 .interaction-continue {
   min-height: 52px;
   padding: 10px 18px;
-  color: var(--chalk);
+  color: var(--board-ink);
   font-size: 14px;
   background: transparent;
-  border: 1px solid rgba(239, 247, 232, 0.35);
+  border: 1px solid #bcb5a9;
+  border-radius: 8px;
   transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
 }
 
 .interaction-option:hover,
 .interaction-option:focus-visible {
-  color: var(--board-deep);
-  background: var(--focus);
-  border-color: var(--focus);
+  color: #3d341f;
+  background: #f2d482;
+  border-color: #d6a83b;
 }
 
 .interaction-form {
@@ -1265,38 +1303,39 @@ button {
   width: min(420px, 70%);
   min-height: 54px;
   padding: 0 17px;
-  color: var(--chalk);
+  color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: 20px;
-  background: rgba(239, 247, 232, 0.05);
-  border: 1px solid rgba(239, 247, 232, 0.38);
+  background: #fffefa;
+  border: 1px solid #bcb5a9;
+  border-radius: 8px;
   outline: 0;
 }
 
 .interaction-form input:focus {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 3px rgba(242, 200, 75, 0.14);
+  border-color: #d6a83b;
+  box-shadow: 0 0 0 3px rgba(233, 185, 73, 0.18);
 }
 
 .interaction-submit,
 .interaction-continue {
-  color: var(--board-deep);
+  color: #3d341f;
   font-weight: 700;
-  background: var(--focus);
-  border-color: var(--focus);
+  background: #f2d482;
+  border-color: #d6a83b;
 }
 
 .interaction-hint,
 .interaction-feedback {
   min-height: 24px;
   margin: 18px 0 0;
-  color: var(--reason);
+  color: var(--classroom-reason);
   font-family: var(--serif);
   font-size: 14px;
 }
 
 .interaction-feedback.is-wrong {
-  color: #f2a79e;
+  color: #b94c41;
 }
 
 .interaction-continue {
@@ -1305,7 +1344,7 @@ button {
 }
 
 .point-instruction {
-  color: var(--chalk-muted);
+  color: var(--board-ink-soft);
   font-size: 13px;
 }
 
@@ -1316,7 +1355,8 @@ button {
   align-items: center;
   justify-content: center;
   padding: 7px 14px 9px;
-  background: rgba(5, 20, 16, 0.96);
+  background: rgba(255, 253, 248, 0.98);
+  border-top: 1px solid var(--classroom-line);
 }
 
 .lesson-controls button {
@@ -1326,18 +1366,19 @@ button {
   gap: 7px;
   align-items: center;
   justify-content: center;
-  color: #a9bbb2;
+  color: var(--board-ink-soft);
   font-size: 11px;
   background: transparent;
-  border: 1px solid rgba(239, 247, 232, 0.14);
+  border: 1px solid #d2ccc1;
   border-radius: 999px;
   transition: color 150ms ease, border-color 150ms ease, background-color 150ms ease;
 }
 
 .lesson-controls button:hover:not(:disabled),
 .lesson-controls button:focus-visible {
-  color: var(--chalk);
-  border-color: rgba(239, 247, 232, 0.44);
+  color: var(--board-ink);
+  background: var(--board-surface-deep);
+  border-color: #aaa296;
 }
 
 .lesson-controls button:disabled {
@@ -1347,12 +1388,12 @@ button {
 
 .lesson-controls .primary-control {
   min-width: 124px;
-  color: var(--board-deep);
+  color: #3d341f;
   font-size: 12px;
   font-weight: 800;
-  background: var(--focus);
-  border-color: var(--focus);
-  box-shadow: 0 0 0 4px rgba(242, 200, 75, 0.08);
+  background: #f2d482;
+  border-color: #d6a83b;
+  box-shadow: 0 0 0 4px rgba(233, 185, 73, 0.11);
 }
 
 .pause-icon {
@@ -1381,12 +1422,16 @@ button {
   padding: 12% 10% 8%;
   text-align: center;
   background:
-    radial-gradient(circle at 50% 45%, rgba(39, 83, 71, 0.96), rgba(7, 25, 20, 0.985) 64%);
+    radial-gradient(
+      circle at 50% 42%,
+      rgba(255, 255, 252, 0.99),
+      rgba(244, 239, 229, 0.985) 68%
+    );
 }
 
 .start-copy p {
   margin: 0 0 18px;
-  color: var(--focus);
+  color: #9c7110;
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.18em;
@@ -1394,7 +1439,7 @@ button {
 
 .start-copy h1 {
   margin: 0 0 16px;
-  color: var(--chalk);
+  color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: clamp(42px, 7vw, 78px);
   font-weight: 500;
@@ -1402,7 +1447,7 @@ button {
 }
 
 .start-copy > span {
-  color: #b6c9bf;
+  color: var(--board-ink-soft);
   font-family: var(--serif);
   font-size: 14px;
 }
@@ -1414,13 +1459,15 @@ button {
   gap: 13px;
   align-items: center;
   justify-content: center;
-  color: var(--board-deep);
+  color: #3d341f;
   font-size: 15px;
   font-weight: 800;
-  background: var(--focus);
+  background: #f2d482;
   border: 0;
   border-radius: 999px;
-  box-shadow: 0 0 0 7px rgba(242, 200, 75, 0.1);
+  box-shadow:
+    0 0 0 7px rgba(233, 185, 73, 0.12),
+    0 8px 24px rgba(131, 94, 15, 0.14);
 }
 
 .play-triangle {
@@ -1433,7 +1480,7 @@ button {
 
 .start-overlay > small {
   align-self: end;
-  color: #789087;
+  color: #7c827f;
   font-size: 9px;
 }
 
@@ -1447,7 +1494,8 @@ button {
   justify-content: center;
   flex-direction: column;
   text-align: center;
-  background: rgba(9, 29, 24, 0.98);
+  color: var(--board-ink);
+  background: rgba(251, 250, 246, 0.985);
 }
 
 .classroom-state strong {
@@ -1457,7 +1505,7 @@ button {
 }
 
 .classroom-state small {
-  color: #879c92;
+  color: var(--board-ink-soft);
   font-size: 11px;
 }
 
@@ -1465,9 +1513,9 @@ button {
   width: 54px;
   height: 5px;
   margin-bottom: 18px;
-  background: var(--chalk);
+  background: var(--board-ink);
   border-radius: 5px 2px 2px 5px;
-  box-shadow: 0 7px 0 rgba(239, 247, 232, 0.12);
+  box-shadow: 0 7px 0 rgba(32, 48, 71, 0.09);
   animation: chalk-slide 1.4s ease-in-out infinite alternate;
 }
 
@@ -1484,10 +1532,10 @@ button {
   height: 48px;
   margin-bottom: 10px;
   place-items: center;
-  color: var(--focus);
+  color: #9c7110;
   font-family: var(--chalk-font);
   font-size: 30px;
-  border: 1px solid rgba(242, 200, 75, 0.5);
+  border: 1px solid rgba(186, 136, 26, 0.5);
   border-radius: 50%;
 }
 
@@ -1495,7 +1543,7 @@ button {
   min-height: 40px;
   padding: 11px 2px 4px;
   margin-top: 10px;
-  color: var(--focus);
+  color: #7f5a09;
   font-size: 11px;
   text-decoration: none;
   border-bottom: 1px solid currentColor;
@@ -1581,9 +1629,9 @@ button {
     align-items: center;
     justify-content: center;
     flex-direction: column;
-    color: var(--chalk);
+    color: var(--board-ink);
     text-align: center;
-    background: var(--board-deep);
+    background: var(--classroom-canvas);
   }
 
   .rotate-state strong {
@@ -1593,14 +1641,14 @@ button {
   }
 
   .rotate-state small {
-    color: #8ea49a;
+    color: var(--board-ink-soft);
     font-size: 11px;
   }
 
   .rotate-device {
     width: 37px;
     height: 58px;
-    border: 2px solid var(--focus);
+    border: 2px solid var(--classroom-focus);
     border-radius: 6px;
     animation: rotate-device 1.8s ease-in-out infinite;
   }

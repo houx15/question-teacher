@@ -67,6 +67,11 @@ def test_static_pages_include_accessibility_and_responsive_contracts():
     assert "@media (orientation: portrait)" in styles.text
     assert "--board:" in styles.text
     assert "--focus:" in styles.text
+    assert '<meta name="theme-color" content="#f4efe5">' in lesson_html
+    assert "--classroom-canvas: #f4efe5;" in styles.text
+    assert "--board-surface: #fbfaf6;" in styles.text
+    assert "--board-ink: #203047;" in styles.text
+    assert "--classroom-panel: #fffdf8;" in styles.text
 
 
 def test_interaction_submission_uses_server_authoritative_contract():
