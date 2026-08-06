@@ -117,3 +117,15 @@ def test_primary_control_uses_runtime_intent_for_ended_pause_beats():
     assert "runtime.primaryControlIntent(paused)" in source
     assert 'if (intent === "advance")' in source
     assert 'if (action.type === "pause") setPaused(true)' not in source
+
+
+def test_local_katex_assets_are_served_with_the_math_text_module():
+    client = page_client()
+
+    for path in (
+        "/static/math-text.mjs",
+        "/static/vendor/katex/katex.mjs",
+        "/static/vendor/katex/katex.min.css",
+        "/static/vendor/katex/fonts/KaTeX_Main-Regular.woff2",
+    ):
+        assert client.get(path).status_code == 200
