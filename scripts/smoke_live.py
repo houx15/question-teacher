@@ -22,6 +22,7 @@ from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
+    REFERENCE_GROUNDING_SYSTEM,
     REVIEWER_SYSTEM,
 )
 from app.schemas import ProblemInput
@@ -37,6 +38,18 @@ REFERENCE_SOLUTION_TEXT = (
     "两边同时加9，得 (x-3)^2=4。\n"
     "所以 x-3=2 或 x-3=-2，\n"
     "即 x=5 或 x=1。"
+)
+GROUNDED_PARAMETER_ROOT_PROBLEM = (
+    "若$2n$ ($n\\ne 0$)是关于 x的方程 "
+    "$x^2-2mx+2n=0$的根，则m-n的值为"
+)
+GROUNDED_PARAMETER_ROOT_ANSWER = r"$\frac{1}{2}$"
+GROUNDED_PARAMETER_ROOT_SOLUTION = (
+    "因为 $2n(n\\ne 0)$ 是关于x的方程"
+    "$x^2-2mx+2n=0$的解\n"
+    "所以 $4n^2-4mn+2n=0$\n"
+    "所以$4n-4m+2=0$\n"
+    "所以$m-n=\\frac{1}{2}$"
 )
 
 
@@ -64,7 +77,10 @@ def _require_contract(condition: bool, message: str) -> None:
         raise SmokeContractError(message)
 
 
-def assert_model_call_contract(system_prompts) -> None:
+def assert_model_call_contract(
+    system_prompts,
+    grounded_parameter_root: bool = False,
+) -> None:
     _require_contract(
         MATH_ROUTE_SYSTEM not in system_prompts,
         "配方法 smoke 未使用确定性数学路线。",
@@ -87,6 +103,17 @@ def assert_model_call_contract(system_prompts) -> None:
         ],
         "核心教学 Agent 调用顺序不符合 smoke 合同。",
     )
+    if grounded_parameter_root:
+        _require_contract(
+            system_prompts[:4]
+            == [
+                REFERENCE_GROUNDING_SYSTEM,
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            "参数根 smoke 未按参考材料路线完成核心 Agent 调用。",
+        )
 
 
 def assert_generated_lesson_contract(
@@ -196,6 +223,89 @@ def assert_generated_lesson_contract(
     }
 
 
+def _normalize_math_fragment(value: str) -> str:
+    return (
+        value.replace(" ", "")
+        .replace("\n", "")
+        .replace("$", "")
+        .replace(r"\(", "")
+        .replace(r"\)", "")
+        .replace(r"\[", "")
+        .replace(r"\]", "")
+    )
+
+
+def assert_grounded_parameter_root_contract(lesson) -> dict:
+    """Check a grounded live lesson without returning private lesson content."""
+    report = lesson.validation_report
+    mode = report.get("verification_mode")
+    _require_contract(
+        mode in {"model_cross_checked", "reference_grounded"},
+        "参数根课程验证模式不符合 grounded smoke 合同。",
+    )
+    _require_contract(
+        report.get("consistency_status") in {"consistent", "warning"},
+        "参数根课程缺少可接受的一致性状态。",
+    )
+    _require_contract(
+        bool(report.get("teaching_route_fingerprint")),
+        "参数根课程缺少冻结教学路线指纹。",
+    )
+    review_status = report.get("review_status")
+    _require_contract(
+        review_status == "approved",
+        "参数根课程未通过整篇审稿。",
+    )
+
+    interactions = [
+        beat.interaction
+        for beat in lesson.beats
+        if beat.interaction is not None
+    ]
+    interaction_kinds = [
+        interaction.kind for interaction in interactions
+    ]
+    _require_contract(
+        bool(interaction_kinds)
+        and all(kind == "choice" for kind in interaction_kinds),
+        "参数根课程未保持选择式互动。",
+    )
+
+    audio_ready = bool(lesson.beats) and all(
+        bool(beat.audio_url) for beat in lesson.beats
+    )
+    _require_contract(audio_ready, "参数根课程缺少讲解语音。")
+
+    expected = _normalize_math_fragment(
+        GROUNDED_PARAMETER_ROOT_ANSWER
+    )
+    board_contents = (
+        action.content
+        for beat in lesson.beats
+        for action in beat.board_actions
+        if action.type == "write"
+        and isinstance(action.content, str)
+    )
+    conclusion_present = any(
+        expected in _normalize_math_fragment(content)
+        for content in board_contents
+    )
+    _require_contract(
+        conclusion_present,
+        "参数根课程板书缺少参考结论。",
+    )
+
+    return {
+        "lesson_id": lesson.lesson_id,
+        "beat_count": len(lesson.beats),
+        "interaction_kinds": interaction_kinds,
+        "mode": mode,
+        "review_status": review_status,
+        "audio_ready": audio_ready,
+        "conclusion_present": conclusion_present,
+    }
+
+
 def missing_environment(settings: Settings) -> List[str]:
     missing = list(settings.missing_model_settings)
     if settings.tts_provider == "volcengine":
@@ -241,15 +351,30 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Run the safe live smoke for the AI math lesson runtime."
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--with-reference-audit",
         action="store_true",
         help="Also exercise the optional reference-material audit stage.",
     )
+    mode.add_argument(
+        "--grounded-parameter-root",
+        action="store_true",
+        help="Exercise the reference-grounded parameter-root lesson.",
+    )
     return parser.parse_args(argv)
 
 
-def smoke_problem(with_reference_audit: bool) -> ProblemInput:
+def smoke_problem(
+    with_reference_audit: bool,
+    grounded_parameter_root: bool = False,
+) -> ProblemInput:
+    if grounded_parameter_root:
+        return ProblemInput(
+            problem_text=GROUNDED_PARAMETER_ROOT_PROBLEM,
+            reference_answer=GROUNDED_PARAMETER_ROOT_ANSWER,
+            reference_solution_text=GROUNDED_PARAMETER_ROOT_SOLUTION,
+        )
     return ProblemInput(
         problem_text="用配方法解方程：x^2-6x+5=0",
         reference_answer="x=1 或 x=5",
@@ -293,40 +418,54 @@ async def main(argv=None) -> None:
             lesson = await LessonGenerationService(
                 model_client,
                 math_engine,
-            ).generate(smoke_problem(args.with_reference_audit))
-            assert_model_call_contract(model_client.system_prompts)
+            ).generate(
+                smoke_problem(
+                    args.with_reference_audit,
+                    args.grounded_parameter_root,
+                )
+            )
+            assert_model_call_contract(
+                model_client.system_prompts,
+                args.grounded_parameter_root,
+            )
             lesson = await LessonAudioService(
                 speech_client,
                 Path(temporary_audio_root),
             ).attach_audio(lesson)
-            smoke_contract = assert_generated_lesson_contract(
-                lesson,
-                math_engine,
-            )
-            report = lesson.validation_report
-            if args.with_reference_audit:
-                _require_contract(
-                    report.get("reference_material_status") == "approved",
-                    "可选参考解析审阅未通过 smoke 合同。",
+            if args.grounded_parameter_root:
+                summary = assert_grounded_parameter_root_contract(
+                    lesson
                 )
-            summary = {
-                "mode": (
-                    "reference_audit"
-                    if args.with_reference_audit
-                    else "core"
-                ),
-                "lesson_id": lesson.lesson_id,
-                "beat_count": len(lesson.beats),
-                **smoke_contract,
-                "math_status": report.get("math_status"),
-                "review_status": report.get("review_status"),
-                "revision_count": report.get("revision_count"),
-                "math_route_source": report.get("math_route_source"),
-            }
-            if args.with_reference_audit:
-                summary["reference_material_status"] = report.get(
-                    "reference_material_status"
+            else:
+                smoke_contract = assert_generated_lesson_contract(
+                    lesson,
+                    math_engine,
                 )
+                report = lesson.validation_report
+                if args.with_reference_audit:
+                    _require_contract(
+                        report.get("reference_material_status")
+                        == "approved",
+                        "可选参考解析审阅未通过 smoke 合同。",
+                    )
+                summary = {
+                    "mode": (
+                        "reference_audit"
+                        if args.with_reference_audit
+                        else "core"
+                    ),
+                    "lesson_id": lesson.lesson_id,
+                    "beat_count": len(lesson.beats),
+                    **smoke_contract,
+                    "math_status": report.get("math_status"),
+                    "review_status": report.get("review_status"),
+                    "revision_count": report.get("revision_count"),
+                    "math_route_source": report.get("math_route_source"),
+                }
+                if args.with_reference_audit:
+                    summary["reference_material_status"] = report.get(
+                        "reference_material_status"
+                    )
     except BaseException as error:
         primary_error = error
         raise

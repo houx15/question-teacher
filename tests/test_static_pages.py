@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
+    REFERENCE_GROUNDING_SYSTEM,
     REVIEWER_SYSTEM,
 )
 
@@ -123,6 +125,187 @@ def test_live_smoke_defaults_to_core_and_requires_explicit_audit_flag():
     assert smoke_live.smoke_problem(True).reference_solution_text is not None
 
 
+def test_live_smoke_accepts_grounded_parameter_root_flag_and_exact_fixture():
+    args = smoke_live.parse_args(["--grounded-parameter-root"])
+    problem = smoke_live.smoke_problem(
+        with_reference_audit=False,
+        grounded_parameter_root=args.grounded_parameter_root,
+    )
+
+    assert args.grounded_parameter_root is True
+    assert "2n" in problem.problem_text
+    assert "n\\ne 0" in problem.problem_text
+    assert problem.reference_answer == r"$\frac{1}{2}$"
+    assert problem.reference_solution_text == (
+        "因为 $2n(n\\ne 0)$ 是关于x的方程"
+        "$x^2-2mx+2n=0$的解\n"
+        "所以 $4n^2-4mn+2n=0$\n"
+        "所以$4n-4m+2=0$\n"
+        "所以$m-n=\\frac{1}{2}$"
+    )
+    assert problem.required_method is None
+
+
+def _grounded_smoke_contract_lesson():
+    choice = SimpleNamespace(
+        kind="choice",
+        options=[
+            SimpleNamespace(
+                option_id=f"option-{value}",
+                label=value,
+                feedback="诊断反馈。",
+                feedback_audio_url=f"/audio/option-{value}.mp3",
+            )
+            for value in ("a", "b", "c")
+        ],
+    )
+    return SimpleNamespace(
+        lesson_id="grounded-smoke-lesson",
+        beats=[
+            SimpleNamespace(
+                interaction=None,
+                board_actions=[],
+                audio_url="/audio/opening.mp3",
+            ),
+            SimpleNamespace(
+                interaction=choice,
+                board_actions=[
+                    SimpleNamespace(
+                        type="write",
+                        content=r"$\frac{1}{2}$",
+                    )
+                ],
+                audio_url="/audio/conclusion.mp3",
+            ),
+        ],
+        validation_report={
+            "verification_mode": "model_cross_checked",
+            "consistency_status": "consistent",
+            "teaching_route_fingerprint": "a" * 64,
+            "review_status": "approved",
+        },
+    )
+
+
+def test_grounded_parameter_root_contract_checks_route_choice_audio_and_conclusion():
+    lesson = _grounded_smoke_contract_lesson()
+
+    summary = smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    assert summary == {
+        "lesson_id": "grounded-smoke-lesson",
+        "beat_count": 2,
+        "interaction_kinds": ["choice"],
+        "mode": "model_cross_checked",
+        "review_status": "approved",
+        "audio_ready": True,
+        "conclusion_present": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("report_patch", "message"),
+    [
+        ({"verification_mode": "symbolic_verified"}, "验证模式"),
+        ({"consistency_status": "contradiction"}, "一致性"),
+        ({"teaching_route_fingerprint": ""}, "指纹"),
+        ({"review_status": "revision_required"}, "整篇审稿"),
+    ],
+)
+def test_grounded_parameter_root_contract_rejects_invalid_route_report(
+    report_patch,
+    message,
+):
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.validation_report.update(report_patch)
+
+    with pytest.raises(smoke_live.SmokeContractError, match=message):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+def test_grounded_parameter_root_contract_requires_choice_only_audio_and_conclusion():
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[1].interaction.kind = "free_text"
+    with pytest.raises(smoke_live.SmokeContractError, match="选择式互动"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[0].audio_url = None
+    with pytest.raises(smoke_live.SmokeContractError, match="讲解语音"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[1].board_actions[0].content = "另一个结论"
+    with pytest.raises(smoke_live.SmokeContractError, match="参考结论"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+def test_grounded_parameter_root_cli_prints_only_safe_contract_fields(
+    monkeypatch,
+    capsys,
+):
+    model_client = _LifecycleClient()
+    speech_client = _LifecycleClient()
+    _configure_smoke_clients(
+        monkeypatch,
+        model_client,
+        speech_client,
+    )
+    lesson = _grounded_smoke_contract_lesson()
+    generated_problems = []
+
+    class SuccessfulGenerationService:
+        def __init__(self, *_args):
+            pass
+
+        async def generate(self, problem):
+            generated_problems.append(problem)
+            return lesson
+
+    class SuccessfulAudioService:
+        def __init__(self, *_args):
+            pass
+
+        async def attach_audio(self, candidate):
+            return candidate
+
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonGenerationService",
+        SuccessfulGenerationService,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonAudioService",
+        SuccessfulAudioService,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "assert_model_call_contract",
+        lambda *_args, **_kwargs: None,
+    )
+
+    asyncio.run(smoke_live.main(["--grounded-parameter-root"]))
+
+    output = capsys.readouterr().out
+    summary = json.loads(output)
+    assert set(summary) == {
+        "lesson_id",
+        "beat_count",
+        "interaction_kinds",
+        "mode",
+        "review_status",
+        "audio_ready",
+        "conclusion_present",
+    }
+    assert generated_problems[0].problem_text not in output
+    assert generated_problems[0].reference_answer not in output
+    assert generated_problems[0].reference_solution_text not in output
+    assert "option-a" not in output
+    assert model_client.close_calls == 1
+    assert speech_client.close_calls == 1
+
+
 def test_live_smoke_requires_deterministic_route_then_narrative_materials_review():
     smoke_live.assert_model_call_contract(
         [
@@ -143,6 +326,31 @@ def test_live_smoke_requires_deterministic_route_then_narrative_materials_review
                 MATERIALS_SYSTEM,
                 REVIEWER_SYSTEM,
             ]
+        )
+
+
+def test_grounded_live_smoke_requires_grounder_then_teaching_agents():
+    smoke_live.assert_model_call_contract(
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+        grounded_parameter_root=True,
+    )
+
+    with pytest.raises(
+        smoke_live.SmokeContractError,
+        match="参考材料路线",
+    ):
+        smoke_live.assert_model_call_contract(
+            [
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            grounded_parameter_root=True,
         )
 
 
@@ -530,10 +738,9 @@ def test_readme_documents_reference_grounded_scope_and_parameter_example():
 
     assert "2n" in readme and "m-n" in readme
     assert "python scripts/smoke_live.py --grounded-parameter-root" in readme
-    assert "Task 8 待执行" in readme
-    assert "该参数将在 Task 8 新增" in readme
-    assert "当前版本不可执行" in readme
-    assert "仅为未来验收命令" in readme
+    assert "参数已实现" in readme
+    assert "本轮真实执行" in readme
+    assert "当前版本不可执行" not in readme
 
 
 def test_generation_page_has_focused_authoring_form():

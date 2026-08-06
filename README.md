@@ -216,7 +216,9 @@ python scripts/smoke_live.py
 python scripts/smoke_live.py --with-reference-audit
 ```
 
-Task 8 待执行：该参数将在 Task 8 新增：`--grounded-parameter-root`。当前版本不可执行。下列内容仅为未来验收命令，届时参数根路径将使用真实文本模型与语音端点运行它；本文档不表示该 live smoke 已经通过：
+参数根 live smoke 的 `--grounded-parameter-root` 参数已实现。下列命令会使用
+真实文本模型与语音端点运行它；Task 8 的 live 状态仍取决于本轮真实执行结果，
+本地自动化测试通过不表示该 live smoke 已经通过：
 
 ```bash
 source /opt/anaconda3/etc/profile.d/conda.sh
@@ -227,7 +229,12 @@ set +a
 python scripts/smoke_live.py --grounded-parameter-root
 ```
 
-该 smoke 应使用上文的 `2n` 参数根题，断言生成过程不被“符号工具不支持”阻断、讲解保持选择式互动、完成整篇审稿且每个 Beat 已生成语音。它只可输出课程 ID、结构计数、服务端模式、审稿状态和音频就绪布尔值，不输出 prompt、题目、答案、密钥或供应商响应。
+该 smoke 使用上文的 `2n` 参数根题，断言生成过程不被“符号工具不支持”阻断，
+服务端模式为 `model_cross_checked` 或 `reference_grounded`，一致性状态有效且
+冻结教学路线带有指纹；讲解保持纯选择式互动、完成整篇审稿、每个 Beat 已生成
+语音，并且板书中存在参考结论。它只输出课程 ID、Beat 数量、互动类型、服务端
+模式、审稿状态、音频就绪和 `conclusion_present` 布尔值，不输出 prompt、题目、
+答案、选项文本、密钥、端点或供应商响应正文。
 
 两种 invocation 分开提供证据：可选审阅失败不会抹去一次已成功的 core 结果。
 脚本会在创建客户端前检查 Chat 与 TTS 配置，并将本次语音资产写入自动清理的
