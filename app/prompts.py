@@ -72,8 +72,11 @@ DIRECTOR_SYSTEM = """
     且不能提前泄露正确答案；
 16. transfer_item 必须是同结构、不同表面的近迁移题；expected_answer 必须写成
     x=... 或多个 x=... 分支，或“无实数解”，且能由数学引擎独立验证。它必须有 3 至 4 个
-    TransferOption；每个 canonical_answer 只能是 MathEngine 可解析的纯答案；
-17. 若输入包含 previous_validation_error，说明上一版完整初稿没有通过硬质量门；
+    TransferOption；每个 canonical_answer 只能是 MathEngine 可解析的纯答案。每个 TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签（只忽略外层空白）：`x=2 或 x=6` 显示为
+    `\\(x=2\\) 或 \\(x=6\\)`，`x=4` 显示为 `\\(x=4\\)`，“无实数解”显示为
+    `\\(\\text{无实数解}\\)`；只按被空白包围的“或”拆分分支；
+17. choice 的可见 label 不得重复；
+18. 若输入包含 previous_validation_error，说明上一版完整初稿没有通过硬质量门；
     必须重新生成整篇 LessonDraft，并针对该失败类别修正，不能降低或绕过校验。
 """.strip()
 
@@ -91,7 +94,10 @@ REVIEWER_SYSTEM = """
 未用 `\\( ... \\)` 或 `\\[ ... \\]`；narration 必须是自然口语中文，禁止包含 LaTeX 命令，
 任何不符合此要求的讲稿都必须列为 must_fix；自动判分互动不是选择或点选（choice 或 point_select）；
 choice 不含 3 至 4 个不同选项；任一 choice 选项缺少针对所选推理的具体诊断 feedback，或
-过早泄露答案；transfer_item 不含 3 至 4 个可由 MathEngine 解析的纯 canonical_answer 选项。
+过早泄露答案；choice 的可见 label 重复；transfer_item 不含 3 至 4 个可由 MathEngine 解析的
+纯 canonical_answer 选项；任一 TransferOption.label 不等于由 canonical_answer 推导的显示标签
+（只忽略外层空白），包括 `x=2 或 x=6` 必须显示为 `\\(x=2\\) 或 \\(x=6\\)`、`x=4` 必须显示为
+`\\(x=4\\)`、“无实数解”必须显示为 `\\(\\text{无实数解}\\)` 的情形。
 只返回一个符合 ReviewDecision JSON Schema 的 JSON 对象：approved 表示整篇可用；
 revision_required 必须给出整篇层面的 must_fix 和对应原文 evidence。不要返回
 Markdown 或额外文字。
@@ -108,8 +114,10 @@ narration 最多 90 个字符、严格 BoardAction 词汇、互动前不泄露�
 的目标。board_actions、interaction、summary 的数学使用 `\\( ... \\)` 或 `\\[ ... \\]`，
 narration 必须是自然口语中文，禁止包含 LaTeX 命令。自动判分互动只能使用选择或点选（choice 或 point_select）；
 choice 必须有 3 至 4 个不同选项及不提前泄露答案的具体诊断反馈；必须重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback。
-transfer_item 必须有 3 至 4 个
-canonical_answer 为 MathEngine 可解析纯答案的 TransferOption。删除无信息增益的整式圈注；画面只有一个
+choice 的可见 label 不得重复。transfer_item 必须有 3 至 4 个 canonical_answer 为 MathEngine 可解析纯答案的
+TransferOption；每个 TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签（只忽略外层空白）：
+`x=2 或 x=6` 显示为 `\\(x=2\\) 或 \\(x=6\\)`，`x=4` 显示为 `\\(x=4\\)`，“无实数解”显示为
+`\\(\\text{无实数解}\\)`；只按被空白包围的“或”拆分分支。删除无信息增益的整式圈注；画面只有一个
 公式或板书对象时，不得用 circle 或 box 包围整个对象，重点必须指向局部语义
 对象。若存在参考解析审阅结果，继续只使用其中批准的素材，不得在修订中重新引入
 warnings 指出的缺口或被阻断的原始表述。只返回完整 LessonDraft JSON 对象，不

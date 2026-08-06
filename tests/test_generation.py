@@ -101,19 +101,19 @@ def valid_draft():
             "options": [
                 {
                     "option_id": "both-roots",
-                    "label": "x=3 或 x=4",
+                    "label": r"\(x=3\) 或 \(x=4\)",
                     "canonical_answer": "x=3 或 x=4",
                     "feedback": "两个根都能使原方程成立。",
                 },
                 {
                     "option_id": "only-three",
-                    "label": "x=3",
+                    "label": r"\(x=3\)",
                     "canonical_answer": "x=3",
                     "feedback": "还遗漏了另一个根。",
                 },
                 {
                     "option_id": "only-four",
-                    "label": "x=4",
+                    "label": r"\(x=4\)",
                     "canonical_answer": "x=4",
                     "feedback": "还遗漏了另一个根。",
                 },
@@ -599,19 +599,19 @@ def test_math_route_preserves_valid_no_real_solution_state():
         "options": [
             {
                 "option_id": "no-real-solution",
-                "label": "无实数解",
+                "label": r"\(\text{无实数解}\)",
                 "canonical_answer": "无实数解",
                 "feedback": "判别式小于零，所以没有实数根。",
             },
             {
                 "option_id": "two",
-                "label": "x=2",
+                "label": r"\(x=2\)",
                 "canonical_answer": "x=2",
                 "feedback": "代入后不能使方程成立。",
             },
             {
                 "option_id": "negative-two",
-                "label": "x=-2",
+                "label": r"\(x=-2\)",
                 "canonical_answer": "x=-2",
                 "feedback": "代入后不能使方程成立。",
             },
@@ -873,6 +873,49 @@ def test_transfer_item_requires_the_equivalent_option_to_be_correct():
     assert str(exc_info.value) == "近迁移选项未通过数学验证。"
 
 
+@pytest.mark.parametrize(
+    ("option_index", "label"),
+    [
+        (0, r"\(x=30\)"),
+        (1, r"\(x=30\)"),
+    ],
+)
+def test_transfer_item_rejects_mismatched_canonical_answer_label(
+    option_index,
+    label,
+):
+    draft = valid_draft()
+    canonical_answer = draft["transfer_item"]["options"][option_index][
+        "canonical_answer"
+    ]
+    draft["transfer_item"]["options"][option_index]["label"] = label
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "近迁移选项显示格式无效。"
+    assert label not in str(exc_info.value)
+    assert canonical_answer not in str(exc_info.value)
+
+
+def test_choice_rejects_duplicate_visible_option_labels():
+    draft = valid_draft()
+    choice = valid_diagnostic_choice()
+    duplicate_label = choice["options"][0]["label"]
+    choice["options"][1]["label"] = duplicate_label
+    draft["moments"][0]["interaction"] = choice
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "选择互动选项标签不能重复。"
+    assert duplicate_label not in str(exc_info.value)
+
+
 def test_accepts_valid_method_first_diagnostic_choice_draft():
     draft = valid_draft()
     draft["moments"][0]["interaction"] = valid_diagnostic_choice()
@@ -1002,3 +1045,12 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "每个选项都要给出针对所选推理的具体 feedback" in DIRECTOR_SYSTEM
     assert "任一 choice 选项缺少针对所选推理的具体诊断 feedback" in REVIEWER_SYSTEM
     assert "重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback" in REVISION_SYSTEM
+    assert "TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签" in DIRECTOR_SYSTEM
+    assert "任一 TransferOption.label 不等于由 canonical_answer 推导的显示标签" in REVIEWER_SYSTEM
+    assert "每个 TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签" in REVISION_SYSTEM
+    assert r"\(x=2\) 或 \(x=6\)" in DIRECTOR_SYSTEM
+    assert r"\(x=2\) 或 \(x=6\)" in REVIEWER_SYSTEM
+    assert r"\(x=2\) 或 \(x=6\)" in REVISION_SYSTEM
+    assert "choice 的可见 label 不得重复" in DIRECTOR_SYSTEM
+    assert "choice 的可见 label 重复" in REVIEWER_SYSTEM
+    assert "choice 的可见 label 不得重复" in REVISION_SYSTEM

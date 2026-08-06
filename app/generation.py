@@ -1,4 +1,5 @@
 import inspect
+import re
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from pydantic import ValidationError
@@ -28,6 +29,31 @@ StageCallback = Callable[
     [str],
     Union[None, Awaitable[None]],
 ]
+
+REQUIRED_METHODS = {
+    "factor": {
+        "display_name": "因式分解法",
+        "operation": "factor",
+    },
+    "quadratic_formula": {
+        "display_name": "公式法",
+        "operation": "quadratic_formula",
+    },
+    "complete_the_square": {
+        "display_name": "配方法",
+        "operation": "complete_the_square",
+    },
+}
+
+
+def format_transfer_option_label(canonical_answer: str) -> str:
+    """Format a MathEngine canonical answer for its public choice label."""
+    answer = canonical_answer.strip()
+    if answer == "无实数解":
+        return r"\(\text{无实数解}\)"
+
+    branches = re.split(r"\s+或\s+", answer)
+    return " 或 ".join(rf"\({branch}\)" for branch in branches)
 
 
 class LessonQualityError(RuntimeError):
@@ -271,18 +297,11 @@ class LessonGenerationService:
         problem: ProblemInput,
         draft: LessonDraft,
     ) -> None:
-        required_method_names = {
-            "factor": "因式分解法",
-            "quadratic_formula": "公式法",
-            "complete_the_square": "配方法",
-        }
-        expected_method_name = required_method_names.get(
-            problem.required_method
-        )
+        required_method = REQUIRED_METHODS.get(problem.required_method)
         if (
-            expected_method_name is not None
+            required_method is not None
             and draft.method_introduction.method_name
-            != expected_method_name
+            != required_method["display_name"]
         ):
             raise LessonQualityError(
                 "讲解的方法介绍与指定方法不一致。"
@@ -340,6 +359,12 @@ class LessonGenerationService:
             raise LessonQualityError(
                 "近迁移选项未通过数学验证。"
             ) from None
+        if any(
+            option.label.strip()
+            != format_transfer_option_label(option.canonical_answer)
+            for option in transfer_options
+        ):
+            raise LessonQualityError("近迁移选项显示格式无效。")
 
         interactions = [
             moment.interaction
@@ -359,21 +384,24 @@ class LessonGenerationService:
                     raise LessonQualityError(
                         "选择互动需要 3 至 4 个选项。"
                     )
+                option_labels = [
+                    option.label.strip()
+                    for option in interaction.options
+                ]
+                if len(option_labels) != len(set(option_labels)):
+                    raise LessonQualityError("选择互动选项标签不能重复。")
                 if any(
                     option.feedback is None
                     for option in interaction.options
                 ):
                     raise LessonQualityError("选择互动缺少诊断反馈。")
 
-        required_operations = {
-            "factor": "factor",
-            "quadratic_formula": "quadratic_formula",
-            "complete_the_square": "complete_the_square",
-        }
-        expected_operation = required_operations.get(problem.required_method)
-        if expected_operation and expected_operation not in {
+        if (
+            required_method is not None
+            and required_method["operation"] not in {
             step.operation for step in draft.math_steps
-        }:
+            }
+        ):
             raise LessonQualityError("讲解没有真正使用指定方法。")
 
     def _validate_math_route(
