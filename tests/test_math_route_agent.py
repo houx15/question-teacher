@@ -5,7 +5,11 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.generation import LessonGenerationService, LessonQualityError
+from app.generation import (
+    LessonGenerationService,
+    LessonQualityError,
+    _RouteValidationError,
+)
 from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
 from app.prompts import (
@@ -113,6 +117,49 @@ def test_route_prompt_is_minimal_private_and_typed():
     assert "reference_solution_text" not in serialized
     assert "teaching_assets" not in serialized
     assert "route_step_invalid" in MATH_ROUTE_SYSTEM
+
+
+def test_factor_route_contract_allows_only_verified_factored_terminal():
+    assert "因式分解方法族" in MATH_ROUTE_SYSTEM
+    assert "因式乘积方程" in MATH_ROUTE_SYSTEM
+    assert "MathEngine" in MATH_ROUTE_SYSTEM
+    assert "independent_solutions" in DIRECTOR_SYSTEM
+    assert "零乘积性质" in DIRECTOR_SYSTEM
+    assert "independent_solutions" in REVIEWER_SYSTEM
+    assert "零乘积性质" in REVIEWER_SYSTEM
+    payload = json.loads(
+        math_route_prompt(problem(), ["2", "3"], equation_degree=2)
+    )
+    state_rules = " ".join(
+        payload["output_contract"]["operation_contract"]["state_rules"]
+    )
+    assert "factor" in state_rules
+    assert "verified factored product equation" in state_rules
+
+
+def test_factor_route_must_end_at_the_verified_factor_operation():
+    route = route_payload()
+    route["math_steps"].append(
+        {
+            "purpose": "再做一次等价变形",
+            "operation": "multiply_both_sides",
+            "operands": ["2"],
+            "state_before": ["(x-2)(x-3)=0"],
+            "state_after": ["2*(x-2)(x-3)=0"],
+            "reason": "等式两边同时乘二。",
+        }
+    )
+    service = agent_service(AgentClient([]))
+
+    with pytest.raises(
+        _RouteValidationError,
+        match="数学路线未通过验证",
+    ):
+        service._validate_math_route_draft(
+            problem(),
+            MathRouteDraft.model_validate(route),
+            equation_degree=2,
+        )
 
 
 def test_successful_agent_pipeline_has_explicit_call_order():

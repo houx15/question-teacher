@@ -80,6 +80,28 @@ def test_complete_square_demo_uses_deterministic_verified_route():
     )
 
 
+def test_complete_square_repeated_root_uses_one_zero_branch_and_exact_reason():
+    source = ProblemInput(
+        problem_text="用配方法解方程：x^2-6*x+9=0",
+        reference_answer="x=3",
+        required_method="complete_the_square",
+    )
+    verified = LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._create_deterministic_route(source)
+
+    assert verified is not None
+    root_step = next(
+        step
+        for step in verified.thaw().math_steps
+        if step.operation == "take_square_root_both_sides"
+    )
+    assert root_step.state_after == ["x - 3=0"]
+    assert "只能等于 0" in root_step.reason
+    assert "正、负" not in root_step.reason
+
+
 @pytest.mark.parametrize(
     ("source", "expected_family", "expected_operations"),
     [
@@ -244,6 +266,7 @@ def test_unspecified_quadratic_resolved_method_reaches_all_teaching_agents():
     }
     assert materials["resolved_method"] == director["resolved_method"]
     assert reviewer["resolved_method"] == director["resolved_method"]
+    assert reviewer["independent_solutions"] == ["2", "3"]
     assert materials["output_contract"]["transfer_item"][
         "method_profile"
     ]["required_method"] == "quadratic_formula"
@@ -307,3 +330,4 @@ def test_unspecified_linear_resolved_method_reaches_reviewer_and_transfer():
         "family": "basic_equation_operations",
         "display_name": "等式基本变形",
     }
+    assert reviewer["independent_solutions"] == ["2"]

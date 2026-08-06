@@ -324,6 +324,7 @@ class LessonGenerationService:
                 draft,
                 reference_audit,
                 verified_route,
+                problem_report.solution_strings,
             )
             if review.status == "approved":
                 break
@@ -693,6 +694,7 @@ class LessonGenerationService:
         draft: LessonDraft,
         reference_audit: Optional[ReferenceMaterialAudit],
         verified_route: _VerifiedMathRoute,
+        solution_strings: Any,
     ) -> ReviewDecision:
         payload = await self._complete_json(
             REVIEWER_SYSTEM,
@@ -700,6 +702,7 @@ class LessonGenerationService:
                 problem,
                 draft,
                 reference_audit,
+                independent_solutions=list(solution_strings),
                 resolved_method_family=verified_route.method_family,
                 resolved_method_display_name=(
                     self._resolved_method_display_name(verified_route)
@@ -1150,6 +1153,15 @@ class LessonGenerationService:
                 )
             method_family = "basic_equation_operations"
         else:
+            raise _RouteValidationError(
+                "route_method_family_conflict",
+                "数学路线未通过验证。",
+            )
+
+        if method_family == "factor" and (
+            route.math_steps[-1].operation != "factor"
+            or len(route.math_steps[-1].state_after) != 1
+        ):
             raise _RouteValidationError(
                 "route_method_family_conflict",
                 "数学路线未通过验证。",

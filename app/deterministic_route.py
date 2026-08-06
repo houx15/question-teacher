@@ -169,14 +169,23 @@ class DeterministicRoutePlanner:
             f"{base}={self._text(value)}"
             for value in root_values
         ]
+        repeated_root = len(root_values) == 1
         steps.append(
             NarrativeMathStep(
-                purpose="等式两边开平方并写出全部分支",
+                purpose=(
+                    "利用平方为零得到唯一分支"
+                    if repeated_root
+                    else "等式两边开平方并写出全部分支"
+                ),
                 operation="take_square_root_both_sides",
                 operands=[],
                 state_before=[completed],
                 state_after=branches,
-                reason="平方等于非负数时，要分别考虑正、负两个平方根。",
+                reason=(
+                    "一个式子的平方等于零时，这个式子只能等于 0。"
+                    if repeated_root
+                    else "平方等于正数时，要分别考虑正、负两个平方根。"
+                ),
             )
         )
 
