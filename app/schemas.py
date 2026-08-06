@@ -647,6 +647,7 @@ class GeneratedChoiceInteraction(SchemaModel):
 
 class GeneratedTransferOption(SchemaModel):
     option_id: GeneratedId
+    label: GeneratedLabelText
     canonical_answer: GeneratedMathAnswer
     feedback: GeneratedFeedbackText
 

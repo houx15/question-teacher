@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from app.schemas import (
     BoardAction,
     GenerationJob,
+    GeneratedTransferOption,
     Interaction,
     InteractionOption,
     LessonDraft,
@@ -453,14 +454,15 @@ def test_transfer_item_accepts_three_diagnostic_options():
     assert len(item.options) == 3
 
 
-def test_transfer_option_allows_server_derived_label_to_be_omitted():
-    option = TransferOption(
-        option_id="both-roots",
-        canonical_answer="x=3 或 x=4",
-        feedback="两个根都能使原方程成立。",
-    )
+def test_generated_transfer_option_requires_student_visible_label():
+    payload = {
+        "option_id": "both-roots",
+        "canonical_answer": "x=3 或 x=4",
+        "feedback": "两个根都能使原方程成立。",
+    }
 
-    assert option.label is None
+    with pytest.raises(ValidationError):
+        GeneratedTransferOption.model_validate(payload)
 
 
 def test_transfer_item_does_not_treat_untrusted_derived_labels_as_identity():

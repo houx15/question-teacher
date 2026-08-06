@@ -63,8 +63,6 @@ def narrative_payload():
 def materials_payload():
     draft = valid_draft()
     transfer_item = copy.deepcopy(draft["transfer_item"])
-    for option in transfer_item["options"]:
-        option.pop("label", None)
     return {
         "interactions": [
             {
@@ -284,27 +282,33 @@ def grounded_materials_payload():
             }
         ],
         "transfer_item": {
-            "problem_text": "若a+1是方程x-a=1的根，a应满足哪个关系？",
-            "expected_answer": "(a+1)-a=1",
-            "method_signal": "把已知根代回原方程。",
+            "problem_text": (
+                "若a（a≠0）是方程x^2-px+a=0的根，"
+                "把x=a代入后首先得到哪个等式？"
+            ),
+            "expected_answer": "option-substitute",
+            "method_signal": "把已知根代回原方程",
             "options": [
                 {
-                    "option_id": "correct",
-                    "canonical_answer": "(a+1)-a=1",
-                    "feedback": "把x替换成a+1即可。",
+                    "option_id": "option-substitute",
+                    "label": r"\(a^2-pa+a=0\)",
+                    "canonical_answer": "a^2-p*a+a=0",
+                    "feedback": "对，根代入原方程后等式成立。",
                 },
                 {
-                    "option_id": "reverse",
-                    "canonical_answer": "a-(a+1)=1",
-                    "feedback": "代入时要保留原方程中x-a的顺序。",
+                    "option_id": "option-miss-square",
+                    "label": r"\(a-pa+a=0\)",
+                    "canonical_answer": "a-p*a+a=0",
+                    "feedback": "代入后x平方应变成a平方。",
                 },
                 {
-                    "option_id": "omit",
-                    "canonical_answer": "a+1=1",
-                    "feedback": "这里漏掉了原式中的减a。",
+                    "option_id": "option-wrong-target",
+                    "label": r"\(x^2-pa+a=0\)",
+                    "canonical_answer": "x^2-p*a+a=0",
+                    "feedback": "这里还没有把x替换为已知根a。",
                 },
             ],
-            "correct_option_id": "correct",
+            "correct_option_id": "option-substitute",
         },
     }
 
@@ -330,6 +334,7 @@ async def generate_grounded_lesson(
     review_statuses=None,
     math_engine=None,
     claim_checker=None,
+    materials_responses=None,
 ):
     statuses = review_statuses or ["approved"]
     responses = [
@@ -343,8 +348,12 @@ async def generate_grounded_lesson(
             unsupported_checks=unsupported_checks,
         ),
         grounded_narrative_payload(),
-        grounded_materials_payload(),
     ]
+    responses.extend(
+        materials_responses
+        if materials_responses is not None
+        else [grounded_materials_payload()]
+    )
     for index, status in enumerate(statuses):
         responses.append(
             grounded_approved_review()
@@ -449,11 +458,13 @@ def test_materials_contract_is_small_and_receives_validated_narrative():
     )
     assert "point_select" not in serialized_schema
     assert "feedback_audio_url" not in serialized_schema
-    assert '"label"' not in json.dumps(
-        payload["output_contract"]["schema"]["$defs"][
-            "GeneratedTransferOption"
-        ]
+    transfer_option_schema = payload["output_contract"]["schema"]["$defs"][
+        "GeneratedTransferOption"
+    ]
+    assert '"label"' in json.dumps(
+        transfer_option_schema
     )
+    assert "label" in transfer_option_schema["required"]
     assert "lesson_schema" not in payload
     assert "expected_answer=option_id" in MATERIALS_SYSTEM
     assert "互动前" in MATERIALS_SYSTEM
@@ -1032,6 +1043,63 @@ def test_grounded_generation_never_requests_symbolic_solution_set():
     assert lesson.validation_report["verification_mode"] == (
         "model_cross_checked"
     )
+
+
+def test_grounded_transfer_keeps_model_labels_without_symbolic_answer_tools():
+    class GroundedOnlyMathEngine(MathEngine):
+        def answers_equivalent(self, *args, **kwargs):
+            raise AssertionError(
+                "grounded transfer called answers_equivalent"
+            )
+
+        def format_answer_label(self, *args, **kwargs):
+            raise AssertionError(
+                "grounded transfer called format_answer_label"
+            )
+
+        def solution_set(self, *args, **kwargs):
+            raise AssertionError("grounded transfer called solution_set")
+
+    lesson, _ = asyncio.run(
+        generate_grounded_lesson(
+            math_engine=GroundedOnlyMathEngine(),
+        )
+    )
+
+    assert [
+        option.label for option in lesson.transfer_item.options
+    ] == [
+        r"\(a^2-pa+a=0\)",
+        r"\(a-pa+a=0\)",
+        r"\(x^2-pa+a=0\)",
+    ]
+    interaction = lesson.beats[-1].interaction
+    assert interaction is not None
+    assert interaction.kind == "choice"
+    assert interaction.expected_answer == "option-substitute"
+
+
+def test_grounded_transfer_rejects_labels_equal_after_normalization():
+    duplicate = grounded_materials_payload()
+    duplicate["transfer_item"]["options"][1]["label"] = (
+        r"\( a^2 - pa + a = 0 \)"
+    )
+    duplicate["transfer_item"]["options"][0]["label"] = (
+        r"\(a^2-pa+a=0\)"
+    )
+
+    with pytest.raises(
+        LessonQualityError,
+        match="近迁移选项显示格式无效",
+    ):
+        asyncio.run(
+            generate_grounded_lesson(
+                materials_responses=[
+                    duplicate,
+                    copy.deepcopy(duplicate),
+                ],
+            )
+        )
 
 
 def symbolic_route_with_steps(math_steps):

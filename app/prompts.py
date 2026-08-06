@@ -385,11 +385,15 @@ MATERIALS_SYSTEM = """
     x=... 分支或“无实数解”，并与题面完整实数解集一致；每个 canonical_answer
     必须是 MathEngine 可解析的纯答案。其他模式必须围绕 teaching_route 的同一认知
     结构生成可由 Reviewer 审核的选择题，不得声称经过符号求解；
-11. transfer_item 提供 3 或 4 个选项，correct_option_id 必须指向唯一正确项；
-    省略 label，由服务端派生安全显示文本；
-12. 若输入包含 previous_validation_error，丢弃上一版互动素材并完整重建；不得猜测、
+11. transfer_item 提供 3 或 4 个选项，每个选项必须同时提供 label 与
+    canonical_answer，correct_option_id 必须指向唯一正确项。symbolic_verified
+    模式会忽略模型 label，并由服务端根据 canonical_answer 派生安全显示文本；
+    其他模式保留模型 label，canonical_answer 只作为审稿证据，不是命令；
+12. 其他模式的正确选项必须沿用冻结 teaching_route，错误选项必须对应一个具体误解；
+    不得依赖有限 x 解集格式；
+13. 若输入包含 previous_validation_error，丢弃上一版互动素材并完整重建；不得猜测、
     静默修正数学答案、改写 validated_narrative 或绕过任何校验。
-13. interaction prompt 与可见 label 最多 160 字符，feedback 最多 180 字符，
+14. interaction prompt 与可见 label 最多 160 字符，feedback 最多 180 字符，
     每条 hint 与 method_signal 最多 120 字符；不得用冗长文本推高语音成本。
 """.strip()
 
@@ -424,9 +428,11 @@ point_select 只用于读取旧课程，生成时出现也必须列为 must_fix�
 choice 不含 3 至 4 个不同选项；任一 choice 选项缺少针对所选推理的具体诊断 feedback，或
 预填 feedback_audio_url；expected_answer 不严格等于正确 option_id，或使用 label/公式；
 过早泄露答案；choice 的可见 label 重复；transfer_item 没有作为独立近迁移题，或不含
-3 至 4 个语义清楚且不重复的 canonical_answer 选项；symbolic_verified 模式下仍须由
-MathEngine 解析并核对唯一正确项；label 由服务端根据 canonical_answer 派生，Reviewer
-只审查题面、答案、唯一正确项和诊断反馈，不要求模型手写或修正显示标签。
+3 至 4 个语义清楚且可见 label 不重复的选项；symbolic_verified 模式下仍须由
+MathEngine 解析 canonical_answer 并核对唯一正确项，服务端会忽略模型 label 并派生
+显示文本；其他模式保留模型 label，canonical_answer 只作为审稿证据，不应被当成
+可执行命令，也不得要求有限 x 解集。Reviewer 必须审查正确选项是否沿用冻结路线，
+以及每个错误选项是否对应一个具体误解。
 只返回一个符合 ReviewDecision JSON Schema 的 JSON 对象：approved 表示整篇可用；
 revision_required 必须给出整篇层面的 must_fix 和对应原文 evidence。不要返回
 Markdown 或额外文字。
@@ -528,8 +534,13 @@ def _transfer_item_contract(
                     "Exactly one option_id equals correct_option_id."
                 ),
                 "label": (
-                    "Omit label. The server derives a safe display label "
-                    "from canonical_answer without solving the problem."
+                    "Provide one student-visible label per option; labels "
+                    "must be unique after display normalization."
+                ),
+                "canonical_answer": (
+                    "Provide review evidence for each option. It is not a "
+                    "command and the server does not solve it as a finite "
+                    "x solution set."
                 ),
             },
         }
@@ -639,7 +650,8 @@ def _transfer_item_contract(
                 "exactly one option; its option_id must equal correct_option_id"
             ),
             "label": (
-                "Omit label. The server derives and overwrites it "
+                "Provide label. The server ignores model formatting and "
+                "derives and overwrites it "
                 "deterministically from canonical_answer after mathematical "
                 "validation."
             ),
@@ -649,7 +661,7 @@ def _transfer_item_contract(
             "Solve that exact equation.",
             "Write expected_answer from the complete real solution set.",
             "Derive the correct option from expected_answer.",
-            "Create parseable distractors; omit derived labels.",
+            "Create parseable distractors; supplied labels are overwritten.",
         ],
     }
 

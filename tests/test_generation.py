@@ -520,8 +520,6 @@ def test_approved_draft_is_compiled_without_rewrite():
 def test_revision_required_returns_whole_lesson_to_director():
     revised = valid_draft()
     revised["opening"] = "先把乘积与和的条件连起来，再选择因数对。"
-    for option in revised["transfer_item"]["options"]:
-        option.pop("label")
     client = FakeClient(
         [valid_draft(), revision_review(), revised, approved_review()]
     )
@@ -928,9 +926,8 @@ def test_materials_prompt_separates_answer_syntax_from_non_reusable_examples():
         "Follow expected_answer.syntax_patterns. The syntax_examples are "
         "illustrations, not an allowed-value list."
     )
-    assert contract["options"]["label"] == (
-        "Omit label. The server derives and overwrites it deterministically "
-        "from canonical_answer after mathematical validation."
+    assert "overwrites it deterministically" in (
+        contract["options"]["label"]
     )
     method_profile = contract["method_profile"]
     assert method_profile["required_method"] == "complete_the_square"
@@ -1755,8 +1752,8 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "每个选项必须提供针对该选择推理的具体 feedback" in MATERIALS_SYSTEM
     assert "任一 choice 选项缺少针对所选推理的具体诊断 feedback" in REVIEWER_SYSTEM
     assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM
-    assert "省略 label" in MATERIALS_SYSTEM
-    assert "label 由服务端根据 canonical_answer" in REVIEWER_SYSTEM
+    assert "每个选项必须同时提供 label" in MATERIALS_SYSTEM
+    assert "其他模式保留模型 label" in REVIEWER_SYSTEM
     assert "不得返回互动、math_steps、选项或 transfer_item" in REVISION_SYSTEM
     assert "可见 label" in MATERIALS_SYSTEM
     assert "choice 的可见 label 重复" in REVIEWER_SYSTEM

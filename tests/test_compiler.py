@@ -158,6 +158,59 @@ def test_compiler_appends_summary_then_transfer_interaction():
     ]
 
 
+def test_compiler_emits_grounded_transfer_as_normal_choice():
+    draft = valid_draft()
+    draft["math_steps"] = []
+    draft["teaching_route"] = {
+        "verification_mode": "model_cross_checked",
+        "teaching_route_fingerprint": "grounded-test",
+    }
+    draft["transfer_item"] = {
+        "problem_text": (
+            "若a（a≠0）是方程x^2-px+a=0的根，"
+            "把x=a代入后首先得到哪个等式？"
+        ),
+        "expected_answer": "option-substitute",
+        "method_signal": "把已知根代回原方程",
+        "options": [
+            {
+                "option_id": "option-substitute",
+                "label": r"\(a^2-pa+a=0\)",
+                "canonical_answer": "a^2-p*a+a=0",
+                "feedback": "对，根代入原方程后等式成立。",
+            },
+            {
+                "option_id": "option-miss-square",
+                "label": r"\(a-pa+a=0\)",
+                "canonical_answer": "a-p*a+a=0",
+                "feedback": "代入后x平方应变成a平方。",
+            },
+            {
+                "option_id": "option-wrong-target",
+                "label": r"\(x^2-pa+a=0\)",
+                "canonical_answer": "x^2-p*a+a=0",
+                "feedback": "这里还没有把x替换为已知根a。",
+            },
+        ],
+        "correct_option_id": "option-substitute",
+    }
+
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"verification_mode": "model_cross_checked"},
+    )
+
+    interaction = lesson.beats[-1].interaction
+    assert interaction.kind == "choice"
+    assert interaction.expected_answer == "option-substitute"
+    assert [option.label for option in interaction.options] == [
+        r"\(a^2-pa+a=0\)",
+        r"\(a-pa+a=0\)",
+        r"\(x^2-pa+a=0\)",
+    ]
+
+
 def test_compiler_preserves_legacy_text_transfer_without_options():
     draft = valid_draft()
     draft["transfer_item"]["options"] = []

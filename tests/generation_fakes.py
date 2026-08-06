@@ -220,8 +220,6 @@ class FakeClient:
             if moment.get("layer") == "interaction":
                 moment["layer"] = "base"
         if transfer_item is not None:
-            for option in transfer_item.get("options", []):
-                option.pop("label", None)
             self._pending_materials = {
                 "interactions": interaction_bindings,
                 "transfer_item": transfer_item,
@@ -251,8 +249,6 @@ class FakeClient:
                     }
                 )
         transfer_item = copy.deepcopy(response["transfer_item"])
-        for option in transfer_item.get("options", []):
-            option.pop("label", None)
         return {
             "interactions": bindings,
             "transfer_item": transfer_item,

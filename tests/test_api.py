@@ -419,35 +419,42 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
     assert evaluation.json() == {"classification": "correct"}
 
 
-def test_public_lesson_payload_redacts_diagnostic_transfer_answers():
+def test_public_grounded_transfer_redacts_review_evidence_and_feedback():
     lesson = runtime_lesson(problem_input()).model_copy(
         update={
             "transfer_item": TransferItem(
-                problem_text="用因式分解法解方程：x^2-7x+12=0",
-                expected_answer="x=3 或 x=4",
-                method_signal="寻找乘积为 12、和为 -7 的两个数。",
+                problem_text=(
+                    "若a（a≠0）是方程x^2-px+a=0的根，"
+                    "把x=a代入后首先得到哪个等式？"
+                ),
+                expected_answer="option-substitute",
+                method_signal="把已知根代回原方程",
                 options=[
                     TransferOption(
-                        option_id="both-roots",
-                        label="x=3 或 x=4",
-                        canonical_answer="x=3 或 x=4",
-                        feedback="两个根都能使原方程成立。",
+                        option_id="option-substitute",
+                        label=r"\(a^2-pa+a=0\)",
+                        canonical_answer="a^2-p*a+a=0",
+                        feedback="对，根代入原方程后等式成立。",
                     ),
                     TransferOption(
-                        option_id="only-three",
-                        label="x=3",
-                        canonical_answer="x=3",
-                        feedback="还遗漏了另一个根。",
+                        option_id="option-miss-square",
+                        label=r"\(a-pa+a=0\)",
+                        canonical_answer="a-p*a+a=0",
+                        feedback="代入后x平方应变成a平方。",
                     ),
                     TransferOption(
-                        option_id="only-four",
-                        label="x=4",
-                        canonical_answer="x=4",
-                        feedback="还遗漏了另一个根。",
+                        option_id="option-wrong-target",
+                        label=r"\(x^2-pa+a=0\)",
+                        canonical_answer="x^2-p*a+a=0",
+                        feedback="这里还没有把x替换为已知根a。",
                     ),
                 ],
-                correct_option_id="both-roots",
-            )
+                correct_option_id="option-substitute",
+            ),
+            "validation_report": {
+                "verification_mode": "model_cross_checked",
+                "review_status": "approved",
+            },
         }
     )
     store = MemoryStore()
@@ -466,16 +473,16 @@ def test_public_lesson_payload_redacts_diagnostic_transfer_answers():
     )
     assert transfer_item["options"] == [
         {
-            "option_id": "both-roots",
-            "label": "x=3 或 x=4",
+            "option_id": "option-substitute",
+            "label": r"\(a^2-pa+a=0\)",
         },
         {
-            "option_id": "only-three",
-            "label": "x=3",
+            "option_id": "option-miss-square",
+            "label": r"\(a-pa+a=0\)",
         },
         {
-            "option_id": "only-four",
-            "label": "x=4",
+            "option_id": "option-wrong-target",
+            "label": r"\(x^2-pa+a=0\)",
         },
     ]
 

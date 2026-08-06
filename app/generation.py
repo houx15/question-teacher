@@ -949,25 +949,19 @@ class LessonGenerationService:
         draft: LessonDraft,
         teaching_route: Optional[FrozenTeachingRoute] = None,
     ) -> LessonDraft:
+        if (
+            teaching_route is not None
+            and teaching_route.mode
+            != TeachingRouteMode.SYMBOLIC_VERIFIED
+        ):
+            return draft
         try:
-            if (
-                teaching_route is not None
-                and teaching_route.mode
-                != TeachingRouteMode.SYMBOLIC_VERIFIED
-            ):
-                labels = [
-                    self._safe_grounded_choice_label(
-                        option.canonical_answer
-                    )
-                    for option in draft.transfer_item.options
-                ]
-            else:
-                labels = [
-                    self.math_engine.format_answer_label(
-                        option.canonical_answer
-                    )
-                    for option in draft.transfer_item.options
-                ]
+            labels = [
+                self.math_engine.format_answer_label(
+                    option.canonical_answer
+                )
+                for option in draft.transfer_item.options
+            ]
         except MathValidationError:
             return draft
 
@@ -984,13 +978,6 @@ class LessonGenerationService:
         return draft.model_copy(
             update={"transfer_item": transfer_item}
         )
-
-    @staticmethod
-    def _safe_grounded_choice_label(value: str) -> str:
-        value = value.strip()
-        if value.startswith((r"\(", r"\[")):
-            return value
-        return rf"\({value}\)"
 
     async def _audit_reference(
         self,
@@ -1241,32 +1228,29 @@ class LessonGenerationService:
                 for option in transfer_options
             ]
         else:
-            expected_labels = [
-                self._safe_grounded_choice_label(option.canonical_answer)
+            normalized_labels = [
+                _normalize_choice_option_label(option.label)
                 for option in transfer_options
             ]
-            normalized_answers = [
-                self._normalize_grounded_text(option.canonical_answer)
-                for option in transfer_options
-            ]
-            if len(normalized_answers) != len(set(normalized_answers)):
-                raise LessonQualityError("近迁移选项不能重复。")
+            if len(normalized_labels) != len(set(normalized_labels)):
+                raise LessonQualityError("近迁移选项显示格式无效。")
             if draft.transfer_item.correct_option_id not in {
                 option.option_id for option in transfer_options
             }:
                 raise LessonQualityError("近迁移题缺少唯一正确选项。")
-        if (
-            any(
-                option.label is None
-                or option.label.strip() != expected_label
-                for option, expected_label in zip(
-                    transfer_options,
-                    expected_labels,
+        if is_symbolic:
+            if (
+                any(
+                    option.label is None
+                    or option.label.strip() != expected_label
+                    for option, expected_label in zip(
+                        transfer_options,
+                        expected_labels,
+                    )
                 )
-            )
-            or len(expected_labels) != len(set(expected_labels))
-        ):
-            raise LessonQualityError("近迁移选项显示格式无效。")
+                or len(expected_labels) != len(set(expected_labels))
+            ):
+                raise LessonQualityError("近迁移选项显示格式无效。")
 
         interactions = [
             moment.interaction

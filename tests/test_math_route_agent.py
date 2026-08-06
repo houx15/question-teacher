@@ -501,16 +501,19 @@ def linear_materials():
         "options": [
             {
                 "option_id": "two",
+                "label": r"\(x=2\)",
                 "canonical_answer": "x=2",
                 "feedback": "正确。",
             },
             {
                 "option_id": "negative-two",
+                "label": r"\(x=-2\)",
                 "canonical_answer": "x=-2",
                 "feedback": "移项时符号处理错误。",
             },
             {
                 "option_id": "three",
+                "label": r"\(x=3\)",
                 "canonical_answer": "x=3",
                 "feedback": "除法计算不正确。",
             },
@@ -578,16 +581,19 @@ def complete_square_materials():
         "options": [
             {
                 "option_id": "both",
+                "label": r"\(x=2\) 或 \(x=6\)",
                 "canonical_answer": "x=2 或 x=6",
                 "feedback": "两个根都正确。",
             },
             {
                 "option_id": "two",
+                "label": r"\(x=2\)",
                 "canonical_answer": "x=2",
                 "feedback": "遗漏了另一个分支。",
             },
             {
                 "option_id": "six",
+                "label": r"\(x=6\)",
                 "canonical_answer": "x=6",
                 "feedback": "遗漏了另一个分支。",
             },
