@@ -5,6 +5,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -237,6 +238,102 @@ class ReferenceMaterialAudit(SchemaModel):
                     "rejected audit requires blocking issues and evidence"
                 )
         return self
+
+
+SingleLetterSymbol = Annotated[
+    str,
+    StringConstraints(pattern=r"^[A-Za-z]$"),
+]
+
+
+def _normalize_reference_text(value: str) -> str:
+    normalized = "".join(value.split())
+    delimiters = (
+        (r"\(", r"\)"),
+        (r"\[", r"\]"),
+        ("$$", "$$"),
+        ("$", "$"),
+    )
+    unwrapped = True
+    while unwrapped:
+        unwrapped = False
+        for opening, closing in delimiters:
+            if (
+                normalized.startswith(opening)
+                and normalized.endswith(closing)
+                and len(normalized) > len(opening) + len(closing)
+            ):
+                normalized = normalized[
+                    len(opening) : -len(closing)
+                ]
+                unwrapped = True
+                break
+    return normalized
+
+
+class GroundedReasoningStep(SchemaModel):
+    step_id: GeneratedId
+    statement_before: GeneratedMathAnswer
+    operation_explanation: GeneratedFeedbackText
+    statement_after: GeneratedMathAnswer
+
+
+class GroundingCheckRequest(SchemaModel):
+    check_id: GeneratedId
+    kind: Literal[
+        "substitution",
+        "equivalence",
+        "nonzero_division",
+        "back_substitution",
+    ]
+    expression: GeneratedMathAnswer
+    expected: GeneratedMathAnswer
+    substitutions: Dict[
+        SingleLetterSymbol,
+        GeneratedMathAnswer,
+    ] = Field(default_factory=dict, max_length=4)
+    nonzero_symbols: List[SingleLetterSymbol] = Field(
+        default_factory=list,
+        max_length=4,
+    )
+    conclusion_linked: bool = False
+
+
+class ReferenceGroundingBrief(SchemaModel):
+    task_summary: GeneratedFeedbackText
+    target: GeneratedMathAnswer
+    assumptions: List[GeneratedMathAnswer] = Field(max_length=8)
+    reference_conclusion: GeneratedMathAnswer
+    method_name: MethodName
+    reasoning_steps: List[GroundedReasoningStep] = Field(
+        min_length=1,
+        max_length=12,
+    )
+    check_requests: List[GroundingCheckRequest] = Field(max_length=8)
+    audit_notes: List[GeneratedFeedbackText] = Field(max_length=8)
+
+    @field_validator("reference_conclusion")
+    @classmethod
+    def validate_reference_conclusion(
+        cls,
+        value: str,
+        info: ValidationInfo,
+    ) -> str:
+        context = info.context
+        if not isinstance(context, dict):
+            return value
+        reference_answer = context.get("reference_answer")
+        if not isinstance(reference_answer, str):
+            return value
+
+        conclusion = _normalize_reference_text(value)
+        answer = _normalize_reference_text(reference_answer)
+        conclusion_answer = conclusion.rsplit("=", 1)[-1]
+        if answer not in {conclusion, conclusion_answer}:
+            raise ValueError(
+                "reference_conclusion must agree with reference_answer"
+            )
+        return value
 
 
 class BoardAction(SchemaModel):

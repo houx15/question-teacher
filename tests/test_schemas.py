@@ -11,6 +11,7 @@ from app.schemas import (
     MathStep,
     MethodIntroduction,
     ProblemInput,
+    ReferenceGroundingBrief,
     ReferenceMaterialAudit,
     ReviewDecision,
     RuntimeBeat,
@@ -18,6 +19,180 @@ from app.schemas import (
     TransferItem,
     TransferOption,
 )
+
+
+def grounding_brief_payload():
+    return {
+        "task_summary": "把已知根代回方程，求m-n",
+        "target": r"\(m-n\)",
+        "assumptions": [r"\(n\ne0\)", r"\(x=2n\)是原方程的根"],
+        "reference_conclusion": r"\(m-n=\frac12\)",
+        "method_name": "代入法",
+        "reasoning_steps": [
+            {
+                "step_id": "substitute-root",
+                "statement_before": r"\(x^2-2mx+2n=0\)",
+                "operation_explanation": "把已知根x=2n代入原方程",
+                "statement_after": r"\(4n^2-4mn+2n=0\)",
+            },
+            {
+                "step_id": "use-nonzero",
+                "statement_before": r"\(2n(2n-2m+1)=0\)",
+                "operation_explanation": "利用n不为0约去2n",
+                "statement_after": r"\(2n-2m+1=0\)",
+            },
+        ],
+        "check_requests": [
+            {
+                "check_id": "check-substitution",
+                "kind": "substitution",
+                "expression": "x^2-2*m*x+2*n",
+                "expected": "4*n^2-4*m*n+2*n",
+                "substitutions": {"x": "2*n"},
+                "nonzero_symbols": [],
+                "conclusion_linked": True,
+            }
+        ],
+        "audit_notes": [],
+    }
+
+
+def test_reference_grounding_brief_is_bounded_and_structured():
+    brief = ReferenceGroundingBrief.model_validate(
+        grounding_brief_payload(),
+        context={"reference_answer": r"\(m-n=\frac12\)"},
+    )
+
+    assert brief.method_name == "代入法"
+    assert brief.check_requests[0].conclusion_linked is True
+
+
+def test_reference_grounding_brief_accepts_all_and_only_local_check_kinds():
+    payload = grounding_brief_payload()
+    payload["check_requests"] = [
+        {
+            **payload["check_requests"][0],
+            "check_id": f"check-{kind}",
+            "kind": kind,
+        }
+        for kind in (
+            "substitution",
+            "equivalence",
+            "nonzero_division",
+            "back_substitution",
+        )
+    ]
+
+    brief = ReferenceGroundingBrief.model_validate(payload)
+    assert [request.kind for request in brief.check_requests] == [
+        "substitution",
+        "equivalence",
+        "nonzero_division",
+        "back_substitution",
+    ]
+
+    payload["check_requests"][0]["kind"] = "execute_python"
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("collection", "limit"),
+    [
+        ("reasoning_steps", 12),
+        ("check_requests", 8),
+        ("assumptions", 8),
+        ("audit_notes", 8),
+    ],
+)
+def test_reference_grounding_brief_rejects_oversized_collections(
+    collection,
+    limit,
+):
+    payload = grounding_brief_payload()
+    source = payload[collection][0] if payload[collection] else "需要补充说明"
+    payload[collection] = [source for _ in range(limit + 1)]
+
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("task_summary", " "),
+        ("target", ""),
+        ("reference_conclusion", "\n"),
+        ("method_name", " "),
+        ("task_summary", "过" * 181),
+        ("target", "x" * 161),
+    ],
+)
+def test_reference_grounding_brief_rejects_blank_or_oversized_text(
+    field,
+    value,
+):
+    payload = grounding_brief_payload()
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+
+def test_reference_grounding_brief_forbids_extra_fields_at_every_level():
+    payload = grounding_brief_payload()
+    payload["run_command"] = "trusted"
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+    payload = grounding_brief_payload()
+    payload["reasoning_steps"][0]["unexpected"] = "field"
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+    payload = grounding_brief_payload()
+    payload["check_requests"][0]["tool"] = "shell"
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("substitutions", {"root": "2*n"}),
+        ("substitutions", {"x1": "2*n"}),
+        ("nonzero_symbols", ["number"]),
+        ("nonzero_symbols", ["n1"]),
+    ],
+)
+def test_reference_grounding_brief_requires_single_letter_symbol_keys(
+    field,
+    value,
+):
+    payload = grounding_brief_payload()
+    payload["check_requests"][0][field] = value
+
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.model_validate(payload)
+
+
+def test_reference_conclusion_agrees_with_supplied_answer_after_text_normalization():
+    payload = grounding_brief_payload()
+    payload["reference_conclusion"] = r" \( m-n = \frac12 \) "
+
+    brief = ReferenceGroundingBrief.model_validate(
+        payload,
+        context={"reference_answer": r"$\frac12$"},
+    )
+    assert brief.reference_conclusion == r"\( m-n = \frac12 \)"
+
+
+def test_reference_conclusion_rejects_mismatch_with_supplied_answer():
+    with pytest.raises(ValidationError, match="reference_conclusion"):
+        ReferenceGroundingBrief.model_validate(
+            grounding_brief_payload(),
+            context={"reference_answer": r"$\frac13$"},
+        )
 
 
 def valid_transfer_options():
