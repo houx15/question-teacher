@@ -37,6 +37,36 @@ export function scheduleBoardActions(actions, durationMs, fallbackMs = 3600) {
 }
 
 
+export function createBoundedSettlement({
+  resolve,
+  timeoutMs,
+  setTimeoutImpl = globalThis.setTimeout,
+  clearTimeoutImpl = globalThis.clearTimeout,
+  cleanup = () => {},
+}) {
+  let settled = false;
+  let timer = null;
+  const settle = () => {
+    if (settled) return false;
+    settled = true;
+    try {
+      if (timer !== null) clearTimeoutImpl(timer);
+    } catch {
+      // Settlement must continue even if a host timer shim rejects cleanup.
+    }
+    try {
+      cleanup();
+    } catch {
+      // Media cleanup is best-effort; callers must still be released.
+    }
+    resolve();
+    return true;
+  };
+  timer = setTimeoutImpl(settle, timeoutMs);
+  return settle;
+}
+
+
 function boardObject(board, target) {
   return board.get(target) || {
     kind: "object",
@@ -194,6 +224,7 @@ export function resolveInteractionPresentation({
       message: result?.message
         || "思路已经记录，我们继续沿主线往下走。",
       audioUrl: null,
+      advanceMode: "manual",
     };
   }
 
@@ -201,6 +232,7 @@ export function resolveInteractionPresentation({
     return {
       message: selectedOption.feedback,
       audioUrl: selectedOption.feedback_audio_url || null,
+      advanceMode: classification === "correct" ? "automatic" : "retry",
     };
   }
 
@@ -215,12 +247,14 @@ export function resolveInteractionPresentation({
       audioUrl: hintIndex === null
         ? null
         : (interaction?.hint_audio_urls?.[hintIndex] || null),
+      advanceMode: "retry",
     };
   }
 
   return {
     message: interaction?.explanation_after_correct || "判断正确。",
     audioUrl: interaction?.correct_audio_url || null,
+    advanceMode: "automatic",
   };
 }
 

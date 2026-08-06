@@ -2,6 +2,7 @@ import {
   LessonRuntime,
   classifyInteractionControl,
   cloneBoard,
+  createBoundedSettlement,
   fallbackDurationForNarration,
   resolveInteractionPresentation,
   scheduleBoardActions,
@@ -43,11 +44,14 @@ const TEMPORARY_LAYERS = new Set([
   "interaction",
 ]);
 const AUTO_ADVANCE_DELAY_MS = 760;
+const EVALUATION_TIMEOUT_MS = 14000;
+const FEEDBACK_AUDIO_TIMEOUT_MS = 12000;
 
 let lesson = null;
 let runtime = null;
 let primaryAudio = null;
 let feedbackAudio = null;
+let feedbackAudioFinalizer = null;
 let timeline = null;
 let beatToken = 0;
 let started = false;
@@ -332,10 +336,10 @@ function stopMedia() {
     primaryAudio.load();
     primaryAudio = null;
   }
-  if (feedbackAudio) {
-    feedbackAudio.pause();
-    feedbackAudio = null;
-  }
+  const activeFeedbackAudio = feedbackAudio;
+  feedbackAudioFinalizer?.();
+  activeFeedbackAudio?.pause();
+  feedbackAudio = null;
   dom.shell.classList.remove("is-speaking");
 }
 
@@ -643,16 +647,18 @@ function clearPointSelection() {
 
 
 function enablePointSelection(onSelect) {
-  const nodes = [
-    ...dom.baseBoard.querySelectorAll(".board-object"),
-    ...dom.layerStage.querySelectorAll(".board-object"),
-  ];
+  const activeRegion = runtime.layerStack.length > 0
+    ? dom.layerStage
+    : dom.baseBoard;
+  const nodes = [...activeRegion.querySelectorAll(".board-object")]
+    .filter((node) => node.getClientRects().length > 0);
   nodes.forEach((node) => {
-    const boardSource = node.querySelector(".board-content")?.dataset.source
-      || humanizeTarget(node.dataset.boardTarget);
     node.classList.add("is-selectable");
     node.setAttribute("role", "button");
-    node.setAttribute("aria-label", `选择 ${boardSource}`);
+    node.setAttribute(
+      "aria-label",
+      `选择板书：${humanizeTarget(node.dataset.boardTarget)}`,
+    );
     node.tabIndex = 0;
     const select = () => onSelect(node.dataset.boardTarget);
     node.onclick = select;
@@ -769,34 +775,68 @@ function showInteraction(interaction) {
 
 
 async function evaluateInteraction(interaction, answer) {
-  const response = await fetch("/api/interactions/evaluate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      lesson_id: lesson.lesson_id,
-      interaction_id: interaction.interaction_id,
-      answer,
-    }),
-  });
-  if (!response.ok) throw new Error("evaluation unavailable");
-  return response.json();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    EVALUATION_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch("/api/interactions/evaluate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        lesson_id: lesson.lesson_id,
+        interaction_id: interaction.interaction_id,
+        answer,
+      }),
+    });
+    if (!response.ok) throw new Error("evaluation unavailable");
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 
 function playFeedbackAudio(url) {
+  const previousAudio = feedbackAudio;
+  feedbackAudioFinalizer?.();
+  previousAudio?.pause();
+  feedbackAudio = null;
+  if (!url) return Promise.resolve();
+
   return new Promise((resolve) => {
-    if (!url) {
-      window.setTimeout(resolve, 650);
-      return;
+    const audio = new Audio(url);
+    feedbackAudio = audio;
+    let settle = null;
+    const onEnded = () => settle();
+    const onError = () => settle();
+    settle = createBoundedSettlement({
+      resolve,
+      timeoutMs: FEEDBACK_AUDIO_TIMEOUT_MS,
+      cleanup: () => {
+        audio.removeEventListener("ended", onEnded);
+        audio.removeEventListener("error", onError);
+        audio.pause();
+        if (feedbackAudio === audio) feedbackAudio = null;
+        if (feedbackAudioFinalizer === settle) {
+          feedbackAudioFinalizer = null;
+        }
+      },
+    });
+    feedbackAudioFinalizer = settle;
+    audio.addEventListener("ended", onEnded, { once: true });
+    audio.addEventListener("error", onError, { once: true });
+    try {
+      const playAttempt = audio.play();
+      playAttempt?.catch(settle);
+    } catch {
+      settle();
     }
-    feedbackAudio?.pause();
-    feedbackAudio = new Audio(url);
-    feedbackAudio.addEventListener("ended", resolve, { once: true });
-    feedbackAudio.addEventListener("error", resolve, { once: true });
-    feedbackAudio.play().catch(resolve);
   });
 }
 
@@ -845,6 +885,10 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
     ui.continueButton.hidden = false;
     clearPointSelection();
     updateControls();
+    if (presentation.advanceMode === "manual") {
+      ui.continueButton.focus();
+      return;
+    }
     const answeredBeatToken = beatToken;
     await playFeedbackAudio(presentation.audioUrl);
     if (
@@ -861,7 +905,15 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
   } catch {
     ui.feedback.textContent = "暂时无法核对答案，请再提交一次。";
     ui.feedback.classList.add("is-wrong");
+    renderMathText(ui.hint, "");
     interactiveNodes.forEach((node) => { node.disabled = false; });
+    if (interaction.kind === "point_select") {
+      enablePointSelection((retryAnswer) => {
+        clearPointSelection();
+        submitInteraction(interaction, retryAnswer, null, ui);
+      });
+    }
+    ui.controls.querySelector("input, button")?.focus();
   }
 }
 

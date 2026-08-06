@@ -6,6 +6,7 @@ import {
   applyBoardAction,
   classifyInteractionControl,
   cloneBoard,
+  createBoundedSettlement,
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "../app/static/runtime-core.mjs";
@@ -71,6 +72,72 @@ test("scheduling uses a bounded narration fallback without audio", () => {
     schedule.map((item) => item.atMs),
     [0, 2100],
   );
+});
+
+
+test("bounded settlement resolves once and cleans up event completion", () => {
+  let timeoutCallback = null;
+  let clearCount = 0;
+  let cleanupCount = 0;
+  let resolveCount = 0;
+  const settle = createBoundedSettlement({
+    resolve: () => { resolveCount += 1; },
+    timeoutMs: 12000,
+    setTimeoutImpl: (callback, timeoutMs) => {
+      assert.equal(timeoutMs, 12000);
+      timeoutCallback = callback;
+      return 41;
+    },
+    clearTimeoutImpl: (timer) => {
+      assert.equal(timer, 41);
+      clearCount += 1;
+    },
+    cleanup: () => { cleanupCount += 1; },
+  });
+
+  assert.equal(settle(), true);
+  assert.equal(settle(), false);
+  timeoutCallback();
+  assert.equal(resolveCount, 1);
+  assert.equal(clearCount, 1);
+  assert.equal(cleanupCount, 1);
+});
+
+
+test("bounded settlement timeout follows the same single finalizer", () => {
+  let timeoutCallback = null;
+  let cleaned = false;
+  let resolved = false;
+  const settle = createBoundedSettlement({
+    resolve: () => { resolved = true; },
+    timeoutMs: 7,
+    setTimeoutImpl: (callback) => {
+      timeoutCallback = callback;
+      return 9;
+    },
+    clearTimeoutImpl: () => {},
+    cleanup: () => { cleaned = true; },
+  });
+
+  timeoutCallback();
+  assert.equal(resolved, true);
+  assert.equal(cleaned, true);
+  assert.equal(settle(), false);
+});
+
+
+test("bounded settlement still resolves if cleanup itself fails", () => {
+  let resolved = false;
+  const settle = createBoundedSettlement({
+    resolve: () => { resolved = true; },
+    timeoutMs: 12,
+    setTimeoutImpl: () => 3,
+    clearTimeoutImpl: () => {},
+    cleanup: () => { throw new Error("cleanup failed"); },
+  });
+
+  assert.doesNotThrow(() => settle());
+  assert.equal(resolved, true);
 });
 
 
@@ -285,6 +352,7 @@ test("wrong diagnostic option presents its own feedback and audio", () => {
   assert.deepEqual(presentation, {
     message: "这里应满足 \\(ab=5\\)，这组数的乘积不对。",
     audioUrl: "/audio/option-b.mp3",
+    advanceMode: "retry",
   });
 });
 
@@ -303,6 +371,7 @@ test("wrong legacy response presents its staged hint and matching audio", () => 
   assert.deepEqual(presentation, {
     message: "提示：再看和。",
     audioUrl: "/audio/hint-2.mp3",
+    advanceMode: "retry",
   });
 });
 
@@ -324,6 +393,7 @@ test("correct diagnostic option presents its own feedback and audio", () => {
   assert.deepEqual(presentation, {
     message: "对，\\(2+3=5\\) 且 \\(2\\times3=6\\)。",
     audioUrl: "/audio/option-a.mp3",
+    advanceMode: "automatic",
   });
 });
 
@@ -342,6 +412,7 @@ test("correct legacy response presents the shared explanation and audio", () => 
   assert.deepEqual(presentation, {
     message: "两边同时加 \\(3\\)，等式仍成立。",
     audioUrl: "/audio/correct.mp3",
+    advanceMode: "automatic",
   });
 });
 
@@ -363,6 +434,7 @@ test("needs-review response preserves the server message and fallback", () => {
   assert.deepEqual(withMessage, {
     message: "已记录你的思路。",
     audioUrl: null,
+    advanceMode: "manual",
   });
   assert.equal(fallback.message, "思路已经记录，我们继续沿主线往下走。");
   assert.equal(fallback.audioUrl, null);

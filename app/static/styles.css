@@ -1307,7 +1307,11 @@ button {
 
 .interaction-card {
   width: min(720px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
   text-align: center;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .interaction-kicker {
@@ -1319,12 +1323,17 @@ button {
 }
 
 .interaction-card h2 {
+  max-width: 100%;
   margin: 0 auto clamp(18px, 3vw, 30px);
+  overflow-x: auto;
+  overflow-y: hidden;
   color: var(--board-ink);
   font-family: var(--chalk-font);
   font-size: clamp(22px, 3vw, 38px);
   font-weight: 500;
   line-height: 1.45;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .interaction-options {
@@ -1401,11 +1410,16 @@ button {
 
 .interaction-hint,
 .interaction-feedback {
+  max-width: 100%;
   min-height: 24px;
   margin: 18px 0 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   color: var(--classroom-reason);
   font-family: var(--serif);
   font-size: 14px;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .interaction-feedback.is-wrong {
@@ -1747,6 +1761,25 @@ button {
   .chalkboard-frame {
     grid-template-rows: 38px minmax(0, 1fr) 37px;
     margin-top: 6px;
+  }
+
+  .interaction-stage {
+    inset: 3% 5%;
+    padding: 12px 18px;
+  }
+
+  .interaction-card h2 {
+    margin-bottom: 12px;
+    font-size: clamp(18px, 2.6vw, 28px);
+  }
+
+  .interaction-options {
+    gap: 8px;
+  }
+
+  .interaction-hint,
+  .interaction-feedback {
+    margin-top: 10px;
   }
 
   .lesson-controls {

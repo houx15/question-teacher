@@ -134,8 +134,11 @@ def test_point_select_prompt_does_not_block_board_pointer_or_keyboard_access():
     assert ".interaction-stage.is-point-select .interaction-card" in styles
     assert "pointer-events: auto" in styles
     assert 'node.setAttribute("role", "button")' in source
-    assert 'node.querySelector(".board-content")?.dataset.source' in source
-    assert '`选择 ${boardSource}`' in source
+    assert "const activeRegion = runtime.layerStack.length > 0" in source
+    assert 'activeRegion.querySelectorAll(".board-object")' in source
+    assert "node.getClientRects().length > 0" in source
+    assert "`选择板书：${humanizeTarget(node.dataset.boardTarget)}`" in source
+    assert "boardSource" not in source
     assert 'event.key === "Enter" || event.key === " "' in source
 
 
@@ -159,3 +162,48 @@ def test_local_katex_assets_are_served_with_the_math_text_module():
         response = client.get(path)
         assert response.status_code == 200
         assert response.headers["content-type"].startswith(media_type)
+
+
+def test_interaction_evaluation_and_feedback_audio_have_bounded_lifecycles():
+    source = page_client().get("/static/lesson.js").text
+
+    assert "const EVALUATION_TIMEOUT_MS = 14000;" in source
+    assert "const FEEDBACK_AUDIO_TIMEOUT_MS = 12000;" in source
+    assert "const controller = new AbortController();" in source
+    assert "signal: controller.signal" in source
+    assert "controller.abort()" in source
+    assert "clearTimeout(timeout)" in source
+    assert "createBoundedSettlement" in source
+    assert "feedbackAudioFinalizer?.()" in source
+    assert 'audio.addEventListener("ended", onEnded' in source
+    assert 'audio.addEventListener("error", onError' in source
+    assert "playAttempt?.catch(settle)" in source
+    assert "window.setTimeout(resolve, 650)" not in source
+
+
+def test_needs_review_waits_for_explicit_continue_and_errors_clear_stale_hints():
+    source = page_client().get("/static/lesson.js").text
+    submit_source = source[
+        source.index("async function submitInteraction"):
+        source.index("async function toggleFullscreen")
+    ]
+    catch_source = submit_source.rsplit("} catch {", maxsplit=1)[1]
+
+    assert 'presentation.advanceMode === "manual"' in submit_source
+    assert "ui.continueButton.focus()" in submit_source
+    assert "return;" in submit_source
+    assert 'renderMathText(ui.hint, "");' in catch_source
+    assert 'interaction.kind === "point_select"' in catch_source
+    assert "enablePointSelection((retryAnswer)" in catch_source
+
+
+def test_interaction_card_scrolls_safely_in_short_landscape():
+    styles = page_client().get("/static/styles.css").text
+
+    assert ".interaction-card {" in styles
+    assert "max-height: 100%;" in styles
+    assert "overflow-y: auto;" in styles
+    assert ".interaction-card h2 {" in styles
+    assert "overflow-x: auto;" in styles
+    assert "@media (max-height: 600px) and (orientation: landscape)" in styles
+    assert ".interaction-stage {" in styles
