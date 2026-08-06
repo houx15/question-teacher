@@ -212,7 +212,7 @@ def test_generation_job_completes_with_public_stage_sequence():
     assert audio_service.calls == 1
     assert store.seen_stages == [
         "正在理解题目",
-        "正在验证数学路线",
+        "正在核对题目材料",
         "正在设计完整讲解",
         "正在进行整篇审稿",
         "正在修订并编译课堂",
@@ -221,13 +221,22 @@ def test_generation_job_completes_with_public_stage_sequence():
     ]
 
 
-def test_internal_route_planning_reuses_existing_public_math_stage():
-    assert _PUBLIC_GENERATION_STAGES["正在规划数学路线"] == (
-        "正在验证数学路线"
-    )
+@pytest.mark.parametrize(
+    "internal_stage",
+    [
+        "正在验证数学路线",
+        "正在规划数学路线",
+        "正在审阅参考解析",
+        "正在整理参考教学路线",
+    ],
+)
+def test_capability_and_grounding_share_one_public_generation_stage(
+    internal_stage,
+):
+    assert _PUBLIC_GENERATION_STAGES[internal_stage] == "正在核对题目材料"
 
 
-def test_generation_with_reference_solution_exposes_audit_stage():
+def test_generation_with_reference_solution_keeps_audit_internal():
     store = RecordingStore()
     client, _, _ = build_client(store=store)
     payload = problem_input().model_copy(
@@ -244,7 +253,8 @@ def test_generation_with_reference_solution_exposes_audit_stage():
     )
 
     assert response.status_code == 202
-    assert "正在审阅参考解析" in store.seen_stages
+    assert "正在核对题目材料" in store.seen_stages
+    assert "正在审阅参考解析" not in store.seen_stages
 
 
 def test_generation_failure_is_sanitized_and_has_no_lesson():
@@ -277,6 +287,20 @@ def test_generation_failure_exposes_only_typed_safe_input_errors():
     assert safe_generation_error(RuntimeError("private-provider-detail")) == (
         "课程生成失败，请稍后重试。"
     )
+
+
+def test_unsupported_math_does_not_return_math_validation_error():
+    error = safe_generation_error(
+        LessonInputError("暂时无法整理参考解析，请稍后重试。")
+    )
+
+    assert error == "暂时无法整理参考解析，请稍后重试。"
+
+
+def test_contradiction_returns_specific_safe_message():
+    assert safe_generation_error(
+        LessonInputError("参考答案与题目实际结果不一致。")
+    ) == "参考答案与题目实际结果不一致。"
 
 
 def test_missing_job_and_lesson_return_404():
@@ -454,6 +478,8 @@ def test_public_grounded_transfer_redacts_review_evidence_and_feedback():
             "validation_report": {
                 "verification_mode": "model_cross_checked",
                 "review_status": "approved",
+                "model_disagreement": "private-model-disagreement",
+                "check_requests": ["private-check-request"],
             },
         }
     )
@@ -464,6 +490,16 @@ def test_public_grounded_transfer_redacts_review_evidence_and_feedback():
     response = client.get(f"/api/lessons/{lesson.lesson_id}")
 
     assert response.status_code == 200
+    serialized = json.dumps(response.json(), ensure_ascii=False)
+    for private_key in (
+        "verification_mode",
+        "model_disagreement",
+        "check_requests",
+        "reference_solution_text",
+        "private-model-disagreement",
+        "private-check-request",
+    ):
+        assert private_key not in serialized
     transfer_item = response.json()["transfer_item"]
     assert "expected_answer" not in transfer_item
     assert "correct_option_id" not in transfer_item

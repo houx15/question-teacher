@@ -508,6 +508,31 @@ def test_readme_documents_method_first_choice_generation_and_local_katex():
     assert "选项诊断反馈语音" in validation
 
 
+def test_readme_documents_reference_grounded_scope_and_parameter_example():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    for boundary in (
+        "参考材料依据",
+        "不是自动批改系统",
+        "严格符号校验",
+        "结构化模型审阅",
+        "可复现的数学矛盾",
+        "仅保留在服务端",
+    ):
+        assert boundary in readme
+
+    for input_field in (
+        "problem_text",
+        "reference_answer",
+        "reference_solution_text",
+    ):
+        assert input_field in readme
+
+    assert "2n" in readme and "m-n" in readme
+    assert "python scripts/smoke_live.py --grounded-parameter-root" in readme
+    assert "Task 8 待执行" in readme
+
+
 def test_generation_page_has_focused_authoring_form():
     response = page_client().get("/")
 
@@ -537,8 +562,17 @@ def test_generation_page_submits_optional_reference_solution():
 
     assert 'data.get("reference_solution_text")' in source
     assert "reference_solution_text: referenceSolution || null" in source
-    assert '"正在审阅参考解析"' in source
-    assert 'data-stage="正在审阅参考解析"' in html
+    assert '"正在核对题目材料"' in source
+    assert 'data-stage="正在核对题目材料"' in html
+    for private_status in (
+        "正在验证数学路线",
+        "正在审阅参考解析",
+        "verification_mode",
+        "model_disagreement",
+        "check_requests",
+    ):
+        assert private_status not in source
+        assert private_status not in html
 
 
 def test_lesson_page_has_fullscreen_classroom_regions():
