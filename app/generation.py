@@ -193,6 +193,7 @@ class LessonGenerationService:
             problem,
             problem_report.solution_strings,
             reference_audit,
+            problem_report.equation_degree,
         )
         revision_count = 0
 
@@ -211,6 +212,7 @@ class LessonGenerationService:
                 draft,
                 review,
                 reference_audit,
+                problem_report.equation_degree,
             )
             revision_count += 1
 
@@ -243,6 +245,7 @@ class LessonGenerationService:
         solution_strings: Any,
         reference_audit: Optional[ReferenceMaterialAudit],
         previous_validation_error: Optional[str] = None,
+        original_equation_degree: Optional[int] = None,
     ) -> LessonDraft:
         payload = await self._complete_json(
             DIRECTOR_SYSTEM,
@@ -251,20 +254,23 @@ class LessonGenerationService:
                 list(solution_strings),
                 reference_audit,
                 previous_validation_error,
+                original_equation_degree,
             ),
         )
         try:
-            return LessonDraft.model_validate(payload)
+            draft = LessonDraft.model_validate(payload)
         except ValidationError as error:
             raise _DraftSchemaValidationError(
                 _draft_schema_validation_summary(error)
             ) from None
+        return self._canonicalize_transfer_labels(draft)
 
     async def _create_validated_draft(
         self,
         problem: ProblemInput,
         solution_strings: Any,
         reference_audit: Optional[ReferenceMaterialAudit],
+        original_equation_degree: Optional[int],
     ) -> LessonDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
@@ -274,6 +280,7 @@ class LessonGenerationService:
                     solution_strings,
                     reference_audit,
                     previous_validation_error,
+                    original_equation_degree,
                 )
             except _DraftSchemaValidationError as error:
                 if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
@@ -310,15 +317,51 @@ class LessonGenerationService:
         draft: LessonDraft,
         review: ReviewDecision,
         reference_audit: Optional[ReferenceMaterialAudit],
+        original_equation_degree: Optional[int],
     ) -> LessonDraft:
         payload = await self._complete_json(
             REVISION_SYSTEM,
-            revision_prompt(problem, draft, review, reference_audit),
+            revision_prompt(
+                problem,
+                draft,
+                review,
+                reference_audit,
+                original_equation_degree,
+            ),
         )
         try:
-            return LessonDraft.model_validate(payload)
+            revised_draft = LessonDraft.model_validate(payload)
         except ValidationError:
             raise LessonQualityError("模型修订的讲解结构无效。") from None
+        return self._canonicalize_transfer_labels(revised_draft)
+
+    def _canonicalize_transfer_labels(
+        self,
+        draft: LessonDraft,
+    ) -> LessonDraft:
+        try:
+            labels = [
+                self.math_engine.format_answer_label(
+                    option.canonical_answer
+                )
+                for option in draft.transfer_item.options
+            ]
+        except MathValidationError:
+            return draft
+
+        options = [
+            option.model_copy(update={"label": label})
+            for option, label in zip(
+                draft.transfer_item.options,
+                labels,
+            )
+        ]
+        transfer_item = draft.transfer_item.model_copy(
+            update={"options": options}
+        )
+        return draft.model_copy(
+            update={"transfer_item": transfer_item}
+        )
 
     async def _audit_reference(
         self,
@@ -447,10 +490,20 @@ class LessonGenerationService:
             raise LessonQualityError(
                 "近迁移选项未通过数学验证。"
             ) from None
-        if any(
-            option.label.strip()
-            != self.math_engine.format_answer_label(option.canonical_answer)
+        expected_labels = [
+            self.math_engine.format_answer_label(option.canonical_answer)
             for option in transfer_options
+        ]
+        if (
+            any(
+                option.label is None
+                or option.label.strip() != expected_label
+                for option, expected_label in zip(
+                    transfer_options,
+                    expected_labels,
+                )
+            )
+            or len(expected_labels) != len(set(expected_labels))
         ):
             raise LessonQualityError("近迁移选项显示格式无效。")
 

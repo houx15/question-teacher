@@ -66,6 +66,7 @@ class _ImmutableList(list):
 @dataclass(frozen=True)
 class ProblemValidation:
     solution_strings: List[str]
+    equation_degree: int
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -175,6 +176,11 @@ class MathEngine:
         reference_answer: str,
     ) -> ProblemValidation:
         equation_text = self._extract_problem_equation(problem_text)
+        equation_parts = self._parse_equation_parts(equation_text)
+        degree = Poly(
+            equation_parts.left - equation_parts.right,
+            self.x,
+        ).degree()
         actual_solutions = self.solution_set([equation_text])
         reference_solutions = self._answer_solution_set(reference_answer)
         if actual_solutions != reference_solutions:
@@ -184,7 +190,12 @@ class MathEngine:
             sstr(solution)
             for solution in sorted(actual_solutions, key=default_sort_key)
         ]
-        return ProblemValidation(solution_strings=solution_strings)
+        return ProblemValidation(
+            solution_strings=solution_strings,
+            equation_degree=(
+                0 if degree is S.NegativeInfinity else int(degree)
+            ),
+        )
 
     def validate_step(self, step: MathStep) -> None:
         before = getattr(step, "state_before", None)

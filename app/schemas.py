@@ -222,7 +222,7 @@ class LessonMoment(SchemaModel):
 
 class TransferOption(SchemaModel):
     option_id: NonEmptyString
-    label: NonEmptyString
+    label: Optional[NonEmptyString] = None
     canonical_answer: NonEmptyString
     feedback: NonEmptyString
 
@@ -249,10 +249,6 @@ class TransferItem(SchemaModel):
         option_ids = [option.option_id for option in self.options]
         if len(option_ids) != len(set(option_ids)):
             raise ValueError("transfer option ids must be unique")
-
-        labels = [option.label for option in self.options]
-        if len(labels) != len(set(labels)):
-            raise ValueError("transfer option labels must be unique")
 
         if self.correct_option_id not in option_ids:
             raise ValueError(

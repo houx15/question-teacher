@@ -137,9 +137,9 @@ DIRECTOR_SYSTEM = """
     不得生成 feedback_audio_url，它只由编译后的语音阶段添加；
 16. transfer_item 必须是同结构、不同表面的近迁移题；expected_answer 必须写成
     x=... 或多个 x=... 分支，或“无实数解”，且能由数学引擎独立验证。它必须有 3 至 4 个
-    TransferOption；每个 canonical_answer 只能是 MathEngine 可解析的纯答案。每个 TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签（即 MathEngine 确定性显示格式）：`x=2 或 x=6` 显示为
-    `\\(x=2\\) 或 \\(x=6\\)`，`x=4` 显示为 `\\(x=4\\)`，“无实数解”显示为
-    `\\(\\text{无实数解}\\)`；
+    TransferOption；每个 canonical_answer 只能是 MathEngine 可解析的纯答案。
+    TransferOption.label 应省略；即使模型提供，服务端也只把它视为可丢弃的显示派生字段，
+    并在数学验证后根据 canonical_answer 确定性覆盖；
 17. choice 的可见 label 不得重复；
 18. transfer_item 是独立的近迁移选择题，不得塞入 moments[].interaction；
 19. 若输入包含 previous_validation_error，说明上一版完整初稿没有通过硬质量门；
@@ -165,9 +165,8 @@ choice 不含 3 至 4 个不同选项；任一 choice 选项缺少针对所选�
 预填 feedback_audio_url；expected_answer 不严格等于正确 option_id，或使用 label/公式；
 过早泄露答案；choice 的可见 label 重复；transfer_item 没有作为独立近迁移题，或不含
 3 至 4 个可由 MathEngine 解析的
-纯 canonical_answer 选项；任一 TransferOption.label 不等于由 canonical_answer 推导的显示标签
-（即 MathEngine 确定性显示格式），包括 `x=2 或 x=6` 必须显示为 `\\(x=2\\) 或 \\(x=6\\)`、`x=4` 必须显示为
-`\\(x=4\\)`、“无实数解”必须显示为 `\\(\\text{无实数解}\\)` 的情形。
+纯 canonical_answer 选项；label 由服务端根据 canonical_answer 确定性派生，Reviewer
+只审查题面、答案、唯一正确项和诊断反馈，不要求模型手写或修正显示标签。
 只返回一个符合 ReviewDecision JSON Schema 的 JSON 对象：approved 表示整篇可用；
 revision_required 必须给出整篇层面的 must_fix 和对应原文 evidence。不要返回
 Markdown 或额外文字。
@@ -189,9 +188,8 @@ choice 必须有 3 至 4 个 option_id 唯一且可见 label 不同的选项；e
 且不得生成 feedback_audio_url，音频地址只由编译后的
 语音阶段添加。
 choice 的可见 label 不得重复。transfer_item 必须有 3 至 4 个 canonical_answer 为 MathEngine 可解析纯答案的
-TransferOption；每个 TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签（即 MathEngine 确定性显示格式）：
-`x=2 或 x=6` 显示为 `\\(x=2\\) 或 \\(x=6\\)`，`x=4` 显示为 `\\(x=4\\)`，“无实数解”显示为
-`\\(\\text{无实数解}\\)`。删除无信息增益的整式圈注；画面只有一个
+TransferOption；TransferOption.label 应省略，由服务端在数学验证后根据
+canonical_answer 确定性覆盖。删除无信息增益的整式圈注；画面只有一个
 公式或板书对象时，不得用 circle 或 box 包围整个对象，重点必须指向局部语义
 对象。若存在参考解析审阅结果，继续只使用其中批准的素材，不得在修订中重新引入
 warnings 指出的缺口或被阻断的原始表述。transfer_item 必须保持为独立近迁移选择题，
@@ -209,10 +207,9 @@ _TRANSFER_METHOD_PROFILES = {
             "nonnegative perfect square and the equation factors over the "
             "integers."
         ),
-        "valid_example": {
+        "syntax_example": {
             "problem_text": "用因式分解法解方程：x^2-7*x+12=0",
             "expected_answer": "x=3 或 x=4",
-            "correct_label": r"\(x=3\) 或 \(x=4\)",
         },
     },
     "quadratic_formula": {
@@ -222,12 +219,9 @@ _TRANSFER_METHOD_PROFILES = {
             "Choose small integer a, b, and c with a nonzero; keep the exact "
             "real roots expressible with integers, fractions, or sqrt(...)."
         ),
-        "valid_example": {
+        "syntax_example": {
             "problem_text": "用公式法解方程：x^2-4*x-1=0",
             "expected_answer": "x=2-sqrt(5) 或 x=2+sqrt(5)",
-            "correct_label": (
-                r"\(x=2 - \sqrt{5}\) 或 \(x=2 + \sqrt{5}\)"
-            ),
         },
     },
     "complete_the_square": {
@@ -238,10 +232,9 @@ _TRANSFER_METHOD_PROFILES = {
             "so the discriminant is a positive perfect square and completing "
             "the square produces two distinct integer roots."
         ),
-        "valid_example": {
+        "syntax_example": {
             "problem_text": "用配方法解方程：x^2-8*x+12=0",
             "expected_answer": "x=2 或 x=6",
-            "correct_label": r"\(x=2\) 或 \(x=6\)",
         },
     },
 }
@@ -249,16 +242,30 @@ _TRANSFER_METHOD_PROFILES = {
 
 def _transfer_item_contract(
     required_method: Optional[str],
+    original_equation_degree: Optional[int],
 ) -> dict:
-    method_profile = _TRANSFER_METHOD_PROFILES.get(
-        required_method,
-        _TRANSFER_METHOD_PROFILES["quadratic_formula"],
-    )
+    if required_method is None:
+        equation_template = {
+            1: "a*x+b=0",
+            2: "a*x^2+b*x+c=0",
+        }.get(original_equation_degree, "match the original equation degree")
+        method_profile = {
+            "required_method": None,
+            "original_equation_degree": original_equation_degree,
+            "equation_template": equation_template,
+            "coefficient_constraints": (
+                "Keep the original equation degree and algebraic structure; "
+                "change small real coefficients, constants, and the solution "
+                "set. Do not introduce a named method that was not requested."
+            ),
+        }
+    else:
+        method_profile = _TRANSFER_METHOD_PROFILES[required_method]
     return {
         "relationship": {
             "same_structure": (
-                "Use the original required_method and the same core algebraic "
-                "structure."
+                "Preserve the original equation degree and core algebraic "
+                "structure. If required_method is set, use that method."
             ),
             "different_surface": (
                 "Change coefficients, constants, and the solution set; never "
@@ -277,7 +284,7 @@ def _transfer_item_contract(
                 "allowed_ascii_characters": (
                     "0-9 A-Z a-z + - * / ^ ( ) . = spaces"
                 ),
-                "degree": "1 or 2; use degree 2 for this quadratic lesson",
+                "degree": original_equation_degree,
             },
             "forbidden": [
                 "LaTeX commands",
@@ -289,12 +296,24 @@ def _transfer_item_contract(
             ],
         },
         "expected_answer": {
-            "accepted_forms": [
+            "syntax_patterns": [
+                "x=<real constant expression>",
+                (
+                    "x=<real constant expression> 或 "
+                    "x=<real constant expression>"
+                ),
+                "无实数解",
+            ],
+            "syntax_examples": [
                 "x=2",
                 "x=2 或 x=6",
                 "x=-sqrt(2) 或 x=sqrt(2)",
                 "无实数解",
             ],
+            "example_policy": (
+                "Examples demonstrate syntax only; they are not allowed values. "
+                "Solve the new equation and do not reuse these concrete roots."
+            ),
             "rules": [
                 "Solve the exact problem_text equation independently first.",
                 "Write each real root as x=constant.",
@@ -304,22 +323,19 @@ def _transfer_item_contract(
             ],
         },
         "method_profile": method_profile,
-        "example_policy": (
-            "The example demonstrates syntax only. Create new coefficients and "
-            "a new solution set, and do not reuse it when it matches the "
-            "original problem."
-        ),
         "options": {
             "count": "3 or 4",
             "canonical_answer": (
-                "Every option must use one of the accepted answer forms."
+                "Follow expected_answer.syntax_patterns. The syntax_examples "
+                "are illustrations, not an allowed-value list."
             ),
             "equivalent_to_expected_answer": (
                 "exactly one option; its option_id must equal correct_option_id"
             ),
             "label": (
-                "Use the exact deterministic MathEngine display label derived "
-                "from canonical_answer."
+                "Omit label. The server derives and overwrites it "
+                "deterministically from canonical_answer after mathematical "
+                "validation."
             ),
         },
         "verification_order": [
@@ -327,9 +343,41 @@ def _transfer_item_contract(
             "Solve that exact equation.",
             "Write expected_answer from the complete real solution set.",
             "Derive the correct option from expected_answer.",
-            "Create parseable distractors and deterministic labels.",
+            "Create parseable distractors; omit derived labels.",
         ],
     }
+
+
+def _schema_validation_issues(
+    previous_validation_error: Optional[str],
+) -> List[dict]:
+    if (
+        not isinstance(previous_validation_error, str)
+        or len(previous_validation_error) > 8192
+    ):
+        return []
+    try:
+        validation_summary = json.loads(previous_validation_error)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not (
+        isinstance(validation_summary, dict)
+        and validation_summary.get("category")
+        == "lesson_draft_schema_validation"
+    ):
+        return []
+    raw_issues = validation_summary.get("issues")
+    if not isinstance(raw_issues, list) or len(raw_issues) > 12:
+        return []
+    return [
+        issue
+        for issue in raw_issues
+        if isinstance(issue, dict)
+        and isinstance(issue.get("path"), str)
+        and len(issue["path"]) <= 256
+        and isinstance(issue.get("type"), str)
+        and len(issue["type"]) <= 40
+    ]
 
 
 def _director_retry_contract(
@@ -361,20 +409,39 @@ def _director_retry_contract(
                 "Do not guess, silently rewrite, or copy an unchecked answer.",
             ],
         }
-    try:
-        validation_summary = json.loads(previous_validation_error)
-    except (json.JSONDecodeError, TypeError):
-        validation_summary = None
-    if (
-        isinstance(validation_summary, dict)
-        and validation_summary.get("category")
-        == "lesson_draft_schema_validation"
-        and any(
-            isinstance(issue, dict)
-            and issue.get("path") == "moments.[].interaction"
-            and issue.get("type") == "value_error"
-            for issue in validation_summary.get("issues", [])
-        )
+    schema_issues = _schema_validation_issues(previous_validation_error)
+    if any(
+        issue["path"].startswith("transfer_item")
+        for issue in schema_issues
+    ):
+        return {
+            "failed_gate": "transfer_item_schema_validation",
+            "required_action": [
+                "Rebuild transfer_item with 3 or 4 complete options.",
+                (
+                    "Give every option option_id, canonical_answer, and "
+                    "diagnostic feedback."
+                ),
+                "Omit label because the server derives it deterministically.",
+                (
+                    "Set correct_option_id to the single option equivalent to "
+                    "expected_answer."
+                ),
+                (
+                    "Return a complete new LessonDraft without weakening "
+                    "other fields."
+                ),
+            ],
+            "forbidden": [
+                "Do not reuse the malformed transfer_item.",
+                "Do not guess or silently rewrite a mathematical answer.",
+                "Do not bypass schema or MathEngine validation.",
+            ],
+        }
+    if any(
+        issue["path"] == "moments.[].interaction"
+        and issue["type"] == "value_error"
+        for issue in schema_issues
     ):
         return {
             "failed_gate": "moment_choice_schema_validation",
@@ -440,6 +507,7 @@ def director_prompt(
     solution_strings: List[str],
     reference_audit: Optional[ReferenceMaterialAudit] = None,
     previous_validation_error: Optional[str] = None,
+    original_equation_degree: Optional[int] = None,
 ) -> str:
     return json.dumps(
         {
@@ -475,7 +543,8 @@ def director_prompt(
                 },
                 "moment_choice": _moment_choice_contract(),
                 "transfer_item": _transfer_item_contract(
-                    problem.required_method
+                    problem.required_method,
+                    original_equation_degree,
                 ),
                 "retry": _director_retry_contract(
                     previous_validation_error
@@ -515,6 +584,7 @@ def revision_prompt(
     draft: LessonDraft,
     review: ReviewDecision,
     reference_audit: Optional[ReferenceMaterialAudit] = None,
+    original_equation_degree: Optional[int] = None,
 ) -> str:
     return json.dumps(
         {
@@ -533,7 +603,8 @@ def revision_prompt(
                 "schema": LessonDraft.model_json_schema(),
                 "moment_choice": _moment_choice_contract(),
                 "transfer_item": _transfer_item_contract(
-                    problem.required_method
+                    problem.required_method,
+                    original_equation_degree,
                 ),
             },
         },

@@ -54,6 +54,13 @@ def test_validate_problem_returns_sorted_quadratic_solutions(engine):
     )
 
     assert validation.solution_strings == ["1", "5"]
+    assert validation.equation_degree == 2
+
+
+def test_validate_problem_reports_linear_degree_for_generation_contract(engine):
+    validation = engine.validate_problem("2*x+3=7", "x=2")
+
+    assert validation.equation_degree == 1
 
 
 def test_problem_validation_is_immutable(engine):

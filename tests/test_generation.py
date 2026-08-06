@@ -437,6 +437,8 @@ def test_approved_draft_is_compiled_without_rewrite():
 def test_revision_required_returns_whole_lesson_to_director():
     revised = valid_draft()
     revised["opening"] = "先把乘积与和的条件连起来，再选择因数对。"
+    for option in revised["transfer_item"]["options"]:
+        option.pop("label")
     client = FakeClient(
         [valid_draft(), revision_review(), revised, approved_review()]
     )
@@ -453,6 +455,13 @@ def test_revision_required_returns_whole_lesson_to_director():
         json.loads(client.calls[0][1])["output_contract"]["moment_choice"]
     )
     assert lesson.validation_report["revision_count"] == 1
+    assert [
+        option.label for option in lesson.transfer_item.options
+    ] == [
+        r"\(x=3\) 或 \(x=4\)",
+        r"\(x=3\)",
+        r"\(x=4\)",
+    ]
 
 
 def test_two_revisions_are_the_maximum():
@@ -744,51 +753,108 @@ def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
     )
 
 
-def test_director_prompt_gives_executable_transfer_contract_for_completing_square():
+def test_director_prompt_separates_answer_syntax_from_non_reusable_examples():
     payload = json.loads(
         director_prompt(
             problem("complete_the_square"),
             ["2", "3"],
+            original_equation_degree=2,
         )
     )
 
     contract = payload["output_contract"]["transfer_item"]
-    assert contract["relationship"] == {
-        "same_structure": (
-            "Use the original required_method and the same core algebraic "
-            "structure."
-        ),
-        "different_surface": (
-            "Change coefficients, constants, and the solution set; never copy "
-            "the original equation."
-        ),
-    }
-    assert contract["problem_text"]["equation_segment"] == {
-        "count": 1,
-        "variable": "x",
-        "allowed_identifiers": ["x", "sqrt"],
-        "allowed_ascii_characters": "0-9 A-Z a-z + - * / ^ ( ) . = spaces",
-        "degree": "1 or 2; use degree 2 for this quadratic lesson",
-    }
-    assert contract["expected_answer"]["accepted_forms"] == [
-        "x=2",
-        "x=2 或 x=6",
-        "x=-sqrt(2) 或 x=sqrt(2)",
-        "无实数解",
-    ]
+    answer_contract = contract["expected_answer"]
+    assert "accepted_forms" not in answer_contract
+    assert answer_contract["syntax_patterns"]
+    assert answer_contract["syntax_examples"]
+    assert "not allowed values" in answer_contract["example_policy"]
+    assert contract["options"]["canonical_answer"] == (
+        "Follow expected_answer.syntax_patterns. The syntax_examples are "
+        "illustrations, not an allowed-value list."
+    )
+    assert contract["options"]["label"] == (
+        "Omit label. The server derives and overwrites it deterministically "
+        "from canonical_answer after mathematical validation."
+    )
     method_profile = contract["method_profile"]
     assert method_profile["required_method"] == "complete_the_square"
     assert method_profile["equation_template"] == "x^2+b*x+c=0"
     assert "perfect square" in method_profile["coefficient_constraints"]
-    assert method_profile["valid_example"] == {
-        "problem_text": "用配方法解方程：x^2-8*x+12=0",
-        "expected_answer": "x=2 或 x=6",
-        "correct_label": r"\(x=2\) 或 \(x=6\)",
-    }
-    assert contract["options"]["count"] == "3 or 4"
-    assert contract["options"]["equivalent_to_expected_answer"] == (
-        "exactly one option; its option_id must equal correct_option_id"
+
+
+@pytest.mark.parametrize(
+    "required_method",
+    ["factor", "quadratic_formula", "complete_the_square"],
+)
+def test_transfer_method_profile_examples_are_math_engine_verifiable(
+    required_method,
+):
+    payload = json.loads(
+        director_prompt(
+            problem(required_method),
+            ["2", "3"],
+            original_equation_degree=2,
+        )
     )
+    example = payload["output_contract"]["transfer_item"][
+        "method_profile"
+    ]["syntax_example"]
+
+    report = MathEngine().validate_problem(
+        example["problem_text"],
+        example["expected_answer"],
+    )
+
+    assert report.equation_degree == 2
+
+
+@pytest.mark.parametrize(
+    ("problem_text", "reference_answer", "degree", "template"),
+    [
+        ("解方程：2*x+3=7", "x=2", 1, "a*x+b=0"),
+        ("解方程：x^2-5*x+6=0", "x=2 或 x=3", 2, "a*x^2+b*x+c=0"),
+    ],
+)
+def test_unspecified_method_transfer_contract_preserves_original_degree(
+    problem_text,
+    reference_answer,
+    degree,
+    template,
+):
+    source = ProblemInput(
+        problem_text=problem_text,
+        reference_answer=reference_answer,
+    )
+    payload = json.loads(
+        director_prompt(
+            source,
+            ["2"],
+            original_equation_degree=degree,
+        )
+    )
+    profile = payload["output_contract"]["transfer_item"][
+        "method_profile"
+    ]
+
+    assert profile["required_method"] is None
+    assert profile["original_equation_degree"] == degree
+    assert profile["equation_template"] == template
+    assert "quadratic_formula" not in json.dumps(profile)
+
+
+def test_generation_passes_validated_original_degree_to_director_contract():
+    source = problem(None)
+    client = FakeClient([valid_draft(), approved_review()])
+    service = LessonGenerationService(client, MathEngine())
+
+    asyncio.run(service.generate(source))
+
+    payload = json.loads(client.calls[0][1])
+    profile = payload["output_contract"]["transfer_item"][
+        "method_profile"
+    ]
+    assert profile["required_method"] is None
+    assert profile["original_equation_degree"] == 2
 
 
 def test_director_prompt_gives_exact_generated_choice_contract():
@@ -1129,31 +1195,25 @@ def test_transfer_item_requires_the_equivalent_option_to_be_correct():
     assert str(exc_info.value) == "近迁移选项未通过数学验证。"
 
 
-@pytest.mark.parametrize(
-    ("option_index", "label"),
-    [
-        (0, r"\(x=30\)"),
-        (1, r"\(x=30\)"),
-    ],
-)
-def test_transfer_item_rejects_mismatched_canonical_answer_label(
-    option_index,
-    label,
-):
+def test_transfer_option_labels_are_derived_from_canonical_answers():
     draft = valid_draft()
-    canonical_answer = draft["transfer_item"]["options"][option_index][
-        "canonical_answer"
-    ]
-    draft["transfer_item"]["options"][option_index]["label"] = label
-    client = FakeClient([draft, copy.deepcopy(draft)])
+    draft["transfer_item"] = transfer_item_with_display_label(
+        "解方程：x^2-2=0",
+        "x=-sqrt(2) or x=sqrt(2)",
+        "model placeholder",
+    )
+    draft["transfer_item"]["options"][1]["label"] = "model placeholder"
+    draft["transfer_item"]["options"][2]["label"] = "model placeholder"
+    client = FakeClient([draft, approved_review()])
     service = LessonGenerationService(client, MathEngine())
 
-    with pytest.raises(LessonQualityError) as exc_info:
-        asyncio.run(service.generate(problem()))
+    lesson = asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "近迁移选项显示格式无效。"
-    assert label not in str(exc_info.value)
-    assert canonical_answer not in str(exc_info.value)
+    assert [option.label for option in lesson.transfer_item.options] == [
+        r"\(x=- \sqrt{2}\) 或 \(x=\sqrt{2}\)",
+        r"\(x=2\)",
+        r"\(x=-2\)",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1190,42 +1250,12 @@ def test_transfer_item_accepts_math_engine_display_labels(
     assert lesson.validation_report["review_status"] == "approved"
 
 
-@pytest.mark.parametrize(
-    ("transfer_problem", "expected_answer", "correct_label", "option_index"),
-    [
-        (
-            "解方程：x^2-2=0",
-            "x=-sqrt(2) or x=sqrt(2)",
-            r"\(x=- \sqrt{2}\) 或 \(x=\sqrt{2}\)",
-            0,
-        ),
-        (
-            "解方程：x^2-7x+12=0",
-            "x=3或x=4",
-            r"\(x=3\) 或 \(x=4\)",
-            1,
-        ),
-    ],
-)
-def test_transfer_item_rejects_mismatched_math_engine_display_label(
-    transfer_problem,
-    expected_answer,
-    correct_label,
-    option_index,
-):
+def test_transfer_item_rejects_duplicate_derived_distractor_labels():
     draft = valid_draft()
-    draft["transfer_item"] = transfer_item_with_display_label(
-        transfer_problem,
-        expected_answer,
-        correct_label,
+    draft["transfer_item"]["options"][2]["canonical_answer"] = (
+        draft["transfer_item"]["options"][1]["canonical_answer"]
     )
-    canonical_answer = draft["transfer_item"]["options"][option_index][
-        "canonical_answer"
-    ]
-    mismatched_label = r"\(x=30\)"
-    draft["transfer_item"]["options"][option_index]["label"] = (
-        mismatched_label
-    )
+    draft["transfer_item"]["options"][2]["label"] = "different model label"
     client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
@@ -1233,8 +1263,6 @@ def test_transfer_item_rejects_mismatched_math_engine_display_label(
         asyncio.run(service.generate(problem()))
 
     assert str(exc_info.value) == "近迁移选项显示格式无效。"
-    assert mismatched_label not in str(exc_info.value)
-    assert canonical_answer not in str(exc_info.value)
 
 
 def test_choice_rejects_duplicate_visible_option_labels():
@@ -1359,6 +1387,32 @@ def test_choice_schema_error_gets_targeted_structure_retry_contract():
             "Do not guess, silently rewrite, or bypass schema validation.",
         ],
     }
+
+
+def test_transfer_schema_error_gets_targeted_retry_contract():
+    invalid_transfer = valid_draft()
+    invalid_transfer["transfer_item"]["options"][0].pop(
+        "canonical_answer"
+    )
+    client = FakeClient(
+        [invalid_transfer, valid_draft(), approved_review()]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+    retry_payload = json.loads(client.calls[1][1])
+    summary = json.loads(retry_payload["previous_validation_error"])
+    assert any(
+        issue["path"].startswith("transfer_item.options.[]")
+        for issue in summary["issues"]
+    )
+    retry = retry_payload["output_contract"]["retry"]
+    assert retry["failed_gate"] == "transfer_item_schema_validation"
+    actions = " ".join(retry["required_action"])
+    assert "canonical_answer" in actions
+    assert "Omit label" in actions
 
 
 def test_two_invalid_director_schemas_stop_after_one_safe_retry():
@@ -1524,15 +1578,9 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "每个选项都要给出针对所选推理的具体 feedback" in DIRECTOR_SYSTEM
     assert "任一 choice 选项缺少针对所选推理的具体诊断 feedback" in REVIEWER_SYSTEM
     assert "重新生成每个 choice 选项，并为每个选项提供针对所选推理的具体诊断 feedback" in REVISION_SYSTEM
-    assert "TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签" in DIRECTOR_SYSTEM
-    assert "任一 TransferOption.label 不等于由 canonical_answer 推导的显示标签" in REVIEWER_SYSTEM
-    assert "每个 TransferOption.label 必须严格等于由 canonical_answer 推导的显示标签" in REVISION_SYSTEM
-    assert r"\(x=2\) 或 \(x=6\)" in DIRECTOR_SYSTEM
-    assert r"\(x=2\) 或 \(x=6\)" in REVIEWER_SYSTEM
-    assert r"\(x=2\) 或 \(x=6\)" in REVISION_SYSTEM
+    assert "TransferOption.label 应省略" in DIRECTOR_SYSTEM
+    assert "label 由服务端根据 canonical_answer" in REVIEWER_SYSTEM
+    assert "TransferOption.label 应省略" in REVISION_SYSTEM
     assert "choice 的可见 label 不得重复" in DIRECTOR_SYSTEM
     assert "choice 的可见 label 重复" in REVIEWER_SYSTEM
     assert "choice 的可见 label 不得重复" in REVISION_SYSTEM
-    assert "MathEngine 确定性显示格式" in DIRECTOR_SYSTEM
-    assert "MathEngine 确定性显示格式" in REVIEWER_SYSTEM
-    assert "MathEngine 确定性显示格式" in REVISION_SYSTEM

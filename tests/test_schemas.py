@@ -122,6 +122,32 @@ def test_transfer_item_accepts_three_diagnostic_options():
     assert len(item.options) == 3
 
 
+def test_transfer_option_allows_server_derived_label_to_be_omitted():
+    option = TransferOption(
+        option_id="both-roots",
+        canonical_answer="x=3 或 x=4",
+        feedback="两个根都能使原方程成立。",
+    )
+
+    assert option.label is None
+
+
+def test_transfer_item_does_not_treat_untrusted_derived_labels_as_identity():
+    options = valid_transfer_options()
+    for option in options:
+        option.label = "model placeholder"
+
+    item = TransferItem(
+        problem_text="用因式分解法解方程：x^2-7x+12=0",
+        expected_answer="x=3 或 x=4",
+        method_signal="寻找乘积为 12、和为 -7 的两个数。",
+        options=options,
+        correct_option_id="both-roots",
+    )
+
+    assert len(item.options) == 3
+
+
 def test_transfer_item_keeps_legacy_empty_options_compatible():
     item = TransferItem(
         problem_text="解方程 x + 2 = 0",
@@ -150,20 +176,11 @@ def test_transfer_item_rejects_invalid_diagnostic_option_contract():
         canonical_answer="x = 3",
         feedback="还遗漏了另一个根。",
     )
-    duplicate_labels = valid_transfer_options()
-    duplicate_labels[1] = TransferOption(
-        option_id="only-three",
-        label="x = 3 或 x = 4",
-        canonical_answer="x = 3",
-        feedback="还遗漏了另一个根。",
-    )
-
     for options, correct_option_id in [
         (duplicate_ids, "both-roots"),
         (valid_transfer_options()[:2], "both-roots"),
         (valid_transfer_options(), None),
         (valid_transfer_options(), "unknown"),
-        (duplicate_labels, "both-roots"),
     ]:
         with pytest.raises(ValidationError):
             invalid_item(options, correct_option_id)
