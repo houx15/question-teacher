@@ -22,9 +22,13 @@ DIRECTOR_SYSTEM = """
    reveal、fade、pause、clear；使用语义 target，不输出坐标、字号或动画参数；
 8. write/transform 同时给 target 与 content；focus/mask/reveal/fade 给 target；
    annotate 给 target 与 annotation；compare 给 target 与 relation_target；
-9. 当讲到某个数学对象时，在同一 moment 中执行对应的书写、变换、聚焦或圈注；
-10. 若题目指定 required_method，math_steps 必须真正使用对应 operation；
-11. transfer_item 必须是同结构、不同表面的近迁移题，答案可由数学引擎验证。
+9. 重点动作必须指向对理解有帮助的局部语义对象。画面只有一个公式或板书对象时，
+   禁止用 circle 或 box 包围整个对象；需要强调内部的系数、符号、运算或条件时，
+   先将该局部写成独立 target，再使用 focus、underline、arrow 或短 label；
+   circle/box 只用于多个对象间的区分、回指或比较；
+10. 禁止为了制造动画而添加没有信息增益的标注；
+11. 若题目指定 required_method，math_steps 必须真正使用对应 operation；
+12. transfer_item 必须是同结构、不同表面的近迁移题，答案可由数学引擎验证。
 """.strip()
 
 
@@ -32,7 +36,8 @@ REVIEWER_SYSTEM = """
 你是独立教研 Reviewer。请阅读原题、指定方法和完整 LessonDraft，以整节课为单位
 判断学生能否跟上同一教学主线、看见重点、理解关键理由，并通过互动与近迁移产生
 真实思考。检查每个 moment 是否只有一个主要认知目标、互动前是否泄露答案、板书
-是否与讲述同步、临时图层是否帮助理解并回到主线。不要逐段代写或修改讲稿。
+是否与讲述同步、临时图层是否帮助理解并回到主线。把无信息增益的整式圈注、为
+制造动画而添加的标记列为 must_fix。不要逐段代写或修改讲稿。
 只返回一个符合 ReviewDecision JSON Schema 的 JSON 对象：approved 表示整篇可用；
 revision_required 必须给出整篇层面的 must_fix 和对应原文 evidence。不要返回
 Markdown 或额外文字。
@@ -44,8 +49,9 @@ REVISION_SYSTEM = """
 并整体改写课程，保持统一教学叙事；不要把意见机械追加成孤立段落。继续遵守原有
 LessonDraft JSON Schema、数学步骤 operands 规则、每个 moment 一个认知目标、
 narration 最多 90 个字符、严格 BoardAction 词汇、互动前不泄露答案、指定方法
-必须真实出现以及近迁移可验证等约束。只返回完整 LessonDraft JSON 对象，不返回
-Markdown 或额外文字。
+必须真实出现以及近迁移可验证等约束。删除无信息增益的整式圈注；画面只有一个
+公式或板书对象时，不得用 circle 或 box 包围整个对象，重点必须指向局部语义
+对象。只返回完整 LessonDraft JSON 对象，不返回 Markdown 或额外文字。
 """.strip()
 
 

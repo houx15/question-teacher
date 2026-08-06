@@ -489,5 +489,10 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "不得" in DIRECTOR_SYSTEM and "泄露" in DIRECTOR_SYSTEM
     assert "exactly one operand" in DIRECTOR_SYSTEM
     assert "write" in DIRECTOR_SYSTEM and "transform" in DIRECTOR_SYSTEM
+    assert "只有一个" in DIRECTOR_SYSTEM
+    assert "circle" in DIRECTOR_SYSTEM
+    assert "局部语义对象" in DIRECTOR_SYSTEM
     assert "整节课" in REVIEWER_SYSTEM
+    assert "无信息增益" in REVIEWER_SYSTEM
+    assert "整式圈注" in REVIEWER_SYSTEM
     assert "完整 LessonDraft JSON" in REVISION_SYSTEM
