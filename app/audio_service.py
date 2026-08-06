@@ -205,7 +205,7 @@ class LessonAudioService:
                     )
                 )
             return lesson.model_copy(update={"beats": voiced_beats})
-        except Exception:
+        except BaseException:
             if lesson_dir.exists():
                 shutil.rmtree(lesson_dir)
             raise

@@ -612,6 +612,31 @@ def test_audio_service_cancels_settles_and_cleans_up_failed_option_audio(
     assert not list(tmp_path.rglob("*.mp3"))
 
 
+def test_audio_service_cancellation_settles_option_tasks_and_cleans_up(
+    tmp_path,
+):
+    lesson = choice_runtime_lesson()
+    feedbacks = [option.feedback for option in lesson.beats[1].interaction.options]
+
+    async def scenario():
+        client = ControlledOptionFeedbackClient(feedbacks)
+        task = asyncio.create_task(
+            LessonAudioService(client, tmp_path).attach_audio(lesson)
+        )
+        await client.wait_for_started_feedbacks(2)
+        assert (tmp_path / "lesson-001" / "beat-001.mp3").exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return client
+
+    client = run(scenario())
+
+    assert client.active_feedback_calls == 0
+    assert not (tmp_path / "lesson-001").exists()
+    assert not list(tmp_path.rglob("*.mp3"))
+
+
 def test_audio_service_skips_legacy_choice_options_without_feedback(tmp_path):
     lesson = choice_runtime_lesson(with_feedback=False)
     client = FakeSpeechClient()
