@@ -197,6 +197,14 @@ class MathEngine:
             ),
         )
 
+    def try_validate_supported_problem(
+        self,
+        problem_text: str,
+        reference_answer: str,
+    ) -> ProblemValidation:
+        """Run the unchanged strict validator for a supported problem."""
+        return self.validate_problem(problem_text, reference_answer)
+
     def extract_problem_equation(self, problem_text: str) -> str:
         """Return the single validated equation segment from a problem."""
         equation_text = self._extract_problem_equation(problem_text)

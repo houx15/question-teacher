@@ -57,6 +57,21 @@ def test_validate_problem_returns_sorted_quadratic_solutions(engine):
     assert validation.equation_degree == 2
 
 
+def test_supported_problem_probe_is_strict_alias(engine):
+    validation = engine.try_validate_supported_problem(
+        "用配方法解方程：x^2-6x+5=0",
+        "x=1 或 x=5",
+    )
+
+    assert validation.solution_strings == ["1", "5"]
+    assert validation.equation_degree == 2
+
+
+def test_supported_problem_probe_keeps_wrong_answer_rejection(engine):
+    with pytest.raises(MathValidationError, match="参考答案"):
+        engine.try_validate_supported_problem("x+1=2", "x=3")
+
+
 def test_validate_problem_reports_linear_degree_for_generation_contract(engine):
     validation = engine.validate_problem("2*x+3=7", "x=2")
 
