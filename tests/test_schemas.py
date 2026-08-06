@@ -10,6 +10,7 @@ from app.schemas import (
     LessonMoment,
     MathStep,
     ProblemInput,
+    ReferenceMaterialAudit,
     ReviewDecision,
     RuntimeBeat,
     RuntimeLesson,
@@ -63,6 +64,59 @@ def test_problem_input_rejects_oversized_reference_solution():
             problem_text="解方程 x=1",
             reference_answer="x=1",
             reference_solution_text="甲" * 12001,
+        )
+
+
+def test_reference_material_audit_accepts_approved_review():
+    audit = ReferenceMaterialAudit(
+        status="approved",
+        claimed_answer="x=1 或 x=5",
+        method_summary="配方法",
+        key_steps=[
+            {
+                "purpose": "配方",
+                "operation": "complete_the_square",
+                "operands": ["9"],
+                "state_before": ["x^2-6x=-5"],
+                "state_after": ["(x-3)^2=4"],
+                "reason": "两边同时加 9 并构造完全平方。",
+            }
+        ],
+        teaching_assets=["先让学生观察一次项系数的一半。"],
+        warnings=[],
+        blocking_issues=[],
+        evidence=["所以 x=1 或 x=5。"],
+    )
+
+    assert audit.status == "approved"
+    assert audit.key_steps[0].operation == "complete_the_square"
+
+
+def test_rejected_reference_material_audit_requires_issue_and_evidence():
+    with pytest.raises(ValidationError):
+        ReferenceMaterialAudit(
+            status="rejected",
+            claimed_answer="x=1",
+            method_summary=None,
+            key_steps=[],
+            teaching_assets=[],
+            warnings=[],
+            blocking_issues=[],
+            evidence=[],
+        )
+
+
+def test_approved_reference_material_audit_rejects_blocking_issues():
+    with pytest.raises(ValidationError):
+        ReferenceMaterialAudit(
+            status="approved",
+            claimed_answer=None,
+            method_summary=None,
+            key_steps=[],
+            teaching_assets=[],
+            warnings=[],
+            blocking_issues=["步骤改变了解集。"],
+            evidence=["由 x=1 得 x=2。"],
         )
 
 

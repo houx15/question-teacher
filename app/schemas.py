@@ -89,6 +89,28 @@ class MathStep(SchemaModel):
         return self
 
 
+class ReferenceMaterialAudit(SchemaModel):
+    status: Literal["approved", "rejected"]
+    claimed_answer: Optional[NonEmptyString] = None
+    method_summary: Optional[NonEmptyString] = None
+    key_steps: List[MathStep] = Field(default_factory=list)
+    teaching_assets: List[NonEmptyString] = Field(default_factory=list)
+    warnings: List[NonEmptyString] = Field(default_factory=list)
+    blocking_issues: List[NonEmptyString] = Field(default_factory=list)
+    evidence: List[NonEmptyString] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "ReferenceMaterialAudit":
+        if self.status == "approved" and self.blocking_issues:
+            raise ValueError("approved audit cannot contain blocking issues")
+        if self.status == "rejected":
+            if not self.blocking_issues or not self.evidence:
+                raise ValueError(
+                    "rejected audit requires blocking issues and evidence"
+                )
+        return self
+
+
 class BoardAction(SchemaModel):
     type: Literal[
         "write",
