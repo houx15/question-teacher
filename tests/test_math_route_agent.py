@@ -49,6 +49,19 @@ class AgentClient:
         return copy.deepcopy(response)
 
 
+class UnsupportedDeterministicPlanner:
+    def plan(self, problem, equation_degree, solution_strings):
+        return None
+
+
+def agent_service(client, math_engine=None):
+    return LessonGenerationService(
+        client,
+        math_engine or MathEngine(),
+        deterministic_route_planner=UnsupportedDeterministicPlanner(),
+    )
+
+
 def test_math_route_schema_contains_only_bounded_math_steps():
     schema = MathRouteDraft.model_json_schema()
 
@@ -113,7 +126,7 @@ def test_successful_agent_pipeline_has_explicit_call_order():
     )
 
     lesson = asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(problem())
+        agent_service(client).generate(problem())
     )
 
     assert [system for system, _ in client.calls] == [
@@ -138,7 +151,7 @@ def test_reference_audit_precedes_route_and_raw_text_stays_in_auditor():
     )
 
     asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(
+        agent_service(client).generate(
             problem(reference_solution_text=raw_marker)
         )
     )
@@ -168,7 +181,7 @@ def test_route_retries_one_logical_validation_failure_with_typed_code():
     )
 
     asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(problem())
+        agent_service(client).generate(problem())
     )
 
     assert [system for system, _ in client.calls[:2]] == [
@@ -186,7 +199,7 @@ def test_route_schema_failure_uses_typed_retry_and_stops_after_two_attempts():
 
     with pytest.raises(LessonQualityError, match="数学路线结构无效"):
         asyncio.run(
-            LessonGenerationService(client, MathEngine()).generate(problem())
+            agent_service(client).generate(problem())
         )
 
     assert len(client.calls) == 2
@@ -203,7 +216,7 @@ def test_route_provider_errors_are_retried_and_final_identity_is_preserved():
 
     with pytest.raises(ModelResponseError) as caught:
         asyncio.run(
-            LessonGenerationService(client, MathEngine()).generate(problem())
+            agent_service(client).generate(problem())
         )
 
     assert caught.value is final
@@ -217,7 +230,7 @@ def test_route_cancellation_is_not_retried_or_reclassified():
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
-            LessonGenerationService(client, MathEngine()).generate(problem())
+            agent_service(client).generate(problem())
         )
 
     assert len(client.calls) == 1
@@ -239,7 +252,7 @@ def test_revision_never_regenerates_or_accepts_math_route():
     )
 
     asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(problem())
+        agent_service(client).generate(problem())
     )
 
     assert [system for system, _ in client.calls] == [
@@ -268,7 +281,7 @@ def test_route_is_deep_copied_and_injected_after_agents_finish():
             approved_review(),
         ]
     )
-    service = LessonGenerationService(client, MathEngine())
+    service = agent_service(client)
 
     lesson = asyncio.run(service.generate(problem()))
     reviewer = json.loads(client.calls[-1][1])
@@ -297,7 +310,7 @@ def test_unrequested_quadratic_route_derives_exactly_one_method_family():
 
     with pytest.raises(LessonQualityError, match="数学路线未通过验证"):
         asyncio.run(
-            LessonGenerationService(client, MathEngine()).generate(source)
+            agent_service(client).generate(source)
         )
 
     retry = json.loads(client.calls[1][1])
@@ -331,14 +344,14 @@ def test_linear_route_allows_basic_equation_operations_without_named_family():
     client = AgentClient(
         [
             route,
-            narrative_without_route(method="基本等式法"),
+            narrative_without_route(method="等式基本变形"),
             linear_materials(),
             approved_review(),
         ]
     )
 
     lesson = asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(source)
+        agent_service(client).generate(source)
     )
 
     assert lesson.validation_report["math_route_method_family"] == (
@@ -364,7 +377,7 @@ def test_linear_route_rejects_nonbasic_operation_before_step_validation():
 
     with pytest.raises(LessonQualityError, match="数学路线未通过验证"):
         asyncio.run(
-            LessonGenerationService(client, MathEngine()).generate(source)
+            agent_service(client).generate(source)
         )
 
     retry = json.loads(client.calls[1][1])
@@ -393,7 +406,7 @@ def test_complete_square_route_fixture_passes_required_method_gate():
     )
 
     lesson = asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(source)
+        agent_service(client).generate(source)
     )
 
     assert lesson.validation_report["math_route_method_family"] == (

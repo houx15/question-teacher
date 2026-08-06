@@ -438,6 +438,10 @@ def test_revision_rebuilds_narrative_then_regenerates_all_materials():
     ]
     revision_payload = json.loads(client.all_calls[3][1])
     assert "current_narrative" in revision_payload
+    assert revision_payload["resolved_method"] == {
+        "family": "factor",
+        "display_name": "因式分解法",
+    }
     assert "transfer_item" not in revision_payload["output_contract"]
     assert "moment_choice" not in revision_payload["output_contract"]
     regenerated_materials = json.loads(client.all_calls[4][1])

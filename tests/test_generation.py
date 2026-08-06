@@ -448,6 +448,7 @@ def test_approved_draft_is_compiled_without_rewrite():
             lesson.validation_report["math_route_fingerprint"]
         ),
         "math_route_method_family": "factor",
+        "math_route_source": "agent",
         "review_status": "approved",
         "revision_count": 0,
         "independent_solutions": ["2", "3"],
@@ -708,8 +709,16 @@ def test_math_route_preserves_valid_no_real_solution_state():
 
 
 def test_required_method_must_be_used_as_an_operation():
+    class UnsupportedDeterministicPlanner:
+        def plan(self, problem, equation_degree, solution_strings):
+            return None
+
     client = FakeClient([valid_draft(), valid_draft()])
-    service = LessonGenerationService(client, MathEngine())
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        deterministic_route_planner=UnsupportedDeterministicPlanner(),
+    )
 
     with pytest.raises(LessonQualityError, match="数学路线"):
         asyncio.run(service.generate(problem("complete_the_square")))
@@ -726,7 +735,7 @@ def test_required_method_requires_matching_method_introduction_name():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "讲解的方法介绍与指定方法不一致。"
+    assert str(exc_info.value) == "讲解的方法介绍与已验证数学路线不一致。"
     assert len(client.all_calls) == 2
 
 
@@ -931,7 +940,9 @@ def test_unspecified_method_transfer_contract_preserves_original_degree(
 
 def test_generation_passes_validated_original_degree_to_materials_contract():
     source = problem(None)
-    client = FakeClient([valid_draft(), approved_review()])
+    draft = valid_draft()
+    draft["method_introduction"]["method_name"] = "公式法"
+    client = FakeClient([draft, approved_review()])
     service = LessonGenerationService(client, MathEngine())
 
     asyncio.run(service.generate(source))
@@ -940,7 +951,8 @@ def test_generation_passes_validated_original_degree_to_materials_contract():
     profile = payload["output_contract"]["transfer_item"][
         "method_profile"
     ]
-    assert profile["required_method"] is None
+    assert profile["required_method"] == "quadratic_formula"
+    assert profile["resolved_method_family"] == "quadratic_formula"
     assert profile["original_equation_degree"] == 2
 
 

@@ -12,6 +12,12 @@ from app.llm_client import ModelResponseError
 from app.tts_client import SpeechGenerationError
 from scripts.smoke_live import assert_generated_lesson_contract
 from scripts import smoke_live
+from app.prompts import (
+    DIRECTOR_SYSTEM,
+    MATERIALS_SYSTEM,
+    MATH_ROUTE_SYSTEM,
+    REVIEWER_SYSTEM,
+)
 
 
 def page_client():
@@ -115,6 +121,43 @@ def test_live_smoke_defaults_to_core_and_requires_explicit_audit_flag():
     assert smoke_live.parse_args(["--with-reference-audit"]).with_reference_audit is True
     assert smoke_live.smoke_problem(False).reference_solution_text is None
     assert smoke_live.smoke_problem(True).reference_solution_text is not None
+
+
+def test_live_smoke_requires_deterministic_route_then_narrative_materials_review():
+    smoke_live.assert_model_call_contract(
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ]
+    )
+
+    with pytest.raises(
+        smoke_live.SmokeContractError,
+        match="确定性数学路线",
+    ):
+        smoke_live.assert_model_call_contract(
+            [
+                MATH_ROUTE_SYSTEM,
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ]
+        )
+
+
+def test_live_smoke_rejects_out_of_order_core_agents():
+    with pytest.raises(
+        smoke_live.SmokeContractError,
+        match="调用顺序",
+    ):
+        smoke_live.assert_model_call_contract(
+            [
+                MATERIALS_SYSTEM,
+                DIRECTOR_SYSTEM,
+                REVIEWER_SYSTEM,
+            ]
+        )
 
 
 @pytest.mark.parametrize(
@@ -332,6 +375,11 @@ def test_live_smoke_close_only_failure_is_safely_classified(
         smoke_live,
         "assert_generated_lesson_contract",
         lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "assert_model_call_contract",
+        lambda *_args: None,
     )
 
     with pytest.raises(SystemExit) as exc_info:

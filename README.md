@@ -9,7 +9,7 @@
 - 一元一次方程；
 - 一元二次方程；
 - 因式分解法、公式法和配方法；
-- 指定方法或由 Lesson Director 选择方法；
+- 指定方法，或由服务端验证过的数学路线稳定确定方法；
 - 精简、标准两种讲解长度；
 - 新课程中可自动评分的数学互动：`choice`，以及选择式近迁移互动；
 - 运行时支持 `free_text`；API 对它始终返回 `needs_review`，不自动评分；
@@ -31,6 +31,14 @@
 语音。这样学生选择错误后得到的是可定位的提示，而不是只看到“错误”。
 Lesson Director 负责教学主线，Materials Agent 负责选择题与近迁移素材，
 Reviewer 只审查服务端合成并通过硬质量门后的完整讲稿。
+
+数学路线优先由服务端确定性规划器生成。目前它覆盖配方法的安全首一二次方程、
+公式法二次方程、未指定方法的二次方程，以及未指定方法的基础一次方程。确定性
+规划器返回 `unsupported` 时才调用 Math Route Agent；例如当前的因式分解路线
+需要尚未纳入操作词汇的零积求根过渡，因此不会伪造该过渡。无论路线来自确定性
+规划器还是 Agent，所有步骤仍逐步通过同一个 Math Engine 硬校验，并在进入
+Lesson Director 前冻结和生成指纹。验证报告用 `math_route_source` 区分
+`deterministic` 与 `agent`，但两者的数学状态都只有通过硬校验后才是 `verified`。
 
 当前不支持几何图形、函数图像、证明题、不等式、多问组合题、高于二次的方程、账号与学习历史、数字人和 MP4 合成。数学引擎只接受受限的实数一元代数表达式和有限解集。
 
@@ -104,8 +112,11 @@ Demo 使用 HTTP Chunked 单向流式 V3 接口。先在豆包语音控制台开
 → Math Engine 独立验证题目和参考答案
 → Reference Material Auditor 审阅解析中的结论、步骤与教学素材
 → Math Engine 核对解析中可验证的结论与关键变形
+→ 确定性规划器优先生成数学路线；明确 unsupported 时才调用 Math Route Agent
+→ Math Engine 逐步硬校验路线，冻结路线、方法族与指纹
+→ 将已解析的方法族及展示名传给 Lesson Director 和 Materials Agent
 → Lesson Director 生成教学主线、板书和 1–3 个互动意图
-→ schema 与数学路线校验
+→ schema 与已冻结路线的教学一致性校验
 → Materials Agent 为已声明的互动意图生成选择题，并生成近迁移题
 → 服务端按稳定 moment_id 合成完整讲解并运行全部硬质量门
 → Reviewer 整篇审稿
@@ -177,7 +188,9 @@ python scripts/smoke_live.py --with-reference-audit
 两种 invocation 分开提供证据：可选审阅失败不会抹去一次已成功的 core 结果。
 脚本会在创建客户端前检查 Chat 与 TTS 配置，并将本次语音资产写入自动清理的
 临时目录；无论成功、Provider 失败或结构断言失败，均不会向 `var/audio/` 留下
-资产。生成并配音后，core 会断言第二个 Beat 是“先认识方法”的配方法介绍、
+资产。core 还会断言配方法题没有调用 Math Route Agent，且核心模型调用从
+Lesson Director、Materials Agent 到 Reviewer 的顺序正确。生成并配音后，core
+会断言第二个 Beat 是“先认识方法”的配方法介绍、
 选择互动都有 3–4 个选项及已生成的选项诊断反馈语音、近迁移的选项 ID/顺序及
 公式标签与内部 canonical answer 的确定性格式一致，且所有 Beat 都有音频。
 `--with-reference-audit` 额外要求审阅状态为 `approved`。成功时只打印课程 ID、

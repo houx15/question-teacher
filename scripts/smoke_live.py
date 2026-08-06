@@ -18,6 +18,12 @@ from app.config import Settings
 from app.generation import LessonGenerationService, LessonQualityError
 from app.llm_client import ModelResponseError, OpenAICompatibleClient
 from app.math_engine import MathEngine
+from app.prompts import (
+    DIRECTOR_SYSTEM,
+    MATERIALS_SYSTEM,
+    MATH_ROUTE_SYSTEM,
+    REVIEWER_SYSTEM,
+)
 from app.schemas import ProblemInput
 from app.tts_client import (
     OpenAISpeechClient,
@@ -38,9 +44,49 @@ class SmokeContractError(RuntimeError):
     """Raised when a live lesson misses a safe, structural smoke contract."""
 
 
+class RecordingModelClient:
+    """Record prompt identities for smoke assertions without logging content."""
+
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.system_prompts = []
+
+    async def complete_json(self, system_prompt, user_prompt):
+        self.system_prompts.append(system_prompt)
+        return await self.delegate.complete_json(system_prompt, user_prompt)
+
+    async def close(self):
+        return await self.delegate.close()
+
+
 def _require_contract(condition: bool, message: str) -> None:
     if not condition:
         raise SmokeContractError(message)
+
+
+def assert_model_call_contract(system_prompts) -> None:
+    _require_contract(
+        MATH_ROUTE_SYSTEM not in system_prompts,
+        "配方法 smoke 未使用确定性数学路线。",
+    )
+    core_calls = [
+        prompt
+        for prompt in system_prompts
+        if prompt in {
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        }
+    ]
+    _require_contract(
+        core_calls[:3]
+        == [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+        "核心教学 Agent 调用顺序不符合 smoke 合同。",
+    )
 
 
 def assert_generated_lesson_contract(
@@ -236,7 +282,9 @@ async def main(argv=None) -> None:
     speech_client = None
     primary_error = None
     try:
-        model_client = OpenAICompatibleClient(settings)
+        model_client = RecordingModelClient(
+            OpenAICompatibleClient(settings)
+        )
         speech_client = create_speech_client(settings)
         math_engine = MathEngine()
         with tempfile.TemporaryDirectory(
@@ -246,6 +294,7 @@ async def main(argv=None) -> None:
                 model_client,
                 math_engine,
             ).generate(smoke_problem(args.with_reference_audit))
+            assert_model_call_contract(model_client.system_prompts)
             lesson = await LessonAudioService(
                 speech_client,
                 Path(temporary_audio_root),
@@ -272,6 +321,7 @@ async def main(argv=None) -> None:
                 "math_status": report.get("math_status"),
                 "review_status": report.get("review_status"),
                 "revision_count": report.get("revision_count"),
+                "math_route_source": report.get("math_route_source"),
             }
             if args.with_reference_audit:
                 summary["reference_material_status"] = report.get(
