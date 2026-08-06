@@ -85,13 +85,18 @@ class FakeGenerator:
         self.calls += 1
         if self.error is not None:
             raise self.error
-        for stage in (
-            "正在验证数学路线",
-            "正在设计完整讲解",
-            "正在进行整篇审稿",
-            "正在修订完整讲解",
-            "正在编译课堂",
-        ):
+        stages = ["正在验证数学路线"]
+        if problem.reference_solution_text is not None:
+            stages.append("正在审阅参考解析")
+        stages.extend(
+            [
+                "正在设计完整讲解",
+                "正在进行整篇审稿",
+                "正在修订完整讲解",
+                "正在编译课堂",
+            ]
+        )
+        for stage in stages:
             if on_stage:
                 on_stage(stage)
         return runtime_lesson(problem)
@@ -205,6 +210,26 @@ def test_generation_job_completes_with_public_stage_sequence():
         "正在生成讲解语音",
         "已完成",
     ]
+
+
+def test_generation_with_reference_solution_exposes_audit_stage():
+    store = RecordingStore()
+    client, _, _ = build_client(store=store)
+    payload = problem_input().model_copy(
+        update={
+            "reference_solution_text": (
+                "解：2x+3=7，所以 2x=4，最终 x=2。"
+            )
+        }
+    )
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=payload.model_dump(),
+    )
+
+    assert response.status_code == 202
+    assert "正在审阅参考解析" in store.seen_stages
 
 
 def test_generation_failure_is_sanitized_and_has_no_lesson():

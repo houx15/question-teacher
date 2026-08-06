@@ -28,8 +28,8 @@
         <p class="folio-kicker">ONE PROBLEM · ONE CLEAR PATH</p>
         <h1 id="entry-title">把一道题，<br><em>真正讲明白。</em></h1>
         <p class="entry-deck">
-          输入题目与参考答案。系统会先核验数学路线，再组织一节能听、能看、
-          也会停下来等你思考的短课。
+          输入题目、参考答案与可选参考解析。系统会先核验数学路线、审阅已有
+          解析，再组织一节能听、能看、也会停下来等你思考的短课。
         </p>
       </section>
 
@@ -70,7 +70,7 @@
 
             <div class="field-block">
               <label for="required_method">
-                <span class="field-index">04</span>
+                <span class="field-index">03</span>
                 <span>指定方法 <small>可选</small></span>
               </label>
               <select id="required_method" name="required_method">
@@ -84,7 +84,7 @@
 
           <div class="field-block field-reference-solution">
             <label for="reference_solution_text">
-              <span class="field-index">03</span>
+              <span class="field-index">04</span>
               <span>参考解析 <small>可选，多段文本</small></span>
             </label>
             <textarea
@@ -152,6 +152,7 @@
           <ol id="progress-steps" class="progress-steps">
             <li data-stage="正在理解题目">理解题意</li>
             <li data-stage="正在验证数学路线">验证数学</li>
+            <li data-stage="正在审阅参考解析">审阅解析</li>
             <li data-stage="正在设计完整讲解">设计讲解</li>
             <li data-stage="正在进行整篇审稿">整篇审稿</li>
             <li data-stage="正在修订并编译课堂">编译课堂</li>

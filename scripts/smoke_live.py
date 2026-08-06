@@ -87,6 +87,12 @@ async def main() -> None:
             ProblemInput(
                 problem_text="用配方法解方程：x^2-6x+5=0",
                 reference_answer="x=1 或 x=5",
+                reference_solution_text=(
+                    "解：移项，得 x^2-6x=-5。\n\n"
+                    "两边同时加9，得 (x-3)^2=4。\n"
+                    "所以 x-3=2 或 x-3=-2，\n"
+                    "即 x=5 或 x=1。"
+                ),
                 required_method="complete_the_square",
             )
         )
@@ -105,6 +111,9 @@ async def main() -> None:
                     ),
                     "math_status": report.get("math_status"),
                     "review_status": report.get("review_status"),
+                    "reference_material_status": report.get(
+                        "reference_material_status"
+                    ),
                     "revision_count": report.get("revision_count"),
                 },
                 ensure_ascii=False,

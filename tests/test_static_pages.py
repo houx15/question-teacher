@@ -19,6 +19,7 @@ def test_generation_page_has_focused_authoring_form():
     assert 'id="reference_solution_text"' in html
     assert 'maxlength="12000"' in html
     assert "参考解析" in html
+    assert "输入题目、参考答案与可选参考解析" in html
     assert 'name="required_method"' in html
     assert 'name="lesson_length"' in html
     assert 'id="model-status"' in html
@@ -31,9 +32,12 @@ def test_generation_page_has_focused_authoring_form():
 
 def test_generation_page_submits_optional_reference_solution():
     source = page_client().get("/static/generate.js").text
+    html = page_client().get("/").text
 
     assert 'data.get("reference_solution_text")' in source
     assert "reference_solution_text: referenceSolution || null" in source
+    assert '"正在审阅参考解析"' in source
+    assert 'data-stage="正在审阅参考解析"' in html
 
 
 def test_lesson_page_has_fullscreen_classroom_regions():
