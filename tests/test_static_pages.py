@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import create_app
 from scripts.smoke_live import assert_generated_lesson_contract
@@ -12,6 +13,52 @@ def page_client():
 
 
 def test_live_smoke_asserts_method_first_choice_contract_without_answers():
+    lesson = _smoke_contract_lesson()
+
+    summary = assert_generated_lesson_contract(lesson)
+
+    assert summary == {
+        "method_first": True,
+        "interaction_kinds": ["choice", "choice"],
+        "diagnostic_choice_count": 2,
+        "option_feedback_audio_ready": True,
+        "formula_labels_ready": True,
+        "audio_ready": True,
+    }
+    assert "expected_answer" not in summary
+
+
+@pytest.mark.parametrize(
+    ("action_type", "target"),
+    [
+        ("focus", "method_name"),
+        ("write", "method_target_form"),
+    ],
+)
+def test_live_smoke_rejects_method_action_without_exact_semantic_shape(
+    action_type,
+    target,
+):
+    lesson = _smoke_contract_lesson()
+    lesson.beats[1].board_actions[0] = SimpleNamespace(
+        type=action_type,
+        target=target,
+        content="配方法",
+    )
+
+    with pytest.raises(RuntimeError, match="首个板书动作"):
+        assert_generated_lesson_contract(lesson)
+
+
+def test_live_smoke_rejects_latex_command_in_method_narration():
+    lesson = _smoke_contract_lesson()
+    lesson.beats[1].narration = "今天用配方法，先写 \\frac。"
+
+    with pytest.raises(RuntimeError, match="LaTeX"):
+        assert_generated_lesson_contract(lesson)
+
+
+def _smoke_contract_lesson():
     choice = SimpleNamespace(
         kind="choice",
         options=[
@@ -23,7 +70,7 @@ def test_live_smoke_asserts_method_first_choice_contract_without_answers():
             for value in ("1", "2", "3")
         ],
     )
-    lesson = SimpleNamespace(
+    return SimpleNamespace(
         beats=[
             SimpleNamespace(
                 purpose="进入问题",
@@ -37,7 +84,13 @@ def test_live_smoke_asserts_method_first_choice_contract_without_answers():
                 purpose="先认识方法",
                 layer="micro_explanation",
                 narration="今天用配方法。",
-                board_actions=[SimpleNamespace(content="配方法")],
+                board_actions=[
+                    SimpleNamespace(
+                        type="write",
+                        target="method_name",
+                        content="配方法",
+                    )
+                ],
                 interaction=None,
                 audio_url="/audio/method.mp3",
             ),
@@ -60,18 +113,6 @@ def test_live_smoke_asserts_method_first_choice_contract_without_answers():
         ]
     )
 
-    summary = assert_generated_lesson_contract(lesson)
-
-    assert summary == {
-        "method_first": True,
-        "interaction_kinds": ["choice", "choice"],
-        "diagnostic_choice_count": 2,
-        "option_feedback_audio_ready": True,
-        "formula_labels_ready": True,
-        "audio_ready": True,
-    }
-    assert "expected_answer" not in summary
-
 
 def test_readme_documents_method_first_choice_generation_and_local_katex():
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
@@ -81,6 +122,9 @@ def test_readme_documents_method_first_choice_generation_and_local_katex():
         "配方法",
         "选择或点选",
         "兼容读取",
+        "free_text",
+        "低风险反思",
+        "needs_review",
         "诊断",
         "选项",
         "KaTeX",
