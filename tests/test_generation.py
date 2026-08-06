@@ -449,6 +449,9 @@ def test_revision_required_returns_whole_lesson_to_director():
     revision_payload = json.loads(client.calls[2][1])
     assert revision_payload["current_whole_lesson"]["title"] == valid_draft()["title"]
     assert revision_payload["review"]["must_fix"] == revision_review()["must_fix"]
+    assert revision_payload["output_contract"]["moment_choice"] == (
+        json.loads(client.calls[0][1])["output_contract"]["moment_choice"]
+    )
     assert lesson.validation_report["revision_count"] == 1
 
 
@@ -788,6 +791,69 @@ def test_director_prompt_gives_executable_transfer_contract_for_completing_squar
     )
 
 
+def test_director_prompt_gives_exact_generated_choice_contract():
+    payload = json.loads(
+        director_prompt(
+            problem("complete_the_square"),
+            ["2", "3"],
+        )
+    )
+
+    contract = payload["output_contract"]["moment_choice"]
+    assert contract["scope"] == (
+        "Every generated moments[].interaction is a choice. Other "
+        "interaction kinds are legacy-only."
+    )
+    example = contract["example"]
+    assert example == {
+        "interaction_id": "choose-square-term",
+        "kind": "choice",
+        "prompt": "为了配成完全平方，两边应同时加哪个数？",
+        "expected_answer": "add-nine",
+        "options": [
+            {
+                "option_id": "add-nine",
+                "label": r"\(9\)",
+                "feedback": "加 9 后左边正好成为完全平方。",
+            },
+            {
+                "option_id": "add-six",
+                "label": r"\(6\)",
+                "feedback": "6 来自一次项系数，但还没有取一半再平方。",
+            },
+            {
+                "option_id": "add-three",
+                "label": r"\(3\)",
+                "feedback": "3 是一次项系数一半的绝对值，还需要平方。",
+            },
+        ],
+        "hints": ["先取一次项系数的一半，再平方。"],
+        "explanation_after_correct": "两边同时加 9，等式仍成立。",
+    }
+    assert contract["rules"] == [
+        "Provide 3 or 4 options with unique option_id values and distinct "
+        "visible labels.",
+        "expected_answer must exactly equal the correct option_id; never use "
+        "a label or formula as expected_answer.",
+        "Every option must include specific diagnostic feedback.",
+        "Omit feedback_audio_url; the compiler adds it after generation.",
+        "Wrap mathematical option labels in \\( ... \\) or \\[ ... \\]; "
+        "keep narration as natural spoken Chinese without LaTeX.",
+        "Keep transfer_item separate; never encode near transfer as a "
+        "moments[].interaction.",
+    ]
+    assert "feedback_audio_url" not in str(example)
+    example_json = json.dumps(
+        example,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert example_json in DIRECTOR_SYSTEM
+    assert example_json in REVISION_SYSTEM
+    assert "point_select 只用于读取旧课程" in DIRECTOR_SYSTEM
+    assert "point_select 只用于读取旧课程" in REVISION_SYSTEM
+
+
 def test_transfer_math_retry_prompt_requires_recomputing_equation_answer_pair():
     payload = json.loads(
         director_prompt(
@@ -907,7 +973,51 @@ def test_draft_rejects_new_math_input_interaction_kinds_before_review(
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert str(exc_info.value) == "新讲解中的数学互动必须使用选择或点选。"
+    assert str(exc_info.value) == "新讲解中的自动判分互动必须使用选择题。"
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "legacy_kind",
+    [
+        "point_select",
+        "free_text",
+    ],
+)
+def test_new_drafts_reject_legacy_interaction_kinds_before_review(
+    legacy_kind,
+):
+    draft = valid_draft()
+    interaction = draft["moments"][0]["interaction"]
+    interaction.pop("options")
+    interaction.update(
+        {
+            "kind": legacy_kind,
+            "expected_answer": "legacy-answer",
+        }
+    )
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "新讲解中的自动判分互动必须使用选择题。"
+    assert len(client.calls) == 2
+
+
+def test_new_draft_choice_rejects_model_supplied_feedback_audio_url():
+    draft = valid_draft()
+    draft["moments"][0]["interaction"]["options"][0][
+        "feedback_audio_url"
+    ] = "/audio/model-supplied.mp3"
+    client = FakeClient([draft, copy.deepcopy(draft)])
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        asyncio.run(service.generate(problem()))
+
+    assert str(exc_info.value) == "选择互动不能预填反馈音频地址。"
     assert len(client.calls) == 2
 
 
@@ -1210,6 +1320,47 @@ def test_invalid_director_schema_is_regenerated_once_with_safe_summary():
     assert "private-secret-field" not in client.calls[1][1]
 
 
+def test_choice_schema_error_gets_targeted_structure_retry_contract():
+    invalid_choice = valid_draft()
+    invalid_choice["moments"][0]["interaction"]["expected_answer"] = (
+        invalid_choice["moments"][0]["interaction"]["options"][0]["label"]
+    )
+    client = FakeClient(
+        [invalid_choice, valid_draft(), approved_review()]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+    retry_payload = json.loads(client.calls[1][1])
+    summary = json.loads(retry_payload["previous_validation_error"])
+    assert summary["issues"] == [
+        {
+            "path": "moments.[].interaction",
+            "type": "value_error",
+        }
+    ]
+    assert retry_payload["output_contract"]["retry"] == {
+        "failed_gate": "moment_choice_schema_validation",
+        "required_action": [
+            "Rebuild every moments[].interaction from the moment_choice "
+            "example.",
+            "Use kind=choice with 3 or 4 unique option_id values.",
+            "Set expected_answer to exactly the correct option_id, never its "
+            "label or formula.",
+            "Give every option feedback and omit feedback_audio_url.",
+            "Return a complete new LessonDraft without weakening other "
+            "fields.",
+        ],
+        "forbidden": [
+            "Do not reuse the malformed interaction object.",
+            "Do not move transfer_item into moments[].interaction.",
+            "Do not guess, silently rewrite, or bypass schema validation.",
+        ],
+    }
+
+
 def test_two_invalid_director_schemas_stop_after_one_safe_retry():
     first_private_payload = {
         "title": "first-private-output",
@@ -1351,7 +1502,8 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "Reference Material Auditor" in DIRECTOR_SYSTEM
     assert "方法介绍" in DIRECTOR_SYSTEM
     assert "配方法" in DIRECTOR_SYSTEM
-    assert "选择或点选" in DIRECTOR_SYSTEM
+    assert "自动判分互动只能使用 choice" in DIRECTOR_SYSTEM
+    assert "point_select 只用于读取旧课程" in DIRECTOR_SYSTEM
     assert "LaTeX" in DIRECTOR_SYSTEM
     assert "3 至 4" in DIRECTOR_SYSTEM
     assert "canonical_answer" in DIRECTOR_SYSTEM
@@ -1361,11 +1513,11 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "无信息增益" in REVIEWER_SYSTEM
     assert "整式圈注" in REVIEWER_SYSTEM
     assert "方法介绍" in REVIEWER_SYSTEM
-    assert "选择或点选" in REVIEWER_SYSTEM
+    assert "自动判分互动不是 choice" in REVIEWER_SYSTEM
     assert "完整 LessonDraft JSON" in REVISION_SYSTEM
     assert "参考解析审阅" in REVISION_SYSTEM
     assert "方法介绍" in REVISION_SYSTEM
-    assert "选择或点选" in REVISION_SYSTEM
+    assert "自动判分互动只能使用 choice" in REVISION_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in DIRECTOR_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVIEWER_SYSTEM
     assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVISION_SYSTEM

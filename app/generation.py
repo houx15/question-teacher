@@ -463,26 +463,32 @@ class LessonGenerationService:
             raise LessonQualityError("讲解没有设置学生互动。")
 
         for interaction in interactions:
-            if interaction.kind in {"expression", "transfer"}:
+            if interaction.kind != "choice":
                 raise LessonQualityError(
-                    "新讲解中的数学互动必须使用选择或点选。"
+                    "新讲解中的自动判分互动必须使用选择题。"
                 )
-            if interaction.kind == "choice":
-                if len(interaction.options) not in {3, 4}:
-                    raise LessonQualityError(
-                        "选择互动需要 3 至 4 个选项。"
-                    )
-                option_labels = [
-                    _normalize_choice_option_label(option.label)
-                    for option in interaction.options
-                ]
-                if len(option_labels) != len(set(option_labels)):
-                    raise LessonQualityError("选择互动选项标签不能重复。")
-                if any(
-                    option.feedback is None
-                    for option in interaction.options
-                ):
-                    raise LessonQualityError("选择互动缺少诊断反馈。")
+            if len(interaction.options) not in {3, 4}:
+                raise LessonQualityError(
+                    "选择互动需要 3 至 4 个选项。"
+                )
+            option_labels = [
+                _normalize_choice_option_label(option.label)
+                for option in interaction.options
+            ]
+            if len(option_labels) != len(set(option_labels)):
+                raise LessonQualityError("选择互动选项标签不能重复。")
+            if any(
+                option.feedback is None
+                for option in interaction.options
+            ):
+                raise LessonQualityError("选择互动缺少诊断反馈。")
+            if any(
+                option.feedback_audio_url is not None
+                for option in interaction.options
+            ):
+                raise LessonQualityError(
+                    "选择互动不能预填反馈音频地址。"
+                )
 
         if (
             required_method is not None
