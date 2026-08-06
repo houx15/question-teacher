@@ -12,7 +12,12 @@ from app.compiler import (
     LessonCompileError,
     LessonCompiler,
 )
-from app.claim_checker import ClaimCheckResult, ClaimChecker, ClaimStatus
+from app.claim_checker import (
+    ClaimCheckResult,
+    ClaimChecker,
+    ClaimCheckerUnavailableError,
+    ClaimStatus,
+)
 from app.deterministic_route import DeterministicRoutePlanner
 from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
@@ -486,7 +491,7 @@ class LessonGenerationService:
         for request in brief.check_requests:
             try:
                 result = self.claim_checker.check(request)
-            except Exception:
+            except ClaimCheckerUnavailableError:
                 result = ClaimCheckResult(
                     check_id=request.check_id,
                     status=ClaimStatus.UNSUPPORTED,
@@ -1330,27 +1335,31 @@ class LessonGenerationService:
         teaching_route: FrozenTeachingRoute,
     ) -> None:
         payload = teaching_route.to_prompt_payload()
-        searchable_parts = []
+        board_evidence = []
         for moment in narrative.moments:
-            searchable_parts.append(moment.narration)
-            searchable_parts.extend(
-                action.content
+            board_evidence.extend(
+                self._normalize_grounded_text(action.content)
                 for action in moment.board_actions
-                if action.content is not None
+                if action.type in {"write", "transform"}
+                and action.content is not None
             )
-        searchable = self._normalize_grounded_text(" ".join(searchable_parts))
-        position = 0
-        for step in payload["steps"]:
-            marker = self._normalize_grounded_text(step["statement_after"])
-            found = searchable.find(marker, position)
-            if found < 0:
-                raise LessonQualityError("教学主线没有按顺序覆盖冻结路线。")
-            position = found + len(marker)
-        conclusion = self._normalize_grounded_text(
-            payload["final_conclusion"]
+        expected_evidence = [
+            self._normalize_grounded_text(step["statement_after"])
+            for step in payload["steps"]
+        ]
+        expected_evidence.append(
+            self._normalize_grounded_text(
+                teaching_route.final_conclusion
+            )
         )
-        if conclusion not in searchable:
-            raise LessonQualityError("教学主线没有呈现参考结论。")
+        position = 0
+        for expected in expected_evidence:
+            try:
+                position = board_evidence.index(expected, position) + 1
+            except ValueError:
+                raise LessonQualityError(
+                    "教学主线没有用结构化板书覆盖冻结路线。"
+                ) from None
 
     def _validate_pre_interaction_answer_leakage(
         self,
@@ -1378,7 +1387,9 @@ class LessonGenerationService:
             if correct_option is None:
                 continue
 
-            raw_visible = " ".join(visible_parts)
+            raw_visible = " ".join(
+                [*visible_parts, interaction.prompt]
+            )
             visible = self._normalize_answer_leak_text(raw_visible)
             option_id = self._normalize_answer_leak_text(
                 correct_option.option_id
@@ -1401,10 +1412,11 @@ class LessonGenerationService:
             )
             if not label or label not in visible:
                 continue
+            cue = r"(?:正确答案|答案|应选|选择)"
+            label_pattern = re.escape(label)
             announcement = re.compile(
-                r"(?:正确答案|答案|应选|选择)"
-                r".{0,32}(?:就是|应为|应该是|是|为)?"
-                + re.escape(label)
+                rf"(?:{cue}.{{0,32}}{label_pattern}|"
+                rf"{label_pattern}.{{0,32}}{cue})"
             )
             if announcement.search(visible):
                 raise LessonQualityError("互动前明确泄露了正确选项。")

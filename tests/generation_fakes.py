@@ -25,7 +25,11 @@ def cover_symbolic_narrative_route(response, user_prompt):
         return response
 
     covered = copy.deepcopy(response)
-    steps = list(route.get("steps", []))
+    steps = [
+        step["statement_after"]
+        for step in route.get("steps", [])
+    ]
+    steps.append(route["final_conclusion"])
     available = sum(
         12 - len(moment.get("board_actions", []))
         for moment in covered["moments"]
@@ -34,7 +38,7 @@ def cover_symbolic_narrative_route(response, user_prompt):
         return covered
 
     moment_index = 0
-    for index, step in enumerate(steps, start=1):
+    for index, content in enumerate(steps, start=1):
         while len(
             covered["moments"][moment_index].get("board_actions", [])
         ) >= 12:
@@ -47,7 +51,7 @@ def cover_symbolic_narrative_route(response, user_prompt):
             {
                 "type": "write",
                 "target": f"fake-symbolic-route-step-{index}",
-                "content": step["statement_after"],
+                "content": content,
             }
         )
     return covered

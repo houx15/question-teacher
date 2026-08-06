@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.claim_checker import ClaimChecker
+from app.claim_checker import ClaimChecker, ClaimCheckerUnavailableError
 from app.generation import (
     LessonGenerationService,
     LessonInputError,
@@ -30,7 +30,10 @@ from app.schemas import (
     NarrativeDraft,
     ReferenceGroundingBrief,
 )
-from app.teaching_route import freeze_symbolic_route
+from app.teaching_route import (
+    TeachingRouteEvidenceError,
+    freeze_symbolic_route,
+)
 from tests.generation_fakes import FakeClient
 from tests.test_generation import (
     approved_review,
@@ -233,7 +236,12 @@ def grounded_narrative_payload():
                         "type": "write",
                         "target": "conclusion",
                         "content": "m-n=1/2",
-                    }
+                    },
+                    {
+                        "type": "write",
+                        "target": "reference-conclusion",
+                        "content": "m-n=1/2",
+                    },
                 ],
                 "layer": "base",
                 "interaction_intent": None,
@@ -946,7 +954,9 @@ def test_checker_exception_softly_degrades_each_grounding_check():
         def check(self, request):
             self.calls.append(request.check_id)
             if len(self.calls) == 1:
-                raise RuntimeError("private checker failure")
+                raise ClaimCheckerUnavailableError(
+                    "private checker failure"
+                )
             return ClaimChecker().check(request)
 
     checker = FlakyChecker()
@@ -978,7 +988,7 @@ def test_grounded_director_must_cover_route_steps_in_order():
 
     with pytest.raises(
         LessonQualityError,
-        match="按顺序覆盖冻结路线",
+        match="结构化板书覆盖冻结路线",
     ):
         asyncio.run(
             LessonGenerationService(client, MathEngine()).generate(
@@ -1047,7 +1057,7 @@ def test_symbolic_director_must_cover_route_step():
 
     with pytest.raises(
         LessonQualityError,
-        match="按顺序覆盖.*路线",
+        match="结构化板书覆盖冻结路线",
     ):
         service._validate_narrative(
             problem(),
@@ -1091,7 +1101,7 @@ def test_symbolic_director_must_cover_route_steps_in_order():
 
     with pytest.raises(
         LessonQualityError,
-        match="按顺序覆盖.*路线",
+        match="结构化板书覆盖冻结路线",
     ):
         service._validate_narrative(
             problem(),
@@ -1164,3 +1174,104 @@ def test_pre_interaction_formula_reuse_without_answer_claim_is_allowed():
     )
 
     assert lesson.validation_report["review_status"] == "approved"
+
+
+def test_symbolic_route_cannot_be_covered_by_narration_only():
+    narrative = narrative_payload()
+    narrative["moments"][1]["narration"] = "这里口头提到(x-2)(x-3)=0。"
+    narrative["moments"][1]["board_actions"][0]["content"] = (
+        "板书没有写出路线事实"
+    )
+    verified, route = symbolic_route_with_steps(valid_draft()["math_steps"])
+
+    with pytest.raises(LessonQualityError, match="结构化板书覆盖冻结路线"):
+        LessonGenerationService(FakeClient([]), MathEngine())._validate_narrative(
+            problem(),
+            NarrativeDraft.model_validate(narrative),
+            verified,
+            route,
+        )
+
+
+def test_symbolic_route_rejects_negative_example_substring_as_evidence():
+    narrative = narrative_payload()
+    narrative["moments"][1]["board_actions"][0]["content"] = (
+        "错误示例不要写成(x-2)(x-3)=0"
+    )
+    verified, route = symbolic_route_with_steps(valid_draft()["math_steps"])
+
+    with pytest.raises(LessonQualityError, match="结构化板书覆盖冻结路线"):
+        LessonGenerationService(FakeClient([]), MathEngine())._validate_narrative(
+            problem(),
+            NarrativeDraft.model_validate(narrative),
+            verified,
+            route,
+        )
+
+
+def test_interaction_prompt_cannot_announce_correct_label():
+    materials = materials_payload()
+    materials["interactions"][0]["interaction"]["prompt"] = (
+        "正确答案就是负二和负三。"
+    )
+    materials["interactions"][0]["interaction"]["options"][0][
+        "label"
+    ] = "负二和负三"
+    client = FakeClient(
+        [narrative_payload(), materials, copy.deepcopy(materials)]
+    )
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
+
+
+def test_pre_interaction_label_then_answer_cue_is_rejected():
+    narrative = narrative_payload()
+    narrative["moments"][0]["narration"] = "负二和负三就是正确答案。"
+    materials = materials_payload()
+    materials["interactions"][0]["interaction"]["options"][0][
+        "label"
+    ] = "负二和负三"
+    client = FakeClient([narrative, materials, copy.deepcopy(materials)])
+
+    with pytest.raises(LessonQualityError, match="互动前明确泄露了正确选项"):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(problem())
+        )
+
+
+def test_interaction_prompt_can_reuse_correct_formula_without_answer_cue():
+    materials = materials_payload()
+    materials["interactions"][0]["interaction"]["prompt"] = (
+        r"比较 \(-2\) 和 \(-3\) 的乘积与和。"
+    )
+    client = FakeClient(
+        [narrative_payload(), materials, approved_review()]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["review_status"] == "approved"
+
+
+@pytest.mark.parametrize(
+    "checker_error",
+    [
+        MemoryError("out of memory"),
+        PermissionError("permission denied"),
+        TeachingRouteEvidenceError("integrity failure"),
+    ],
+)
+def test_grounded_checker_nonavailability_errors_propagate(checker_error):
+    class BrokenChecker:
+        def check(self, request):
+            raise checker_error
+
+    with pytest.raises(type(checker_error), match=str(checker_error)):
+        asyncio.run(
+            generate_grounded_lesson(claim_checker=BrokenChecker())
+        )

@@ -49,6 +49,10 @@ class _UnsupportedClaim(ValueError):
     pass
 
 
+class ClaimCheckerUnavailableError(RuntimeError):
+    """A narrow signal that local claim checking is temporarily unavailable."""
+
+
 class ClaimChecker:
     _MAX_EXPRESSION_LENGTH = 256
     _MAX_SYMBOLS = 4
