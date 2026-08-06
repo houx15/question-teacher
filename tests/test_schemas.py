@@ -30,6 +30,42 @@ def test_problem_input_accepts_valid_example_and_defaults_to_standard():
     assert problem.reference_answer == "x = 2 或 x = 3"
 
 
+def test_problem_input_preserves_multiline_reference_solution():
+    problem = ProblemInput(
+        problem_text="解方程 x^2-6x+5=0",
+        reference_answer="x=1 或 x=5",
+        reference_solution_text=(
+            "\n  解：移项，得 x^2-6x=-5。\n\n"
+            "两边同时加 9，得 (x-3)^2=4。\n"
+            "所以 x=1 或 x=5。  \n"
+        ),
+    )
+
+    assert problem.reference_solution_text == (
+        "解：移项，得 x^2-6x=-5。\n\n"
+        "两边同时加 9，得 (x-3)^2=4。\n"
+        "所以 x=1 或 x=5。"
+    )
+
+
+def test_problem_input_allows_missing_reference_solution():
+    problem = ProblemInput(
+        problem_text="解方程 x=1",
+        reference_answer="x=1",
+    )
+
+    assert problem.reference_solution_text is None
+
+
+def test_problem_input_rejects_oversized_reference_solution():
+    with pytest.raises(ValidationError):
+        ProblemInput(
+            problem_text="解方程 x=1",
+            reference_answer="x=1",
+            reference_solution_text="甲" * 12001,
+        )
+
+
 def test_board_action_uses_semantic_target_without_coordinates():
     action = BoardAction(
         type="focus",

@@ -244,6 +244,9 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
             "problem": {
                 "problem_text": "解方程 x^2-6x+9=0",
                 "reference_answer": "x=271828",
+                "reference_solution_text": (
+                    "解：这是不应进入学生课堂的内部参考解析。"
+                ),
             },
             "title": "公开课程",
             "learning_goal": "理解完全平方结构。",
@@ -316,6 +319,7 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
     payload = response.json()
     serialized = json.dumps(payload, ensure_ascii=False)
     assert "reference_answer" not in payload["problem"]
+    assert "reference_solution_text" not in payload["problem"]
     assert "expected_answer" not in payload["transfer_item"]
     assert "validation_report" not in payload
     assert all(
@@ -323,6 +327,7 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
         for beat in payload["beats"]
     )
     assert "x=271828" not in serialized
+    assert "不应进入学生课堂" not in serialized
     assert "x^2-6*x+9" not in serialized
     assert "x=314159" not in serialized
     assert "validation-secret" not in serialized

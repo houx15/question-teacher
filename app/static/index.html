@@ -70,7 +70,7 @@
 
             <div class="field-block">
               <label for="required_method">
-                <span class="field-index">03</span>
+                <span class="field-index">04</span>
                 <span>指定方法 <small>可选</small></span>
               </label>
               <select id="required_method" name="required_method">
@@ -82,9 +82,27 @@
             </div>
           </div>
 
+          <div class="field-block field-reference-solution">
+            <label for="reference_solution_text">
+              <span class="field-index">03</span>
+              <span>参考解析 <small>可选，多段文本</small></span>
+            </label>
+            <textarea
+              id="reference_solution_text"
+              name="reference_solution_text"
+              rows="7"
+              maxlength="12000"
+              autocomplete="off"
+              placeholder="粘贴已有解析，可包含多段文字与公式。系统会先审阅，再用于教学设计。"
+            ></textarea>
+            <p class="field-note">
+              解析用于提供已有方法和讲法；最终数学结论仍会独立校验。
+            </p>
+          </div>
+
           <fieldset class="length-field">
             <legend>
-              <span class="field-index">04</span>
+              <span class="field-index">05</span>
               <span>讲解长度</span>
             </legend>
             <div class="length-options">

@@ -49,6 +49,7 @@ def safe_generation_error(_error: Exception) -> str:
 def public_lesson_payload(lesson: RuntimeLesson) -> dict:
     payload = lesson.model_dump()
     payload["problem"].pop("reference_answer", None)
+    payload["problem"].pop("reference_solution_text", None)
     payload["transfer_item"].pop("expected_answer", None)
     payload.pop("validation_report", None)
     for beat in payload["beats"]:

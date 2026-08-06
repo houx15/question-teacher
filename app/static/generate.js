@@ -146,9 +146,13 @@ form.addEventListener("submit", async (event) => {
 
   const data = new FormData(form);
   const method = String(data.get("required_method") || "").trim();
+  const referenceSolution = String(
+    data.get("reference_solution_text") || "",
+  ).trim();
   const payload = {
     problem_text: String(data.get("problem_text") || "").trim(),
     reference_answer: String(data.get("reference_answer") || "").trim(),
+    reference_solution_text: referenceSolution || null,
     required_method: method || null,
     lesson_length: String(data.get("lesson_length") || "standard"),
   };

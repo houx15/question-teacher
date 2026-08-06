@@ -15,6 +15,10 @@ def test_generation_page_has_focused_authoring_form():
     assert 'id="lesson-form"' in html
     assert 'name="problem_text"' in html
     assert 'name="reference_answer"' in html
+    assert 'name="reference_solution_text"' in html
+    assert 'id="reference_solution_text"' in html
+    assert 'maxlength="12000"' in html
+    assert "参考解析" in html
     assert 'name="required_method"' in html
     assert 'name="lesson_length"' in html
     assert 'id="model-status"' in html
@@ -23,6 +27,13 @@ def test_generation_page_has_focused_authoring_form():
     assert 'src="/static/generate.js"' in html
     assert "OPENAI_API_KEY" not in html
     assert "validation_report" not in html
+
+
+def test_generation_page_submits_optional_reference_solution():
+    source = page_client().get("/static/generate.js").text
+
+    assert 'data.get("reference_solution_text")' in source
+    assert "reference_solution_text: referenceSolution || null" in source
 
 
 def test_lesson_page_has_fullscreen_classroom_regions():
