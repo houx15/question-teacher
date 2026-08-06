@@ -109,7 +109,7 @@ Demo 使用 HTTP Chunked 单向流式 V3 接口。先在豆包语音控制台开
 → Reviewer 整篇审稿
 → 最多两轮整体修订
 → 编译为 RuntimeLesson 与 Teaching Beats
-→ 按 Beat 生成讲解、提示和正确反馈语音
+→ 按 Beat 生成讲解语音，并为每个选择项生成专属诊断反馈语音
 → 进入全屏课堂
 ```
 
@@ -133,54 +133,54 @@ vendor 资源时，先在项目根目录执行：
 
 ```bash
 npm install
+mkdir -p app/static/vendor/katex
+cp node_modules/katex/dist/katex.mjs app/static/vendor/katex/katex.mjs
+cp node_modules/katex/dist/katex.min.css app/static/vendor/katex/katex.min.css
+rm -rf app/static/vendor/katex/fonts
+cp -R node_modules/katex/dist/fonts app/static/vendor/katex/fonts
+cp node_modules/katex/LICENSE app/static/vendor/katex/LICENSE
 npm test
 ```
 
-确认测试通过后，再把由已锁定依赖产生的本地 KaTeX 文件与 lockfile 一并审阅。
+这些命令只替换受版本控制的 KaTeX vendor 文件；`package-lock.json` 固定来源版本。
+确认测试通过后，再把本地 KaTeX 文件与 lockfile 一并审阅。
 
 ## 自动化验证
 
-所有 Python 命令都在 `general` 环境中运行：
+完整验证在 `general` 环境中运行：
 
 ```bash
 source /opt/anaconda3/etc/profile.d/conda.sh
 conda activate general
-pytest -q
-```
-
-聚焦运行数学回归和 OpenAI 兼容客户端测试：
-
-```bash
-pytest -q tests/test_math_engine.py tests/test_llm_client.py
-```
-
-标准验证命令：
-
-```bash
 pytest -q tests
 python -m compileall -q app scripts tests
 npm test
-```
-
-如需聚焦检查课堂 JavaScript，可运行：
-
-```bash
 node --check app/static/lesson.js
 node --check app/static/runtime-core.mjs
 node --check app/static/math-text.mjs
 ```
 
-配置真实端点后，可以运行一次可选 smoke：
+配置真实端点后，默认运行不包含参考解析审阅的 core smoke：
 
 ```bash
 python scripts/smoke_live.py
 ```
 
-脚本会在创建客户端前检查 Chat 与 TTS 配置；生成并配音后还会断言：第二个
-Beat 是“先认识方法”的配方法介绍、选择互动都有 3–4 个选项及已生成的诊断
-反馈语音、近迁移以带公式分隔符的选择项结束，且所有 Beat 都有音频。成功时
-只打印课程 ID、结构计数、状态与上述布尔摘要；不会打印密钥、题目、选项、
-答案、prompt、端点或供应商响应正文。未配置真实密钥时不要运行网络 smoke。
+如需单独验证可选的多段参考解析审阅链路，显式运行：
+
+```bash
+python scripts/smoke_live.py --with-reference-audit
+```
+
+两种 invocation 分开提供证据：可选审阅失败不会抹去一次已成功的 core 结果。
+脚本会在创建客户端前检查 Chat 与 TTS 配置，并将本次语音资产写入自动清理的
+临时目录；无论成功、Provider 失败或结构断言失败，均不会向 `var/audio/` 留下
+资产。生成并配音后，core 会断言第二个 Beat 是“先认识方法”的配方法介绍、
+选择互动都有 3–4 个选项及已生成的选项诊断反馈语音、近迁移的选项 ID/顺序及
+公式标签与内部 canonical answer 的确定性格式一致，且所有 Beat 都有音频。
+`--with-reference-audit` 额外要求审阅状态为 `approved`。成功时只打印课程 ID、
+模式、结构计数、状态与上述布尔摘要；不会打印密钥、题目、选项、答案、prompt、
+端点或供应商响应正文。未配置真实密钥时不要运行网络 smoke。
 
 ## 证据边界
 
@@ -190,8 +190,9 @@ Beat 是“先认识方法”的配方法介绍、选择互动都有 3–4 个�
 - **视觉验证**需要页面测试和真实浏览器中的横屏、板书、遮罩、音频、互动联动检查。DOM 或状态机测试通过，不能证明不同设备上的视觉重点始终清楚。
 - **教学质量**目前只有结构化规则、模型整篇审稿和 Demo 人工检查。Reviewer 尚未经过教师一致性校准，也没有学生实验，因此不能据此声称提升理解、近迁移、保持或长期学习效果。
 
-真实端点 smoke 只能说明某次配置下完成了“生成—审稿—语音”链路及其有限的
-结构断言。它不能替代稳定性压测、隐私审查、教师评价、浏览器人工验收或学生
+core smoke 只能说明某次配置下完成了不含参考解析审阅的“生成—审稿—语音”
+链路及其有限的结构断言；带 flag 的 smoke 才额外说明可选审阅链路在该次运行中
+通过。它们都不能替代稳定性压测、隐私审查、教师评价、浏览器人工验收或学生
 学习效果研究。浏览器验证仍需要在真实横屏课堂中检查公式排版、板书层、音频、
 点选与选择反馈的联动；教学证据仍需要教师审阅和学生研究，不能由本地测试或
 一次 live smoke 推断。

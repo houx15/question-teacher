@@ -6,6 +6,7 @@ import pytest
 
 from app.main import create_app
 from scripts.smoke_live import assert_generated_lesson_contract
+from scripts import smoke_live
 
 
 def page_client():
@@ -68,18 +69,71 @@ def test_live_smoke_accepts_normal_spoken_chinese_method_narration():
     assert assert_generated_lesson_contract(lesson)["method_first"] is True
 
 
+@pytest.mark.parametrize(
+    "invalid_label",
+    (
+        r"\\(x=1\\)",
+        r"\)x=1\(",
+        r"\(x=1",
+        "x=1",
+        r"\(x=99\)",
+    ),
+)
+def test_live_smoke_rejects_noncanonical_near_transfer_labels(
+    invalid_label,
+):
+    lesson = _smoke_contract_lesson()
+    lesson.beats[-1].interaction.options[0].label = invalid_label
+
+    with pytest.raises(RuntimeError, match="近迁移选项"):
+        assert_generated_lesson_contract(lesson)
+
+
+def test_live_smoke_rejects_near_transfer_option_order_or_id_mismatch():
+    lesson = _smoke_contract_lesson()
+    lesson.beats[-1].interaction.options[0].option_id = "wrong-order"
+
+    with pytest.raises(RuntimeError, match="近迁移选项"):
+        assert_generated_lesson_contract(lesson)
+
+
+def test_live_smoke_defaults_to_core_and_requires_explicit_audit_flag():
+    assert smoke_live.parse_args([]).with_reference_audit is False
+    assert smoke_live.parse_args(["--with-reference-audit"]).with_reference_audit is True
+    assert smoke_live.smoke_problem(False).reference_solution_text is None
+    assert smoke_live.smoke_problem(True).reference_solution_text is not None
+
+
+def test_live_smoke_uses_automatic_temporary_audio_directory():
+    source = (
+        Path(__file__).resolve().parents[1] / "scripts" / "smoke_live.py"
+    ).read_text()
+
+    assert "tempfile.TemporaryDirectory" in source
+    assert 'REPOSITORY_ROOT / "var" / "audio"' not in source
+
+
 def _smoke_contract_lesson():
     choice = SimpleNamespace(
         kind="choice",
         options=[
             SimpleNamespace(
-                label=rf"\\(x={value}\\)",
+                option_id=f"option-{value}",
+                label=rf"\(x={value}\)",
                 feedback="诊断反馈。",
                 feedback_audio_url=f"/audio/option-{value}.mp3",
             )
             for value in ("1", "2", "3")
         ],
     )
+    transfer_options = [
+        SimpleNamespace(
+            option_id=f"option-{value}",
+            label=rf"\(x={value}\)",
+            canonical_answer=f"x={value}",
+        )
+        for value in ("1", "2", "3")
+    ]
     return SimpleNamespace(
         beats=[
             SimpleNamespace(
@@ -120,39 +174,48 @@ def _smoke_contract_lesson():
                 interaction=choice,
                 audio_url="/audio/transfer.mp3",
             ),
-        ]
+        ],
+        transfer_item=SimpleNamespace(options=transfer_options),
     )
 
 
 def test_readme_documents_method_first_choice_generation_and_local_katex():
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    support = readme.split("## 运行环境", maxsplit=1)[0]
+    vendor = readme.split("## 本地公式资源", maxsplit=1)[1].split(
+        "## 自动化验证", maxsplit=1
+    )[0]
+    validation = readme.split("## 自动化验证", maxsplit=1)[1].split(
+        "## 证据边界", maxsplit=1
+    )[0]
 
-    for phrase in (
-        "先认识方法",
-        "配方法",
-        "自动评分",
-        "兼容读取",
-        "free_text",
-        "低风险反思",
-        "needs_review",
-        "运行时",
-        "Director",
-        "Reviewer",
-        "确定性",
-        "语义",
-        "point_select",
-        "诊断",
-        "选项",
-        "KaTeX",
+    assert "先认识方法" in support
+    assert "配方法" in support
+    assert "choice" in support and "point_select" in support
+    assert "free_text" in support and "needs_review" in support
+    assert "Director" in support and "Reviewer" in support
+    assert "确定性门禁" in support and "prompt 的语义判断" in support
+    assert "每个选择项都有针对该选项的诊断反馈" in support
+
+    assert "CDN" in vendor and "package-lock.json" in vendor
+    for command in (
         "npm install",
+        "cp node_modules/katex/dist/katex.mjs",
+        "cp node_modules/katex/dist/katex.min.css",
+        "cp -R node_modules/katex/dist/fonts",
+        "cp node_modules/katex/LICENSE",
         "npm test",
-        "package-lock.json",
-        "CDN",
-        "python -m compileall -q app scripts tests",
-        "浏览器",
-        "教学",
     ):
-        assert phrase in readme
+        assert command in vendor
+
+    assert "pytest -q tests" in validation
+    assert "python -m compileall -q app scripts tests" in validation
+    assert "npm test" in validation
+    assert "node --check app/static/lesson.js" in validation
+    assert "python scripts/smoke_live.py" in validation
+    assert "python scripts/smoke_live.py --with-reference-audit" in validation
+    assert "临时目录" in validation and "var/audio" in validation
+    assert "选项诊断反馈语音" in validation
 
 
 def test_generation_page_has_focused_authoring_form():

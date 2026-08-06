@@ -1,7 +1,9 @@
 import asyncio
+import argparse
 import json
 from pathlib import Path
 import sys
+import tempfile
 from typing import List
 
 
@@ -19,6 +21,14 @@ from app.tts_client import OpenAISpeechClient
 from app.volcengine_tts_client import VolcengineSpeechClient
 
 
+REFERENCE_SOLUTION_TEXT = (
+    "解：移项，得 x^2-6x=-5。\n\n"
+    "两边同时加9，得 (x-3)^2=4。\n"
+    "所以 x-3=2 或 x-3=-2，\n"
+    "即 x=5 或 x=1。"
+)
+
+
 class SmokeContractError(RuntimeError):
     """Raised when a live lesson misses a safe, structural smoke contract."""
 
@@ -28,7 +38,10 @@ def _require_contract(condition: bool, message: str) -> None:
         raise SmokeContractError(message)
 
 
-def assert_generated_lesson_contract(lesson) -> dict:
+def assert_generated_lesson_contract(
+    lesson,
+    math_engine: MathEngine = None,
+) -> dict:
     """Assert structural teaching and audio guarantees without exposing content."""
     beats = lesson.beats
     _require_contract(
@@ -92,14 +105,33 @@ def assert_generated_lesson_contract(lesson) -> dict:
         and final_interaction.kind == "choice",
         "生成课程未以选择式近迁移互动结束。",
     )
-    formula_labels_ready = all(
-        r"\(" in option.label and r"\)" in option.label
-        for option in final_interaction.options
-    )
+    transfer_options = lesson.transfer_item.options
     _require_contract(
-        formula_labels_ready,
-        "近迁移选择标签缺少明确的公式分隔符。",
+        len(final_interaction.options) == len(transfer_options),
+        "近迁移选项数量与内部课程记录不一致。",
     )
+    engine = math_engine or MathEngine()
+    for transfer_option, runtime_option in zip(
+        transfer_options,
+        final_interaction.options,
+    ):
+        _require_contract(
+            transfer_option.option_id == runtime_option.option_id,
+            "近迁移选项顺序或标识与内部课程记录不一致。",
+        )
+        try:
+            expected_label = engine.format_answer_label(
+                transfer_option.canonical_answer
+            )
+        except Exception:
+            raise SmokeContractError(
+                "近迁移选项的内部答案无法生成显示标签。"
+            ) from None
+        _require_contract(
+            transfer_option.label == expected_label
+            and runtime_option.label == expected_label,
+            "近迁移选项标签与内部答案不一致。",
+        )
 
     audio_ready = all(bool(beat.audio_url) for beat in beats)
     _require_contract(audio_ready, "生成课程缺少讲解语音。")
@@ -108,7 +140,7 @@ def assert_generated_lesson_contract(lesson) -> dict:
         "interaction_kinds": interaction_kinds,
         "diagnostic_choice_count": len(choices),
         "option_feedback_audio_ready": True,
-        "formula_labels_ready": formula_labels_ready,
+        "formula_labels_ready": True,
         "audio_ready": audio_ready,
     }
 
@@ -154,7 +186,31 @@ def create_speech_client(settings: Settings):
     return OpenAISpeechClient(settings)
 
 
-async def main() -> None:
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run the safe live smoke for the AI math lesson runtime."
+    )
+    parser.add_argument(
+        "--with-reference-audit",
+        action="store_true",
+        help="Also exercise the optional reference-material audit stage.",
+    )
+    return parser.parse_args(argv)
+
+
+def smoke_problem(with_reference_audit: bool) -> ProblemInput:
+    return ProblemInput(
+        problem_text="用配方法解方程：x^2-6x+5=0",
+        reference_answer="x=1 或 x=5",
+        reference_solution_text=(
+            REFERENCE_SOLUTION_TEXT if with_reference_audit else None
+        ),
+        required_method="complete_the_square",
+    )
+
+
+async def main(argv=None) -> None:
+    args = parse_args(argv)
     try:
         settings = Settings.from_env()
     except ValueError as error:
@@ -174,41 +230,48 @@ async def main() -> None:
     model_client = OpenAICompatibleClient(settings)
     speech_client = create_speech_client(settings)
     try:
-        lesson = await LessonGenerationService(
-            model_client,
-            MathEngine(),
-        ).generate(
-            ProblemInput(
-                problem_text="用配方法解方程：x^2-6x+5=0",
-                reference_answer="x=1 或 x=5",
-                reference_solution_text=(
-                    "解：移项，得 x^2-6x=-5。\n\n"
-                    "两边同时加9，得 (x-3)^2=4。\n"
-                    "所以 x-3=2 或 x-3=-2，\n"
-                    "即 x=5 或 x=1。"
-                ),
-                required_method="complete_the_square",
+        math_engine = MathEngine()
+        with tempfile.TemporaryDirectory(
+            prefix="ai-math-smoke-audio-"
+        ) as temporary_audio_root:
+            lesson = await LessonGenerationService(
+                model_client,
+                math_engine,
+            ).generate(smoke_problem(args.with_reference_audit))
+            lesson = await LessonAudioService(
+                speech_client,
+                Path(temporary_audio_root),
+            ).attach_audio(lesson)
+            smoke_contract = assert_generated_lesson_contract(
+                lesson,
+                math_engine,
             )
-        )
-        lesson = await LessonAudioService(
-            speech_client,
-            REPOSITORY_ROOT / "var" / "audio",
-        ).attach_audio(lesson)
-        smoke_contract = assert_generated_lesson_contract(lesson)
-        report = lesson.validation_report
+            report = lesson.validation_report
+            if args.with_reference_audit:
+                _require_contract(
+                    report.get("reference_material_status") == "approved",
+                    "可选参考解析审阅未通过 smoke 合同。",
+                )
+            summary = {
+                "mode": (
+                    "reference_audit"
+                    if args.with_reference_audit
+                    else "core"
+                ),
+                "lesson_id": lesson.lesson_id,
+                "beat_count": len(lesson.beats),
+                **smoke_contract,
+                "math_status": report.get("math_status"),
+                "review_status": report.get("review_status"),
+                "revision_count": report.get("revision_count"),
+            }
+            if args.with_reference_audit:
+                summary["reference_material_status"] = report.get(
+                    "reference_material_status"
+                )
         print(
             json.dumps(
-                {
-                    "lesson_id": lesson.lesson_id,
-                    "beat_count": len(lesson.beats),
-                    **smoke_contract,
-                    "math_status": report.get("math_status"),
-                    "review_status": report.get("review_status"),
-                    "reference_material_status": report.get(
-                        "reference_material_status"
-                    ),
-                    "revision_count": report.get("revision_count"),
-                },
+                summary,
                 ensure_ascii=False,
                 indent=2,
             )
