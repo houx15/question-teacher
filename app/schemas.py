@@ -692,10 +692,25 @@ class LessonDraft(SchemaModel):
     opening: NonEmptyString
     method_rationale: NonEmptyString
     method_introduction: MethodIntroduction
-    math_steps: List[MathStep] = Field(min_length=1)
+    math_steps: List[MathStep] = Field(default_factory=list)
+    teaching_route: Dict[str, object] = Field(
+        default_factory=lambda: {
+            "verification_mode": "symbolic_verified",
+            "teaching_route_fingerprint": "legacy-direct-draft",
+        }
+    )
     moments: List[LessonMoment] = Field(min_length=1)
     summary: NonEmptyString
     transfer_item: TransferItem
+
+    @model_validator(mode="after")
+    def require_route_evidence(self) -> "LessonDraft":
+        mode = self.teaching_route.get("verification_mode")
+        if mode == "symbolic_verified" and not self.math_steps:
+            raise ValueError("symbolic lessons require math_steps")
+        if mode != "symbolic_verified" and self.math_steps:
+            raise ValueError("grounded lessons do not use legacy math_steps")
+        return self
 
 
 class ReviewDecision(SchemaModel):

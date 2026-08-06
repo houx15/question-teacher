@@ -1,4 +1,5 @@
 import copy
+import json
 
 from app.prompts import (
     DIRECTOR_SYSTEM,
@@ -18,6 +19,32 @@ class FakeClient:
         self.route_calls = []
         self._pending_narrative = None
         self._pending_materials = None
+
+    @property
+    def system_prompts(self):
+        return [system_prompt for system_prompt, _ in self.all_calls]
+
+    @property
+    def user_prompts(self):
+        return [user_prompt for _, user_prompt in self.all_calls]
+
+    def prompt_values(self, key):
+        values = []
+        for user_prompt in self.user_prompts:
+            payload = json.loads(user_prompt)
+            self._collect_prompt_values(payload, key, values)
+        return values
+
+    @classmethod
+    def _collect_prompt_values(cls, value, key, values):
+        if isinstance(value, dict):
+            if key in value:
+                values.append(value[key])
+            for child in value.values():
+                cls._collect_prompt_values(child, key, values)
+        elif isinstance(value, list):
+            for child in value:
+                cls._collect_prompt_values(child, key, values)
 
     async def complete_json(self, system_prompt, user_prompt):
         call = (system_prompt, user_prompt)

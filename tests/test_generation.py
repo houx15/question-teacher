@@ -502,10 +502,17 @@ def test_approved_draft_is_compiled_without_rewrite():
         "revision_count": 0,
         "independent_solutions": ["2", "3"],
         "review_assessment": "主线完整，互动位于关键认知转折点。",
+        "verification_mode": "symbolic_verified",
+        "consistency_status": "consistent",
+        "teaching_route_fingerprint": (
+            lesson.validation_report["teaching_route_fingerprint"]
+        ),
     }
     director_payload = json.loads(client.calls[0][1])
     assert director_payload["problem"]["required_method"] == "factor"
-    assert director_payload["independent_solutions"] == ["2", "3"]
+    assert director_payload["teaching_route"]["symbolic_context"][
+        "independent_solutions"
+    ] == ["2", "3"]
     assert "narrative_schema" in director_payload
     assert "transfer_item" not in director_payload["output_contract"]
 

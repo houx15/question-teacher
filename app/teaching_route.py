@@ -60,6 +60,7 @@ class FrozenTeachingRoute:
     canonical_json: str
     fingerprint: str
     symbolic_math_route_json: Optional[str] = None
+    symbolic_context_json: Optional[str] = None
 
     def to_prompt_payload(self) -> dict:
         assumptions = json.loads(self.assumptions_json)
@@ -75,6 +76,11 @@ class FrozenTeachingRoute:
                 steps=steps,
                 check_evidence=check_evidence,
                 symbolic_math_route_json=self.symbolic_math_route_json,
+                symbolic_context=(
+                    json.loads(self.symbolic_context_json)
+                    if self.symbolic_context_json is not None
+                    else None
+                ),
             )
         )
         actual_fingerprint = hashlib.sha256(
@@ -87,7 +93,7 @@ class FrozenTeachingRoute:
             raise TeachingRouteIntegrityError(
                 "冻结教学路线的完整性检查失败。"
             )
-        return {
+        payload = {
             "verification_mode": self.mode.value,
             "consistency_status": self.consistency.value,
             "method_name": self.method_name,
@@ -96,6 +102,11 @@ class FrozenTeachingRoute:
             "steps": steps,
             "check_evidence": check_evidence,
         }
+        if self.symbolic_context_json is not None:
+            payload["symbolic_context"] = json.loads(
+                self.symbolic_context_json
+            )
+        return payload
 
 
 def freeze_grounded_route(
@@ -157,6 +168,10 @@ def freeze_grounded_route(
 
 def freeze_symbolic_route(
     verified_route: _VerifiedMathRouteLike,
+    *,
+    method_name: Optional[str] = None,
+    equation_degree: Optional[int] = None,
+    independent_solutions: Optional[list] = None,
 ) -> FrozenTeachingRoute:
     route = verified_route.thaw()
     steps = [
@@ -172,13 +187,19 @@ def freeze_symbolic_route(
     return _freeze_route(
         mode=TeachingRouteMode.SYMBOLIC_VERIFIED,
         consistency=TeachingRouteConsistency.CONSISTENT,
-        method_name=verified_route.method_family,
+        method_name=method_name or verified_route.method_family,
         final_conclusion=_join_states(
             route.math_steps[-1].state_after
         ),
         assumptions=[],
         steps=steps,
         symbolic_math_route_json=verified_route.canonical_json,
+        symbolic_context={
+            "equation_degree": equation_degree,
+            "independent_solutions": list(independent_solutions or []),
+            "math_steps": route.model_dump()["math_steps"],
+            "method_family": verified_route.method_family,
+        },
     )
 
 
@@ -192,11 +213,17 @@ def _freeze_route(
     steps: list,
     check_evidence: Optional[list] = None,
     symbolic_math_route_json: Optional[str] = None,
+    symbolic_context: Optional[dict] = None,
 ) -> FrozenTeachingRoute:
     normalized_check_evidence = check_evidence or []
     assumptions_json = _canonical_json(assumptions)
     steps_json = _canonical_json(steps)
     check_evidence_json = _canonical_json(normalized_check_evidence)
+    symbolic_context_json = (
+        _canonical_json(symbolic_context)
+        if symbolic_context is not None
+        else None
+    )
     canonical_json = _canonical_json(
         _route_content(
             mode=mode,
@@ -207,6 +234,7 @@ def _freeze_route(
             steps=json.loads(steps_json),
             check_evidence=json.loads(check_evidence_json),
             symbolic_math_route_json=symbolic_math_route_json,
+            symbolic_context=symbolic_context,
         )
     )
     fingerprint = hashlib.sha256(
@@ -223,6 +251,7 @@ def _freeze_route(
         canonical_json=canonical_json,
         fingerprint=fingerprint,
         symbolic_math_route_json=symbolic_math_route_json,
+        symbolic_context_json=symbolic_context_json,
     )
 
 
@@ -236,6 +265,7 @@ def _route_content(
     steps: list,
     check_evidence: list,
     symbolic_math_route_json: Optional[str],
+    symbolic_context: Optional[dict],
 ) -> dict:
     return {
         "assumptions": assumptions,
@@ -245,6 +275,7 @@ def _route_content(
         "steps": steps,
         "check_evidence": check_evidence,
         "symbolic_math_route_json": symbolic_math_route_json,
+        "symbolic_context": symbolic_context,
         "verification_mode": mode.value,
     }
 

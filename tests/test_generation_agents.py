@@ -4,8 +4,10 @@ import json
 
 import pytest
 
+from app.claim_checker import ClaimChecker
 from app.generation import (
     LessonGenerationService,
+    LessonInputError,
     LessonQualityError,
     _VerifiedMathRoute,
 )
@@ -70,6 +72,299 @@ def materials_payload():
         ],
         "transfer_item": transfer_item,
     }
+
+
+def grounded_problem(reference_solution_text=None):
+    return problem().model_copy(
+        update={
+            "problem_text": (
+                "若2n（n≠0）是关于x的方程x^2-2mx+2n=0的根，"
+                "则m-n的值为"
+            ),
+            "reference_answer": "1/2",
+            "reference_solution_text": reference_solution_text,
+            "required_method": None,
+        }
+    )
+
+
+def grounding_payload(
+    *,
+    passed_checks=None,
+    failed_linked_checks=None,
+    unsupported_checks=None,
+):
+    requests = []
+    for check_id in passed_checks or []:
+        requests.append(
+            {
+                "check_id": check_id,
+                "kind": "nonzero_division",
+                "expression": "4*n^2-4*m*n+2*n",
+                "expected": "2*n-2*m+1",
+                "substitutions": {},
+                "nonzero_symbols": ["n"],
+                "conclusion_linked": True,
+            }
+        )
+    for check_id in failed_linked_checks or []:
+        requests.append(
+            {
+                "check_id": check_id,
+                "kind": "equivalence",
+                "expression": "1",
+                "expected": "2",
+                "substitutions": {},
+                "nonzero_symbols": [],
+                "conclusion_linked": True,
+            }
+        )
+    for check_id in unsupported_checks or []:
+        requests.append(
+            {
+                "check_id": check_id,
+                "kind": "nonzero_division",
+                "expression": "n+1",
+                "expected": "1",
+                "substitutions": {},
+                "nonzero_symbols": ["n"],
+                "conclusion_linked": True,
+            }
+        )
+    return {
+        "task_summary": "把已知根代回方程，求m-n",
+        "target": "m-n",
+        "assumptions": ["n≠0", "x=2n是原方程的根"],
+        "reference_conclusion": "m-n=1/2",
+        "method_name": "代入法",
+        "reasoning_steps": [
+            {
+                "step_id": "substitute-root",
+                "statement_before": "x^2-2mx+2n=0",
+                "operation_explanation": "把x=2n代入原方程",
+                "statement_after": "4n^2-4mn+2n=0",
+            },
+            {
+                "step_id": "factor-n",
+                "statement_before": "4n^2-4mn+2n=0",
+                "operation_explanation": "提取公因式2n",
+                "statement_after": "2n(2n-2m+1)=0",
+            },
+            {
+                "step_id": "use-nonzero",
+                "statement_before": "2n(2n-2m+1)=0",
+                "operation_explanation": "利用n不为0约去2n",
+                "statement_after": "2n-2m+1=0",
+            },
+            {
+                "step_id": "reach-conclusion",
+                "statement_before": "2n-2m+1=0",
+                "operation_explanation": "移项并同时除以2",
+                "statement_after": "m-n=1/2",
+            },
+        ],
+        "check_requests": requests,
+        "audit_notes": [],
+    }
+
+
+def grounded_narrative_payload():
+    return {
+        "title": "把已知根代回原方程",
+        "learning_goal": "会用已知根满足原方程这一条件求参数关系。",
+        "opening": "题目给出的2n是一个根，所以代回原方程后等式成立。",
+        "method_rationale": "根的定义直接把关于x的条件变成m、n之间的关系。",
+        "method_introduction": {
+            "method_name": "代入法",
+            "student_definition": "把已知的量放回它必须满足的关系中。",
+            "target_form": "x=2n代入原方程",
+            "why_it_helps": "可以把根的条件变成参数等式。",
+        },
+        "moments": [
+            {
+                "moment_id": "substitute-root",
+                "purpose": "代入已知根",
+                "narration": "把x换成2n，得到只含m和n的等式。",
+                "board_actions": [
+                    {
+                        "type": "write",
+                        "target": "substitution",
+                        "content": "4n^2-4mn+2n=0",
+                    }
+                ],
+                "layer": "base",
+                "interaction_intent": "检查学生是否理解根必须满足原方程。",
+            },
+            {
+                "moment_id": "factor-n",
+                "purpose": "提取公因式",
+                "narration": "左边每一项都有2n，把它提出来。",
+                "board_actions": [
+                    {
+                        "type": "write",
+                        "target": "factored",
+                        "content": "2n(2n-2m+1)=0",
+                    }
+                ],
+                "layer": "base",
+                "interaction_intent": None,
+            },
+            {
+                "moment_id": "use-nonzero",
+                "purpose": "使用非零条件",
+                "narration": "因为n不为0，所以2n不为0，可以约去这个因式。",
+                "board_actions": [
+                    {
+                        "type": "write",
+                        "target": "parameter-relation",
+                        "content": "2n-2m+1=0",
+                    }
+                ],
+                "layer": "base",
+                "interaction_intent": None,
+            },
+            {
+                "moment_id": "reach-conclusion",
+                "purpose": "整理目标式",
+                "narration": "把m和n整理到目标m-n上，就得到二分之一。",
+                "board_actions": [
+                    {
+                        "type": "write",
+                        "target": "conclusion",
+                        "content": "m-n=1/2",
+                    }
+                ],
+                "layer": "base",
+                "interaction_intent": None,
+            },
+        ],
+        "summary": "已知某个式子是根，就把它代回原方程，再使用题目条件整理目标。",
+    }
+
+
+def grounded_materials_payload():
+    return {
+        "interactions": [
+            {
+                "moment_id": "substitute-root",
+                "interaction": {
+                    "interaction_id": "root-meaning",
+                    "kind": "choice",
+                    "prompt": "已知x=2n是根，下一步应做什么？",
+                    "expected_answer": "substitute",
+                    "options": [
+                        {
+                            "option_id": "substitute",
+                            "label": "代回原方程",
+                            "feedback": "根一定能使原方程成立。",
+                        },
+                        {
+                            "option_id": "differentiate",
+                            "label": "对原式求导",
+                            "feedback": "这里不需要使用导数。",
+                        },
+                        {
+                            "option_id": "discard",
+                            "label": "忽略这个根",
+                            "feedback": "已知根正是建立参数关系的关键。",
+                        },
+                    ],
+                    "hints": ["回想根的定义。"],
+                    "explanation_after_correct": "把2n代入x的位置。",
+                },
+            }
+        ],
+        "transfer_item": {
+            "problem_text": "若a+1是方程x-a=1的根，a应满足哪个关系？",
+            "expected_answer": "(a+1)-a=1",
+            "method_signal": "把已知根代回原方程。",
+            "options": [
+                {
+                    "option_id": "correct",
+                    "canonical_answer": "(a+1)-a=1",
+                    "feedback": "把x替换成a+1即可。",
+                },
+                {
+                    "option_id": "reverse",
+                    "canonical_answer": "a-(a+1)=1",
+                    "feedback": "代入时要保留原方程中x-a的顺序。",
+                },
+                {
+                    "option_id": "omit",
+                    "canonical_answer": "a+1=1",
+                    "feedback": "这里漏掉了原式中的减a。",
+                },
+            ],
+            "correct_option_id": "correct",
+        },
+    }
+
+
+def grounded_approved_review():
+    return {
+        "status": "approved",
+        "overall_assessment": "讲解按冻结路线完成了代入、约分和结论整理。",
+        "must_fix": [],
+        "evidence": ["板书依次得到各步关系，最终呈现m-n=1/2。"],
+    }
+
+
+async def generate_grounded_lesson(
+    *,
+    reference_solution_text=(
+        "把x=2n代入原方程，得4n^2-4mn+2n=0。\n"
+        "因为n不为0，所以4n-4m+2=0，因此m-n=1/2。"
+    ),
+    passed_checks=None,
+    failed_linked_checks=None,
+    unsupported_checks=None,
+    review_statuses=None,
+    math_engine=None,
+    claim_checker=None,
+):
+    statuses = review_statuses or ["approved"]
+    responses = [
+        grounding_payload(
+            passed_checks=(
+                ["verified-division"]
+                if passed_checks is None
+                else passed_checks
+            ),
+            failed_linked_checks=failed_linked_checks,
+            unsupported_checks=unsupported_checks,
+        ),
+        grounded_narrative_payload(),
+        grounded_materials_payload(),
+    ]
+    for index, status in enumerate(statuses):
+        responses.append(
+            grounded_approved_review()
+            if status == "approved"
+            else revision_review()
+        )
+        if status == "revision_required":
+            revised = grounded_narrative_payload()
+            revised["opening"] = "先抓住根的定义，再把2n代回原方程。"
+            responses.extend([revised, grounded_materials_payload()])
+    client = FakeClient(responses)
+    lesson = await LessonGenerationService(
+        client,
+        math_engine or MathEngine(),
+        claim_checker=claim_checker,
+    ).generate(
+        grounded_problem(reference_solution_text)
+    )
+    return lesson, client
+
+
+async def generate_symbolic_lesson():
+    client = FakeClient(
+        [narrative_payload(), materials_payload(), approved_review()]
+    )
+    lesson = await LessonGenerationService(client, MathEngine()).generate(
+        problem()
+    )
+    return lesson, client
 
 
 def test_reference_grounding_prompt_isolates_three_untrusted_input_fields():
@@ -155,8 +450,8 @@ def test_materials_contract_is_small_and_receives_validated_narrative():
     assert "互动前" in MATERIALS_SYSTEM
 
 
-def test_reviewer_contract_uses_frozen_resolved_method_display():
-    assert "resolved_method.display_name" in REVIEWER_SYSTEM
+def test_reviewer_contract_uses_frozen_teaching_route_method_name():
+    assert "teaching_route.method_name" in REVIEWER_SYSTEM
     assert "名称与 required_method 不一致" not in REVIEWER_SYSTEM
 
 
@@ -485,10 +780,12 @@ def test_revision_rebuilds_narrative_then_regenerates_all_materials():
     ]
     revision_payload = json.loads(client.all_calls[3][1])
     assert "current_narrative" in revision_payload
-    assert revision_payload["resolved_method"] == {
-        "family": "factor",
-        "display_name": "因式分解法",
-    }
+    assert revision_payload["teaching_route"]["method_name"] == (
+        "因式分解法"
+    )
+    assert revision_payload["teaching_route"]["symbolic_context"][
+        "method_family"
+    ] == "factor"
     assert "transfer_item" not in revision_payload["output_contract"]
     assert "moment_choice" not in revision_payload["output_contract"]
     regenerated_materials = json.loads(client.all_calls[4][1])
@@ -557,4 +854,170 @@ def test_raw_reference_solution_is_only_sent_to_reference_auditor():
     assert all(
         raw_marker not in user_prompt
         for _, user_prompt in client.all_calls[1:]
+    )
+
+
+def test_reference_grounded_generation_uses_grounder_then_teaching_agents():
+    lesson, client = asyncio.run(generate_grounded_lesson())
+
+    assert lesson.validation_report["verification_mode"] == (
+        "model_cross_checked"
+    )
+    assert lesson.validation_report["consistency_status"] == "consistent"
+    assert lesson.validation_report["teaching_route_fingerprint"]
+    assert "independent_solutions" not in lesson.validation_report
+    assert client.system_prompts == [
+        REFERENCE_GROUNDING_SYSTEM,
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    downstream_payloads = [
+        json.loads(prompt) for prompt in client.user_prompts[1:]
+    ]
+    assert all("teaching_route" in payload for payload in downstream_payloads)
+    assert all(
+        "independent_solutions" not in payload
+        and "resolved_method" not in payload
+        and "verified_math_route" not in payload
+        for payload in downstream_payloads
+    )
+    assert "teaching_route" not in downstream_payloads[0][
+        "output_contract"
+    ]["schema"]["properties"]
+    assert "teaching_route" not in downstream_payloads[1][
+        "output_contract"
+    ]["schema"]["properties"]
+
+
+def test_grounded_without_reference_solution_still_generates():
+    lesson, client = asyncio.run(
+        generate_grounded_lesson(
+            reference_solution_text=None,
+            passed_checks=[],
+        )
+    )
+    assert lesson.validation_report["verification_mode"] == (
+        "reference_grounded"
+    )
+    assert client.system_prompts[0] == REFERENCE_GROUNDING_SYSTEM
+
+
+def test_supported_quadratic_keeps_symbolic_agent_order():
+    lesson, client = asyncio.run(generate_symbolic_lesson())
+    assert lesson.validation_report["verification_mode"] == (
+        "symbolic_verified"
+    )
+    assert REFERENCE_GROUNDING_SYSTEM not in client.system_prompts
+
+
+def test_failed_linked_check_blocks_with_safe_input_error():
+    with pytest.raises(
+        LessonInputError,
+        match="参考材料中的推导存在明确矛盾",
+    ):
+        asyncio.run(
+            generate_grounded_lesson(
+                passed_checks=[],
+                failed_linked_checks=["back-check"],
+            )
+        )
+
+
+def test_unsupported_check_softly_degrades():
+    lesson, _ = asyncio.run(
+        generate_grounded_lesson(
+            passed_checks=[],
+            unsupported_checks=["divide"],
+        )
+    )
+    assert lesson.validation_report["verification_mode"] == (
+        "reference_grounded"
+    )
+    assert lesson.validation_report["consistency_status"] == "warning"
+
+
+def test_checker_exception_softly_degrades_each_grounding_check():
+    class FlakyChecker:
+        def __init__(self):
+            self.calls = []
+
+        def check(self, request):
+            self.calls.append(request.check_id)
+            if len(self.calls) == 1:
+                raise RuntimeError("private checker failure")
+            return ClaimChecker().check(request)
+
+    checker = FlakyChecker()
+    lesson, _ = asyncio.run(
+        generate_grounded_lesson(
+            passed_checks=["first-check", "second-check"],
+            claim_checker=checker,
+        )
+    )
+    assert checker.calls == ["first-check", "second-check"]
+    assert lesson.validation_report["verification_mode"] == (
+        "model_cross_checked"
+    )
+    assert lesson.validation_report["consistency_status"] == "warning"
+
+
+def test_grounded_director_must_cover_route_steps_in_order():
+    invalid = grounded_narrative_payload()
+    invalid["moments"][1]["board_actions"][0]["content"] = (
+        "这里省略关键式子"
+    )
+    client = FakeClient(
+        [
+            grounding_payload(passed_checks=["verified-division"]),
+            invalid,
+            copy.deepcopy(invalid),
+        ]
+    )
+
+    with pytest.raises(
+        LessonQualityError,
+        match="按顺序覆盖参考路线",
+    ):
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate(
+                grounded_problem("一段参考解析")
+            )
+        )
+
+
+def test_revision_keeps_grounded_route_fingerprint():
+    lesson, client = asyncio.run(
+        generate_grounded_lesson(
+            review_statuses=["revision_required", "approved"],
+        )
+    )
+    fingerprints = client.prompt_values("teaching_route_fingerprint")
+    assert len(set(fingerprints)) == 1
+    assert lesson.validation_report["teaching_route_fingerprint"] == (
+        fingerprints[0]
+    )
+
+
+def test_raw_reference_text_is_grounder_only():
+    marker = "RAW-REFERENCE-ONLY"
+    _, client = asyncio.run(
+        generate_grounded_lesson(reference_solution_text=marker)
+    )
+    assert marker in client.user_prompts[0]
+    assert all(marker not in prompt for prompt in client.user_prompts[1:])
+
+
+def test_grounded_generation_never_requests_symbolic_solution_set():
+    class GroundedOnlyMathEngine(MathEngine):
+        def solution_set(self, equations):
+            raise AssertionError("grounded generation called solution_set")
+
+    lesson, _ = asyncio.run(
+        generate_grounded_lesson(
+            math_engine=GroundedOnlyMathEngine(),
+        )
+    )
+    assert lesson.validation_report["verification_mode"] == (
+        "model_cross_checked"
     )

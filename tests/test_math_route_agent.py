@@ -317,7 +317,11 @@ def test_revision_never_regenerates_or_accepts_math_route():
         REVIEWER_SYSTEM,
     ]
     revision = json.loads(client.calls[4][1])
-    assert "verified_math_route" in revision
+    assert revision["teaching_route"]["verification_mode"] == (
+        "symbolic_verified"
+    )
+    assert revision["teaching_route"]["symbolic_context"]["math_steps"]
+    assert revision["teaching_route"]["teaching_route_fingerprint"]
     assert "math_steps" not in revision["output_contract"]["schema"][
         "properties"
     ]

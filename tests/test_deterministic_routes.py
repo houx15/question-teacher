@@ -260,13 +260,21 @@ def test_unspecified_quadratic_resolved_method_reaches_all_teaching_agents():
     director = json.loads(client.all_calls[0][1])
     materials = json.loads(client.all_calls[1][1])
     reviewer = json.loads(client.all_calls[2][1])
-    assert director["resolved_method"] == {
-        "family": "quadratic_formula",
-        "display_name": "公式法",
+    expected_route_fingerprint = director["teaching_route"][
+        "teaching_route_fingerprint"
+    ]
+    assert director["teaching_route"]["method_name"] == "公式法"
+    assert director["teaching_route"]["symbolic_context"] == {
+        "equation_degree": 2,
+        "independent_solutions": ["2", "3"],
+        "math_steps": director["teaching_route"]["symbolic_context"][
+            "math_steps"
+        ],
+        "method_family": "quadratic_formula",
     }
-    assert materials["resolved_method"] == director["resolved_method"]
-    assert reviewer["resolved_method"] == director["resolved_method"]
-    assert reviewer["independent_solutions"] == ["2", "3"]
+    assert materials["teaching_route"] == director["teaching_route"]
+    assert reviewer["teaching_route"] == director["teaching_route"]
+    assert expected_route_fingerprint
     assert materials["output_contract"]["transfer_item"][
         "method_profile"
     ]["required_method"] == "quadratic_formula"
@@ -326,8 +334,12 @@ def test_unspecified_linear_resolved_method_reaches_reviewer_and_transfer():
     assert profile["resolved_method_family"] == "basic_equation_operations"
     assert profile["required_method"] is None
     assert profile["equation_template"] == "a*x+b=0"
-    assert reviewer["resolved_method"] == {
-        "family": "basic_equation_operations",
-        "display_name": "等式基本变形",
-    }
-    assert reviewer["independent_solutions"] == ["2"]
+    assert reviewer["teaching_route"]["method_name"] == (
+        "等式基本变形"
+    )
+    assert reviewer["teaching_route"]["symbolic_context"][
+        "method_family"
+    ] == "basic_equation_operations"
+    assert reviewer["teaching_route"]["symbolic_context"][
+        "independent_solutions"
+    ] == ["2"]
