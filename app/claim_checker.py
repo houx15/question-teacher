@@ -250,7 +250,7 @@ class ClaimChecker:
         powers = dependent.as_powers_dict()
         return all(
             isinstance(base, Symbol)
-            and exponent.is_Integer
+            and isinstance(exponent, Integer)
             and int(exponent) > 0
             for base, exponent in powers.items()
         )
@@ -310,13 +310,18 @@ class ClaimChecker:
                 raise _UnsupportedClaim("unsupported_expression_node")
             if not isinstance(node, Pow):
                 continue
+            if (
+                not node.free_symbols
+                and (node.base.has(Pow) or node.exp.has(Pow))
+            ):
+                raise _UnsupportedClaim("numeric_complexity_exceeded")
             exponent = node.exp
             if node.base.free_symbols and exponent.is_negative:
                 raise _UnsupportedClaim("unsupported_exponent")
-            if exponent.is_Integer:
+            if isinstance(exponent, Integer):
                 if abs(int(exponent)) > self._MAX_LITERAL_EXPONENT:
                     raise _UnsupportedClaim("unsupported_exponent")
-            elif exponent.is_Rational:
+            elif isinstance(exponent, Rational):
                 if node.base.free_symbols:
                     raise _UnsupportedClaim("unsupported_exponent")
             else:

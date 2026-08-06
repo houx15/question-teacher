@@ -174,6 +174,31 @@ def test_unicode_operators_are_normalized():
     assert result.status == ClaimStatus.PASSED
 
 
+def test_small_numeric_power_remains_supported():
+    result = ClaimChecker().check(
+        check_payload(expression="2^2", expected="4")
+    )
+
+    assert result.status == ClaimStatus.PASSED
+
+
+@pytest.mark.parametrize(
+    "nested_power",
+    [
+        "2^(2^2)",
+        "(2^2)^2",
+    ],
+)
+def test_nested_pure_numeric_power_is_rejected_before_evaluation(
+    nested_power,
+):
+    result = ClaimChecker().check(
+        check_payload(expression=nested_power, expected="16")
+    )
+
+    assert result.status == ClaimStatus.UNSUPPORTED
+
+
 @pytest.mark.parametrize(
     "hostile",
     [
