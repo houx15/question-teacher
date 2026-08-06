@@ -212,6 +212,40 @@ export function classifyInteractionControl(interaction) {
 }
 
 
+export function isCurrentInteractionSubmission(submission, current) {
+  return Boolean(
+    submission
+    && current
+    && current.interactionSubmitting === true
+    && current.interactionVisible === true
+    && submission.beatToken === current.beatToken
+    && submission.interactionId === current.interactionId
+    && submission.sequence === current.sequence
+  );
+}
+
+
+export function isNativeInteractiveTarget(target) {
+  const interactiveTags = new Set([
+    "BUTTON",
+    "A",
+    "INPUT",
+    "TEXTAREA",
+    "SELECT",
+    "SUMMARY",
+  ]);
+  let node = target;
+  while (node) {
+    if (node.isContentEditable === true) return true;
+    if (interactiveTags.has(String(node.tagName || "").toUpperCase())) {
+      return true;
+    }
+    node = node.parentElement || null;
+  }
+  return false;
+}
+
+
 export function resolveInteractionPresentation({
   result = {},
   interaction = {},

@@ -4,6 +4,8 @@ import {
   cloneBoard,
   createBoundedSettlement,
   fallbackDurationForNarration,
+  isCurrentInteractionSubmission,
+  isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs";
@@ -52,11 +54,14 @@ let runtime = null;
 let primaryAudio = null;
 let feedbackAudio = null;
 let feedbackAudioFinalizer = null;
+let activeEvaluationController = null;
 let timeline = null;
 let beatToken = 0;
+let submissionSequence = 0;
 let started = false;
 let paused = false;
 let interactionVisible = false;
+let interactionSubmitting = false;
 let appliedActionIndexes = new Set();
 let beatSnapshots = new Map();
 
@@ -199,6 +204,12 @@ function createBoardNode(target) {
   node.tabIndex = -1;
   node.dataset.boardTarget = target;
 
+  const selectablePrefix = document.createElement("span");
+  selectablePrefix.className = "sr-only board-selectable-prefix";
+  selectablePrefix.textContent = "选择板书：";
+  selectablePrefix.setAttribute("aria-hidden", "true");
+  node.append(selectablePrefix);
+
   const content = document.createElement("span");
   content.className = "board-content";
   node.append(content);
@@ -328,6 +339,10 @@ function renderActiveBoards() {
 
 
 function stopMedia() {
+  submissionSequence += 1;
+  interactionSubmitting = false;
+  activeEvaluationController?.abort();
+  activeEvaluationController = null;
   timeline?.clear();
   timeline = null;
   if (primaryAudio) {
@@ -354,8 +369,10 @@ function updateControls() {
   }
   const beat = runtime.current();
   const primaryIntent = runtime.primaryControlIntent(paused);
-  dom.previous.disabled = runtime.currentIndex === 0 || !started;
-  dom.replay.disabled = !started;
+  dom.previous.disabled = (
+    runtime.currentIndex === 0 || !started || interactionSubmitting
+  );
+  dom.replay.disabled = !started || interactionSubmitting;
   dom.pause.disabled = (
     !started
     || interactionVisible
@@ -370,6 +387,7 @@ function updateControls() {
     : (paused ? "继续" : "暂停");
   dom.next.disabled = (
     !started
+    || interactionSubmitting
     || runtime.audioState === "playing"
     || (beat?.interaction && !runtime.interactionComplete())
     || beat?.next_beat_id === null
@@ -636,9 +654,10 @@ function activatePrimaryControl() {
 
 function clearPointSelection() {
   for (const node of document.querySelectorAll(".board-object.is-selectable")) {
+    const prefix = node.querySelector(".board-selectable-prefix");
+    prefix?.setAttribute("aria-hidden", "true");
     node.classList.remove("is-selectable");
     node.removeAttribute("role");
-    node.removeAttribute("aria-label");
     node.tabIndex = -1;
     node.onclick = null;
     node.onkeydown = null;
@@ -653,12 +672,10 @@ function enablePointSelection(onSelect) {
   const nodes = [...activeRegion.querySelectorAll(".board-object")]
     .filter((node) => node.getClientRects().length > 0);
   nodes.forEach((node) => {
+    const prefix = node.querySelector(".board-selectable-prefix");
+    prefix?.removeAttribute("aria-hidden");
     node.classList.add("is-selectable");
     node.setAttribute("role", "button");
-    node.setAttribute(
-      "aria-label",
-      `选择板书：${humanizeTarget(node.dataset.boardTarget)}`,
-    );
     node.tabIndex = 0;
     const select = () => onSelect(node.dataset.boardTarget);
     node.onclick = select;
@@ -776,6 +793,8 @@ function showInteraction(interaction) {
 
 async function evaluateInteraction(interaction, answer) {
   const controller = new AbortController();
+  activeEvaluationController?.abort();
+  activeEvaluationController = controller;
   const timeout = window.setTimeout(
     () => controller.abort(),
     EVALUATION_TIMEOUT_MS,
@@ -798,6 +817,9 @@ async function evaluateInteraction(interaction, answer) {
     return await response.json();
   } finally {
     clearTimeout(timeout);
+    if (activeEvaluationController === controller) {
+      activeEvaluationController = null;
+    }
   }
 }
 
@@ -819,13 +841,15 @@ function playFeedbackAudio(url) {
       resolve,
       timeoutMs: FEEDBACK_AUDIO_TIMEOUT_MS,
       cleanup: () => {
-        audio.removeEventListener("ended", onEnded);
-        audio.removeEventListener("error", onError);
-        audio.pause();
         if (feedbackAudio === audio) feedbackAudio = null;
         if (feedbackAudioFinalizer === settle) {
           feedbackAudioFinalizer = null;
         }
+        audio.removeEventListener("ended", onEnded);
+        audio.removeEventListener("error", onError);
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
       },
     });
     feedbackAudioFinalizer = settle;
@@ -842,13 +866,34 @@ function playFeedbackAudio(url) {
 
 
 async function submitInteraction(interaction, answer, selectedOption, ui) {
+  submissionSequence += 1;
+  const originatingBeatToken = beatToken;
+  const originatingInteractionId = interaction.interaction_id;
+  const originatingSequence = submissionSequence;
+  interactionSubmitting = true;
+  const isCurrentSubmission = () => isCurrentInteractionSubmission(
+    {
+      beatToken: originatingBeatToken,
+      interactionId: originatingInteractionId,
+      sequence: originatingSequence,
+    },
+    {
+      beatToken,
+      interactionId: runtime?.current()?.interaction?.interaction_id,
+      sequence: submissionSequence,
+      interactionVisible,
+      interactionSubmitting,
+    },
+  );
   const interactiveNodes = ui.controls.querySelectorAll("button, input");
   interactiveNodes.forEach((node) => { node.disabled = true; });
   ui.feedback.classList.remove("is-wrong");
   ui.feedback.textContent = "正在核对…";
+  updateControls();
 
   try {
     const result = await evaluateInteraction(interaction, answer);
+    if (!isCurrentSubmission()) return;
     const outcome = runtime.recordAnswer({
       classification: result.classification,
       hints: interaction.hints || [],
@@ -869,6 +914,7 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
         renderMathText(ui.hint, presentation.message);
       }
       await playFeedbackAudio(presentation.audioUrl);
+      if (!isCurrentSubmission()) return;
       interactiveNodes.forEach((node) => { node.disabled = false; });
       if (interaction.kind === "point_select") {
         enablePointSelection((retryAnswer) => {
@@ -891,6 +937,7 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
     }
     const answeredBeatToken = beatToken;
     await playFeedbackAudio(presentation.audioUrl);
+    if (!isCurrentSubmission()) return;
     if (
       answeredBeatToken === beatToken
       && interactionVisible
@@ -903,6 +950,7 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
       }, 520);
     }
   } catch {
+    if (!isCurrentSubmission()) return;
     ui.feedback.textContent = "暂时无法核对答案，请再提交一次。";
     ui.feedback.classList.add("is-wrong");
     renderMathText(ui.hint, "");
@@ -914,6 +962,11 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
       });
     }
     ui.controls.querySelector("input, button")?.focus();
+  } finally {
+    if (isCurrentSubmission()) {
+      interactionSubmitting = false;
+      updateControls();
+    }
   }
 }
 
@@ -952,17 +1005,19 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 document.addEventListener("keydown", (event) => {
-  const activeTag = document.activeElement?.tagName;
-  if (activeTag === "INPUT" || activeTag === "TEXTAREA") return;
+  if (
+    isNativeInteractiveTarget(event.target)
+    || isNativeInteractiveTarget(document.activeElement)
+  ) return;
   if (event.key === " ") {
     event.preventDefault();
-    activatePrimaryControl();
+    if (!dom.pause.disabled) activatePrimaryControl();
   } else if (event.key === "ArrowLeft") {
-    previousBeat();
+    if (!dom.previous.disabled) previousBeat();
   } else if (event.key === "ArrowRight") {
     if (!dom.next.disabled) advanceBeat();
   } else if (event.key.toLowerCase() === "r") {
-    replayCurrentBeat();
+    if (!dom.replay.disabled) replayCurrentBeat();
   } else if (event.key.toLowerCase() === "f") {
     toggleFullscreen();
   }

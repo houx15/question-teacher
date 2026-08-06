@@ -7,6 +7,8 @@ import {
   classifyInteractionControl,
   cloneBoard,
   createBoundedSettlement,
+  isCurrentInteractionSubmission,
+  isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "../app/static/runtime-core.mjs";
@@ -332,6 +334,77 @@ test("interaction kinds route to deterministic controls", () => {
   assert.equal(classifyInteractionControl({ kind: "transfer" }), "math-input");
   assert.equal(classifyInteractionControl({ kind: "free_text" }), "text-input");
   assert.equal(classifyInteractionControl(null), "none");
+});
+
+
+test("interaction submission identity rejects token id sequence and state drift", () => {
+  const submission = {
+    beatToken: 8,
+    interactionId: "method-choice",
+    sequence: 3,
+  };
+  const current = {
+    beatToken: 8,
+    interactionId: "method-choice",
+    sequence: 3,
+    interactionVisible: true,
+    interactionSubmitting: true,
+  };
+
+  assert.equal(isCurrentInteractionSubmission(submission, current), true);
+  assert.equal(
+    isCurrentInteractionSubmission(submission, { ...current, beatToken: 9 }),
+    false,
+  );
+  assert.equal(
+    isCurrentInteractionSubmission(
+      submission,
+      { ...current, interactionId: "next-check" },
+    ),
+    false,
+  );
+  assert.equal(
+    isCurrentInteractionSubmission(submission, { ...current, sequence: 4 }),
+    false,
+  );
+  assert.equal(
+    isCurrentInteractionSubmission(
+      submission,
+      { ...current, interactionVisible: false },
+    ),
+    false,
+  );
+  assert.equal(
+    isCurrentInteractionSubmission(
+      submission,
+      { ...current, interactionSubmitting: false },
+    ),
+    false,
+  );
+});
+
+
+test("native interactive target recognizes controls and contenteditable ancestry", () => {
+  for (const tagName of [
+    "BUTTON",
+    "A",
+    "INPUT",
+    "TEXTAREA",
+    "SELECT",
+    "SUMMARY",
+  ]) {
+    assert.equal(isNativeInteractiveTarget({ tagName }), true);
+  }
+  const editableParent = { tagName: "DIV", isContentEditable: true };
+  const editableChild = {
+    tagName: "SPAN",
+    isContentEditable: false,
+    parentElement: editableParent,
+  };
+
+  assert.equal(isNativeInteractiveTarget(editableChild), true);
+  assert.equal(isNativeInteractiveTarget({ tagName: "DIV" }), false);
+  assert.equal(isNativeInteractiveTarget(null), false);
 });
 
 

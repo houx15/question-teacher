@@ -137,7 +137,13 @@ def test_point_select_prompt_does_not_block_board_pointer_or_keyboard_access():
     assert "const activeRegion = runtime.layerStack.length > 0" in source
     assert 'activeRegion.querySelectorAll(".board-object")' in source
     assert "node.getClientRects().length > 0" in source
-    assert "`选择板书：${humanizeTarget(node.dataset.boardTarget)}`" in source
+    assert 'selectablePrefix.className = "sr-only board-selectable-prefix"' in source
+    assert 'selectablePrefix.textContent = "选择板书："' in source
+    assert 'selectablePrefix.setAttribute("aria-hidden", "true")' in source
+    assert 'prefix?.removeAttribute("aria-hidden")' in source
+    assert 'prefix?.setAttribute("aria-hidden", "true")' in source
+    assert 'node.setAttribute("aria-label"' not in source
+    assert "humanizeTarget(node.dataset.boardTarget)" not in source
     assert "boardSource" not in source
     assert 'event.key === "Enter" || event.key === " "' in source
 
@@ -169,7 +175,11 @@ def test_interaction_evaluation_and_feedback_audio_have_bounded_lifecycles():
 
     assert "const EVALUATION_TIMEOUT_MS = 14000;" in source
     assert "const FEEDBACK_AUDIO_TIMEOUT_MS = 12000;" in source
+    assert "let activeEvaluationController = null;" in source
+    assert "let interactionSubmitting = false;" in source
     assert "const controller = new AbortController();" in source
+    assert "activeEvaluationController = controller;" in source
+    assert "activeEvaluationController === controller" in source
     assert "signal: controller.signal" in source
     assert "controller.abort()" in source
     assert "clearTimeout(timeout)" in source
@@ -179,6 +189,39 @@ def test_interaction_evaluation_and_feedback_audio_have_bounded_lifecycles():
     assert 'audio.addEventListener("error", onError' in source
     assert "playAttempt?.catch(settle)" in source
     assert "window.setTimeout(resolve, 650)" not in source
+    assert 'audio.removeAttribute("src")' in source
+    assert "audio.load()" in source
+
+
+def test_submission_state_guards_every_async_boundary_and_navigation():
+    source = page_client().get("/static/lesson.js").text
+    submit_source = source[
+        source.index("async function submitInteraction"):
+        source.index("async function toggleFullscreen")
+    ]
+
+    assert "let submissionSequence = 0;" in source
+    assert "submissionSequence += 1;" in source
+    assert "interactionSubmitting = true;" in submit_source
+    assert "const originatingBeatToken = beatToken;" in submit_source
+    assert "const originatingInteractionId = interaction.interaction_id;" in submit_source
+    assert "const isCurrentSubmission = () =>" in submit_source
+    assert submit_source.count("if (!isCurrentSubmission()) return;") >= 3
+    assert submit_source.index("if (!isCurrentSubmission()) return;") < (
+        submit_source.index("runtime.recordAnswer")
+    )
+    assert "interactionSubmitting = false;" in submit_source
+    assert "activeEvaluationController?.abort()" in source
+    assert "|| interactionSubmitting" in source
+
+
+def test_global_shortcuts_preserve_native_interactive_keyboard_behavior():
+    source = page_client().get("/static/lesson.js").text
+
+    assert "isNativeInteractiveTarget(event.target)" in source
+    assert "isNativeInteractiveTarget(document.activeElement)" in source
+    assert 'if (!dom.previous.disabled) previousBeat();' in source
+    assert 'if (!dom.replay.disabled) replayCurrentBeat();' in source
 
 
 def test_needs_review_waits_for_explicit_continue_and_errors_clear_stale_hints():
