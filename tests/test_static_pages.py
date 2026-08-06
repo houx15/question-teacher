@@ -5,6 +5,9 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
+from app.generation import LessonQualityError
+from app.llm_client import ModelResponseError
+from app.tts_client import SpeechGenerationError
 from scripts.smoke_live import assert_generated_lesson_contract
 from scripts import smoke_live
 
@@ -110,6 +113,42 @@ def test_live_smoke_defaults_to_core_and_requires_explicit_audit_flag():
     assert smoke_live.parse_args(["--with-reference-audit"]).with_reference_audit is True
     assert smoke_live.smoke_problem(False).reference_solution_text is None
     assert smoke_live.smoke_problem(True).reference_solution_text is not None
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (
+            LessonQualityError("private lesson output and prompt"),
+            "讲解生成未通过质量门，请检查模型输出后重试。",
+        ),
+        (
+            ModelResponseError("private provider body"),
+            "模型服务调用失败，请检查配置或稍后重试。",
+        ),
+        (
+            SpeechGenerationError("private tts response"),
+            "语音生成失败，请检查 TTS 配置或稍后重试。",
+        ),
+    ],
+)
+def test_live_smoke_cli_converts_known_failures_to_safe_errors(
+    monkeypatch,
+    error,
+    expected_message,
+):
+    async def fail_safely(_argv=None):
+        raise error
+
+    monkeypatch.setattr(smoke_live, "main", fail_safely)
+
+    with pytest.raises(SystemExit) as exc_info:
+        smoke_live.run_cli([])
+
+    assert str(exc_info.value) == expected_message
+    assert "private" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
 
 
 def test_live_smoke_uses_automatic_temporary_audio_directory():

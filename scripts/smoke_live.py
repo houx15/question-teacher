@@ -13,11 +13,14 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from app.audio_service import LessonAudioService
 from app.config import Settings
-from app.generation import LessonGenerationService
-from app.llm_client import OpenAICompatibleClient
+from app.generation import LessonGenerationService, LessonQualityError
+from app.llm_client import ModelResponseError, OpenAICompatibleClient
 from app.math_engine import MathEngine
 from app.schemas import ProblemInput
-from app.tts_client import OpenAISpeechClient
+from app.tts_client import (
+    OpenAISpeechClient,
+    SpeechGenerationError,
+)
 from app.volcengine_tts_client import VolcengineSpeechClient
 
 
@@ -281,5 +284,24 @@ async def main(argv=None) -> None:
         await speech_client.close()
 
 
+def run_cli(argv=None) -> None:
+    try:
+        asyncio.run(main(argv))
+    except ModelResponseError:
+        raise SystemExit(
+            "模型服务调用失败，请检查配置或稍后重试。"
+        ) from None
+    except LessonQualityError:
+        raise SystemExit(
+            "讲解生成未通过质量门，请检查模型输出后重试。"
+        ) from None
+    except SpeechGenerationError:
+        raise SystemExit(
+            "语音生成失败，请检查 TTS 配置或稍后重试。"
+        ) from None
+    except SmokeContractError:
+        raise SystemExit("现场课程未通过 smoke 合同检查。") from None
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_cli()

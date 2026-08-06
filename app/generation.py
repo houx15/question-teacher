@@ -1,4 +1,5 @@
 import inspect
+import json
 import re
 from typing import Any, Awaitable, Callable, Optional, Union
 
@@ -73,6 +74,78 @@ class LessonInputError(LessonQualityError):
     def __init__(self, public_message: str) -> None:
         super().__init__(public_message)
         self.public_message = public_message
+
+
+class _DraftSchemaValidationError(LessonQualityError):
+    """Carries a bounded schema-only retry summary inside the service."""
+
+    def __init__(self, validation_summary: str) -> None:
+        super().__init__("模型生成的讲解结构无效。")
+        self.validation_summary = validation_summary
+
+
+def _lesson_draft_property_names() -> set:
+    names = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            properties = value.get("properties")
+            if isinstance(properties, dict):
+                names.update(properties)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(LessonDraft.model_json_schema())
+    return names
+
+
+_LESSON_DRAFT_PROPERTY_NAMES = _lesson_draft_property_names()
+_MAX_SCHEMA_RETRY_ISSUES = 12
+
+
+def _draft_schema_validation_summary(error: ValidationError) -> str:
+    raw_issues = error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )
+    issues = []
+    for raw_issue in raw_issues[:_MAX_SCHEMA_RETRY_ISSUES]:
+        path_parts = []
+        for part in raw_issue.get("loc", ()):
+            if isinstance(part, int):
+                path_parts.append("[]")
+            elif part in _LESSON_DRAFT_PROPERTY_NAMES:
+                path_parts.append(part)
+            else:
+                path_parts.append("<unknown>")
+        issue_type = raw_issue.get("type")
+        if not (
+            isinstance(issue_type, str)
+            and len(issue_type) <= 40
+            and re.fullmatch(r"[a-z_]+", issue_type)
+        ):
+            issue_type = "validation_error"
+        issues.append(
+            {
+                "path": ".".join(path_parts) or "<model>",
+                "type": issue_type,
+            }
+        )
+    return json.dumps(
+        {
+            "category": "lesson_draft_schema_validation",
+            "issue_count": len(raw_issues),
+            "issues": issues,
+            "truncated": len(raw_issues) > len(issues),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 class LessonGenerationService:
@@ -182,8 +255,10 @@ class LessonGenerationService:
         )
         try:
             return LessonDraft.model_validate(payload)
-        except ValidationError:
-            raise LessonQualityError("模型生成的讲解结构无效。") from None
+        except ValidationError as error:
+            raise _DraftSchemaValidationError(
+                _draft_schema_validation_summary(error)
+            ) from None
 
     async def _create_validated_draft(
         self,
@@ -193,12 +268,18 @@ class LessonGenerationService:
     ) -> LessonDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
-            draft = await self._create_draft(
-                problem,
-                solution_strings,
-                reference_audit,
-                previous_validation_error,
-            )
+            try:
+                draft = await self._create_draft(
+                    problem,
+                    solution_strings,
+                    reference_audit,
+                    previous_validation_error,
+                )
+            except _DraftSchemaValidationError as error:
+                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
+                    raise LessonQualityError(str(error)) from None
+                previous_validation_error = error.validation_summary
+                continue
             try:
                 self._validate_draft(problem, draft)
                 return draft

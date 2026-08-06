@@ -786,7 +786,7 @@ def test_draft_rejects_unexecutable_choice_before_review():
 
     assert "讲解结构无效" in str(exc_info.value)
     assert "unusable-choice" not in str(exc_info.value)
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -1089,19 +1089,61 @@ def test_accepts_valid_method_first_diagnostic_choice_draft():
     assert lesson.validation_report["review_status"] == "approved"
 
 
-def test_invalid_director_schema_is_reported_without_model_payload():
+def test_invalid_director_schema_is_regenerated_once_with_safe_summary():
     private_payload = {
         "title": "private-model-output",
         "math_steps": "not-a-list",
+        "private-secret-field": "secret-model-value",
     }
-    client = FakeClient([private_payload])
+    client = FakeClient(
+        [private_payload, valid_draft(), approved_review()]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+    assert len(client.calls) == 3
+    retry_payload = json.loads(client.calls[1][1])
+    summary = json.loads(retry_payload["previous_validation_error"])
+    assert summary["category"] == "lesson_draft_schema_validation"
+    assert summary["issue_count"] >= 1
+    assert 1 <= len(summary["issues"]) <= 12
+    assert all(
+        set(issue) == {"path", "type"}
+        for issue in summary["issues"]
+    )
+    assert "private-model-output" not in client.calls[1][1]
+    assert "secret-model-value" not in client.calls[1][1]
+    assert "private-secret-field" not in client.calls[1][1]
+
+
+def test_two_invalid_director_schemas_stop_after_one_safe_retry():
+    first_private_payload = {
+        "title": "first-private-output",
+        "math_steps": "not-a-list",
+    }
+    second_private_payload = {
+        "title": "second-private-output",
+        "math_steps": "still-not-a-list",
+    }
+    source_problem = problem()
+    client = FakeClient(
+        [first_private_payload, second_private_payload]
+    )
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError) as exc_info:
-        asyncio.run(service.generate(problem()))
+        asyncio.run(service.generate(source_problem))
 
-    assert "讲解结构无效" in str(exc_info.value)
-    assert "private-model-output" not in str(exc_info.value)
+    assert str(exc_info.value) == "模型生成的讲解结构无效。"
+    assert len(client.calls) == 2
+    for private_text in (
+        "first-private-output",
+        "second-private-output",
+        source_problem.problem_text,
+    ):
+        assert private_text not in str(exc_info.value)
 
 
 def test_transient_model_failure_is_retried_once():
