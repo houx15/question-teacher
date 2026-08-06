@@ -4,20 +4,25 @@ import json
 
 import pytest
 
-from app.generation import LessonGenerationService, LessonQualityError
+from app.generation import (
+    LessonGenerationService,
+    LessonQualityError,
+    _VerifiedMathRoute,
+)
 from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
 from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
+    MATH_ROUTE_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
     director_prompt,
     materials_prompt,
 )
-from app.schemas import MaterialsDraft, NarrativeDraft
+from app.schemas import MaterialsDraft, MathRouteDraft, NarrativeDraft
+from tests.generation_fakes import FakeClient
 from tests.test_generation import (
-    FakeClient,
     approved_review,
     approved_audit,
     problem,
@@ -29,6 +34,7 @@ from tests.test_generation import (
 def narrative_payload():
     payload = copy.deepcopy(valid_draft())
     payload.pop("transfer_item")
+    payload.pop("math_steps")
     for index, moment in enumerate(payload["moments"]):
         moment["moment_id"] = f"moment-{index}"
         if moment.get("interaction") is not None:
@@ -111,14 +117,16 @@ def test_narrative_schema_bounds_tts_fields_lists_and_board_actions():
     schema = NarrativeDraft.model_json_schema()
     properties = schema["properties"]
     moment = schema["$defs"]["NarrativeMoment"]["properties"]
-    math_step = schema["$defs"]["NarrativeMathStep"]["properties"]
     board_action = schema["$defs"]["NarrativeBoardAction"]["properties"]
+    route_schema = MathRouteDraft.model_json_schema()
+    math_step = route_schema["$defs"]["NarrativeMathStep"]["properties"]
 
     assert properties["title"]["maxLength"] == 120
     assert properties["opening"]["maxLength"] == 90
     assert properties["summary"]["maxLength"] == 90
     assert properties["moments"]["maxItems"] == 16
-    assert properties["math_steps"]["maxItems"] == 16
+    assert "math_steps" not in properties
+    assert route_schema["properties"]["math_steps"]["maxItems"] == 16
     assert moment["purpose"]["maxLength"] == 120
     assert moment["board_actions"]["maxItems"] == 12
     assert math_step["state_before"]["maxItems"] == 4
@@ -178,8 +186,18 @@ def test_compose_deep_copies_nested_narrative_board_actions():
     materials = MaterialsDraft.model_validate(materials_payload())
     service = LessonGenerationService(FakeClient([]), MathEngine())
     before = narrative.model_dump()
+    verified_route = _VerifiedMathRoute.freeze(
+        MathRouteDraft.model_validate(
+            {"math_steps": valid_draft()["math_steps"]}
+        ),
+        "factor",
+    )
 
-    draft = service._compose_draft(narrative, materials)
+    draft = service._compose_draft(
+        narrative,
+        materials,
+        verified_route,
+    )
     draft.moments[0].board_actions[0].target = "mutated-target"
 
     assert narrative.model_dump() == before

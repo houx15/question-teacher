@@ -14,6 +14,7 @@ from app.llm_client import ModelResponseError
 from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
+    MATH_ROUTE_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
@@ -22,75 +23,7 @@ from app.prompts import (
     reference_audit_prompt,
 )
 from app.schemas import NarrativeDraft, ProblemInput, ReferenceMaterialAudit
-
-
-class FakeClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-        self.all_calls = []
-        self._pending_materials = None
-
-    async def complete_json(self, system_prompt, user_prompt):
-        call = (system_prompt, user_prompt)
-        self.all_calls.append(call)
-        if system_prompt != MATERIALS_SYSTEM:
-            self.calls.append(call)
-        if (
-            system_prompt == MATERIALS_SYSTEM
-            and self._pending_materials is not None
-        ):
-            response = self._pending_materials
-            self._pending_materials = None
-            return response
-
-        response = self.responses.pop(0)
-        if isinstance(response, BaseException):
-            raise response
-        if (
-            isinstance(response, dict)
-            and "transfer_item" in response
-            and "moments" in response
-        ):
-            materials = {
-                "interactions": [
-                    {
-                        "moment_id": f"moment-{index}",
-                        "interaction": copy.deepcopy(
-                            moment["interaction"]
-                        ),
-                    }
-                    for index, moment in enumerate(response["moments"])
-                    if moment.get("interaction") is not None
-                ],
-                "transfer_item": copy.deepcopy(
-                    response["transfer_item"]
-                ),
-            }
-            for option in materials["transfer_item"].get("options", []):
-                option.pop("label", None)
-            if system_prompt == MATERIALS_SYSTEM:
-                return materials
-            if system_prompt in {DIRECTOR_SYSTEM, REVISION_SYSTEM}:
-                self._pending_materials = materials
-                narrative = copy.deepcopy(response)
-                narrative.pop("transfer_item")
-                for index, moment in enumerate(narrative["moments"]):
-                    moment["moment_id"] = f"moment-{index}"
-                    if self._pending_materials and any(
-                        binding["moment_id"] == f"moment-{index}"
-                        for binding in self._pending_materials[
-                            "interactions"
-                        ]
-                    ):
-                        moment["interaction_intent"] = (
-                            "诊断这个关键认知转折。"
-                        )
-                    moment.pop("interaction", None)
-                    if moment.get("layer") == "interaction":
-                        moment["layer"] = "base"
-                return narrative
-        return response
+from tests.generation_fakes import FakeClient
 
 
 def problem(required_method="factor", reference_solution_text=None):
@@ -187,6 +120,7 @@ def valid_draft():
 def valid_narrative():
     payload = copy.deepcopy(valid_draft())
     payload.pop("transfer_item")
+    payload.pop("math_steps")
     for index, moment in enumerate(payload["moments"]):
         moment["moment_id"] = f"moment-{index}"
         if moment.get("interaction") is not None:
@@ -509,6 +443,11 @@ def test_approved_draft_is_compiled_without_rewrite():
     assert client.calls[1][0] == REVIEWER_SYSTEM
     assert lesson.validation_report == {
         "math_status": "verified",
+        "math_route_status": "verified",
+        "math_route_fingerprint": (
+            lesson.validation_report["math_route_fingerprint"]
+        ),
+        "math_route_method_family": "factor",
         "review_status": "approved",
         "revision_count": 0,
         "independent_solutions": ["2", "3"],
@@ -598,11 +537,11 @@ def test_invalid_math_step_stops_before_review_with_safe_error():
     with pytest.raises(LessonQualityError) as exc_info:
         asyncio.run(service.generate(problem()))
 
-    assert "数学步骤" in str(exc_info.value)
+    assert "数学路线" in str(exc_info.value)
     assert "(x-1)(x-6)" not in str(exc_info.value)
-    assert [call[0] for call in client.all_calls] == [
-        DIRECTOR_SYSTEM,
-        DIRECTOR_SYSTEM,
+    assert [call[0] for call in client.route_calls] == [
+        MATH_ROUTE_SYSTEM,
+        MATH_ROUTE_SYSTEM,
     ]
 
 
@@ -618,7 +557,7 @@ def test_math_route_rejects_unrelated_first_step_with_safe_error():
 
     assert "数学路线" in str(exc_info.value)
     assert "x^2-9" not in str(exc_info.value)
-    assert len(client.all_calls) == 2
+    assert len(client.route_calls) == 2
 
 
 def test_math_route_rejects_disconnected_consecutive_steps():
@@ -639,7 +578,7 @@ def test_math_route_rejects_disconnected_consecutive_steps():
     with pytest.raises(LessonQualityError, match="数学路线"):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.all_calls) == 2
+    assert len(client.route_calls) == 2
 
 
 def test_math_route_rejects_final_solution_mismatch():
@@ -660,7 +599,7 @@ def test_math_route_rejects_final_solution_mismatch():
 
     assert "数学路线" in str(exc_info.value)
     assert "x=99" not in str(exc_info.value)
-    assert len(client.all_calls) == 2
+    assert len(client.route_calls) == 2
 
 
 def test_math_route_accepts_contiguous_normalized_steps():
@@ -772,10 +711,10 @@ def test_required_method_must_be_used_as_an_operation():
     client = FakeClient([valid_draft(), valid_draft()])
     service = LessonGenerationService(client, MathEngine())
 
-    with pytest.raises(LessonQualityError, match="指定方法"):
+    with pytest.raises(LessonQualityError, match="数学路线"):
         asyncio.run(service.generate(problem("complete_the_square")))
 
-    assert len(client.all_calls) == 2
+    assert len(client.route_calls) == 2
 
 
 def test_required_method_requires_matching_method_introduction_name():
@@ -785,7 +724,7 @@ def test_required_method_requires_matching_method_introduction_name():
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError) as exc_info:
-        asyncio.run(service.generate(problem("complete_the_square")))
+        asyncio.run(service.generate(problem()))
 
     assert str(exc_info.value) == "讲解的方法介绍与指定方法不一致。"
     assert len(client.all_calls) == 2
@@ -1499,7 +1438,7 @@ def test_accepts_valid_method_first_diagnostic_choice_draft():
 def test_invalid_director_schema_is_regenerated_once_with_safe_summary():
     private_payload = {
         "title": "private-model-output",
-        "math_steps": "not-a-list",
+        "moments": "not-a-list",
         "private-secret-field": "secret-model-value",
     }
     client = FakeClient(
@@ -1576,11 +1515,11 @@ def test_transfer_schema_error_gets_targeted_retry_contract():
 def test_two_invalid_director_schemas_stop_after_one_safe_retry():
     first_private_payload = {
         "title": "first-private-output",
-        "math_steps": "not-a-list",
+        "moments": "not-a-list",
     }
     second_private_payload = {
         "title": "second-private-output",
-        "math_steps": "still-not-a-list",
+        "moments": "still-not-a-list",
     }
     source_problem = problem()
     client = FakeClient(
@@ -1614,8 +1553,9 @@ def test_transient_model_failure_is_retried_once():
     lesson = asyncio.run(service.generate(problem()))
 
     assert lesson.validation_report["review_status"] == "approved"
-    assert len(client.calls) == 3
-    assert client.calls[0] == client.calls[1]
+    assert len(client.calls) == 2
+    assert len(client.route_calls) == 2
+    assert client.route_calls[0] == client.route_calls[1]
 
 
 def test_repeated_model_failure_preserves_provider_error_after_one_retry():
@@ -1632,7 +1572,7 @@ def test_repeated_model_failure_preserves_provider_error_after_one_retry():
         asyncio.run(service.generate(problem()))
 
     assert exc_info.value is final_error
-    assert len(client.calls) == 2
+    assert len(client.route_calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -1652,7 +1592,7 @@ def test_programming_errors_are_not_retried_or_reclassified(
         asyncio.run(service.generate(problem()))
 
     assert exc_info.value is programming_error
-    assert len(client.calls) == 1
+    assert len(client.route_calls) == 1
 
 
 def test_generation_cancellation_is_not_retried_or_reclassified():
@@ -1663,7 +1603,7 @@ def test_generation_cancellation_is_not_retried_or_reclassified():
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 1
+    assert len(client.route_calls) == 1
 
 
 def test_sync_stage_callback_receives_generation_stages_in_order():
@@ -1704,14 +1644,13 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "最多 90 个字符" in DIRECTOR_SYSTEM
     assert "不得包含 interaction" in DIRECTOR_SYSTEM
     assert "互动前不泄露答案" in MATERIALS_SYSTEM
-    assert "exactly one operand" in DIRECTOR_SYSTEM
+    assert "一个 operand" in MATH_ROUTE_SYSTEM
     assert "write" in DIRECTOR_SYSTEM and "transform" in DIRECTOR_SYSTEM
     assert "只有一个" in DIRECTOR_SYSTEM
     assert "circle" in DIRECTOR_SYSTEM
     assert "局部语义对象" in DIRECTOR_SYSTEM
-    assert "(x-3)^2=4" in DIRECTOR_SYSTEM
-    assert "禁止使用 ±" in DIRECTOR_SYSTEM
-    assert "直接输出两个方程分支" in DIRECTOR_SYSTEM
+    assert "禁止 ±" in MATH_ROUTE_SYSTEM
+    assert "两个明确方程分支" in MATH_ROUTE_SYSTEM
     assert "参考解析" in DIRECTOR_SYSTEM
     assert "Reference Material Auditor" in DIRECTOR_SYSTEM
     assert "方法介绍" in DIRECTOR_SYSTEM
@@ -1746,7 +1685,7 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM
     assert "省略 label" in MATERIALS_SYSTEM
     assert "label 由服务端根据 canonical_answer" in REVIEWER_SYSTEM
-    assert "不得返回互动、选项或 transfer_item" in REVISION_SYSTEM
+    assert "不得返回互动、math_steps、选项或 transfer_item" in REVISION_SYSTEM
     assert "可见 label" in MATERIALS_SYSTEM
     assert "choice 的可见 label 重复" in REVIEWER_SYSTEM
     assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM

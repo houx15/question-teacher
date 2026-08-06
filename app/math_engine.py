@@ -197,6 +197,12 @@ class MathEngine:
             ),
         )
 
+    def extract_problem_equation(self, problem_text: str) -> str:
+        """Return the single validated equation segment from a problem."""
+        equation_text = self._extract_problem_equation(problem_text)
+        self.parse_equation(equation_text)
+        return equation_text
+
     def validate_step(self, step: MathStep) -> None:
         before = getattr(step, "state_before", None)
         after = getattr(step, "state_after", None)

@@ -1,6 +1,8 @@
+import hashlib
 import inspect
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from pydantic import ValidationError
@@ -15,11 +17,13 @@ from app.math_engine import MathValidationError
 from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
+    MATH_ROUTE_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
     REVIEWER_SYSTEM,
     REVISION_SYSTEM,
     director_prompt,
     materials_prompt,
+    math_route_prompt,
     reference_audit_prompt,
     reviewer_prompt,
     revision_prompt,
@@ -29,6 +33,7 @@ from app.schemas import (
     LessonDraft,
     MAX_NARRATIVE_SERIALIZED_BYTES,
     MaterialsDraft,
+    MathRouteDraft,
     NarrativeDraft,
     ProblemInput,
     ReferenceMaterialAudit,
@@ -101,6 +106,45 @@ class _MaterialsValidationError(LessonQualityError):
     def __init__(self, public_message: str, retry_summary: str) -> None:
         super().__init__(public_message)
         self.retry_summary = retry_summary
+
+
+class _RouteValidationError(LessonQualityError):
+    """Carries one allow-listed retry code without model output."""
+
+    def __init__(self, code: str, public_message: str) -> None:
+        super().__init__(public_message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class _VerifiedMathRoute:
+    canonical_json: str
+    fingerprint: str
+    method_family: str
+
+    @classmethod
+    def freeze(
+        cls,
+        route: MathRouteDraft,
+        method_family: str,
+    ) -> "_VerifiedMathRoute":
+        canonical_json = route.model_dump_json()
+        return cls(
+            canonical_json=canonical_json,
+            fingerprint=hashlib.sha256(
+                canonical_json.encode("utf-8")
+            ).hexdigest(),
+            method_family=method_family,
+        )
+
+    def thaw(self) -> MathRouteDraft:
+        route = MathRouteDraft.model_validate_json(self.canonical_json)
+        actual = hashlib.sha256(
+            route.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if actual != self.fingerprint:
+            raise LessonQualityError("已验证数学路线的完整性检查失败。")
+        return route
 
 
 def _schema_property_names(model: Any) -> set:
@@ -228,12 +272,18 @@ class LessonGenerationService:
             )
             self._validate_reference_audit(problem, reference_audit)
 
+        verified_route = await self._create_validated_route(
+            problem,
+            problem_report.solution_strings,
+            problem_report.equation_degree,
+        )
         await self._emit(on_stage, "正在设计完整讲解")
         narrative = await self._create_validated_narrative(
             problem,
             problem_report.solution_strings,
             reference_audit,
             problem_report.equation_degree,
+            verified_route,
         )
         await self._emit(on_stage, "正在准备互动素材")
         draft = await self._create_validated_materials(
@@ -242,12 +292,14 @@ class LessonGenerationService:
             problem_report.solution_strings,
             None,
             problem_report.equation_degree,
+            verified_route,
         )
         revision_count = 0
 
         while True:
             self._validate_narrative_size(narrative)
             self._validate_draft(problem, draft)
+            self._assert_route_fingerprint(draft, verified_route)
             await self._emit(on_stage, "正在进行整篇审稿")
             review = await self._review(problem, draft, reference_audit)
             if review.status == "approved":
@@ -261,6 +313,7 @@ class LessonGenerationService:
                 narrative,
                 review,
                 reference_audit,
+                verified_route,
             )
             await self._emit(on_stage, "正在准备互动素材")
             draft = await self._create_validated_materials(
@@ -269,6 +322,7 @@ class LessonGenerationService:
                 problem_report.solution_strings,
                 review,
                 problem_report.equation_degree,
+                verified_route,
             )
             revision_count += 1
 
@@ -280,6 +334,9 @@ class LessonGenerationService:
             "revision_count": revision_count,
             "independent_solutions": problem_report.solution_strings,
             "review_assessment": review.overall_assessment,
+            "math_route_status": "verified",
+            "math_route_fingerprint": verified_route.fingerprint,
+            "math_route_method_family": verified_route.method_family,
         }
         if reference_audit is not None:
             validation_report["reference_material_status"] = (
@@ -296,6 +353,57 @@ class LessonGenerationService:
         except Exception:
             raise LessonQualityError("课堂编译失败。") from None
 
+    async def _create_route(
+        self,
+        problem: ProblemInput,
+        solution_strings: Any,
+        equation_degree: int,
+        previous_validation_code: Optional[str],
+    ) -> MathRouteDraft:
+        payload = await self._complete_json(
+            MATH_ROUTE_SYSTEM,
+            math_route_prompt(
+                problem,
+                list(solution_strings),
+                equation_degree,
+                previous_validation_code,
+            ),
+        )
+        try:
+            return MathRouteDraft.model_validate(payload)
+        except ValidationError:
+            raise _RouteValidationError(
+                "route_schema_invalid",
+                "数学路线结构无效。",
+            ) from None
+
+    async def _create_validated_route(
+        self,
+        problem: ProblemInput,
+        solution_strings: Any,
+        equation_degree: int,
+    ) -> _VerifiedMathRoute:
+        previous_validation_code = None
+        for attempt in range(2):
+            try:
+                route = await self._create_route(
+                    problem,
+                    solution_strings,
+                    equation_degree,
+                    previous_validation_code,
+                )
+                method_family = self._validate_math_route_draft(
+                    problem,
+                    route,
+                    equation_degree,
+                )
+                return _VerifiedMathRoute.freeze(route, method_family)
+            except _RouteValidationError as error:
+                if attempt == 1:
+                    raise LessonQualityError(str(error)) from None
+                previous_validation_code = error.code
+        raise AssertionError("unreachable route retry state")
+
     async def _create_narrative(
         self,
         problem: ProblemInput,
@@ -303,6 +411,7 @@ class LessonGenerationService:
         reference_audit: Optional[ReferenceMaterialAudit],
         previous_validation_error: Optional[str] = None,
         original_equation_degree: Optional[int] = None,
+        verified_route: Optional[_VerifiedMathRoute] = None,
     ) -> NarrativeDraft:
         payload = await self._complete_json(
             DIRECTOR_SYSTEM,
@@ -312,6 +421,11 @@ class LessonGenerationService:
                 reference_audit,
                 previous_validation_error,
                 original_equation_degree,
+                verified_math_route=(
+                    verified_route.thaw()
+                    if verified_route is not None
+                    else None
+                ),
             ),
         )
         try:
@@ -327,6 +441,7 @@ class LessonGenerationService:
         solution_strings: Any,
         reference_audit: Optional[ReferenceMaterialAudit],
         original_equation_degree: Optional[int],
+        verified_route: _VerifiedMathRoute,
     ) -> NarrativeDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
@@ -337,6 +452,7 @@ class LessonGenerationService:
                     reference_audit,
                     previous_validation_error,
                     original_equation_degree,
+                    verified_route,
                 )
             except _DraftSchemaValidationError as error:
                 if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
@@ -360,6 +476,7 @@ class LessonGenerationService:
         review: Optional[ReviewDecision],
         previous_validation_error: Optional[str],
         original_equation_degree: Optional[int],
+        verified_route: _VerifiedMathRoute,
     ) -> MaterialsDraft:
         payload = await self._complete_json(
             MATERIALS_SYSTEM,
@@ -370,6 +487,7 @@ class LessonGenerationService:
                 review,
                 previous_validation_error,
                 original_equation_degree,
+                verified_math_route=verified_route.thaw(),
             ),
         )
         try:
@@ -387,6 +505,7 @@ class LessonGenerationService:
         solution_strings: Any,
         review: Optional[ReviewDecision],
         original_equation_degree: Optional[int],
+        verified_route: _VerifiedMathRoute,
     ) -> LessonDraft:
         self._validate_narrative_size(narrative)
         previous_validation_error = None
@@ -400,8 +519,13 @@ class LessonGenerationService:
                     review,
                     previous_validation_error,
                     original_equation_degree,
+                    verified_route,
                 )
-                draft = self._compose_draft(narrative, materials)
+                draft = self._compose_draft(
+                    narrative,
+                    materials,
+                    verified_route,
+                )
                 draft = self._canonicalize_transfer_labels(draft)
                 self._validate_draft(problem, draft)
                 return draft
@@ -420,6 +544,7 @@ class LessonGenerationService:
         self,
         narrative: NarrativeDraft,
         materials: MaterialsDraft,
+        verified_route: _VerifiedMathRoute,
     ) -> LessonDraft:
         narrative_ids = {
             moment.moment_id
@@ -466,6 +591,10 @@ class LessonGenerationService:
         ]
         return LessonDraft(
             **narrative.model_dump(exclude={"moments"}),
+            math_steps=[
+                step.model_copy(deep=True)
+                for step in verified_route.thaw().math_steps
+            ],
             moments=moments,
             transfer_item=materials.transfer_item.model_dump(),
         )
@@ -491,6 +620,7 @@ class LessonGenerationService:
         narrative: NarrativeDraft,
         review: ReviewDecision,
         reference_audit: Optional[ReferenceMaterialAudit],
+        verified_route: _VerifiedMathRoute,
     ) -> NarrativeDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
@@ -502,6 +632,7 @@ class LessonGenerationService:
                     review,
                     reference_audit,
                     previous_validation_error,
+                    verified_math_route=verified_route.thaw(),
                 ),
             )
             try:
@@ -640,21 +771,6 @@ class LessonGenerationService:
             )
         if len(narrative.method_introduction.spoken_narration) > 90:
             raise LessonQualityError("方法介绍的口语讲稿过长。")
-        for step in narrative.math_steps:
-            try:
-                self.math_engine.validate_step(step)
-            except MathValidationError:
-                raise LessonQualityError(
-                    "讲解中的数学步骤未通过验证。"
-                ) from None
-        self._validate_math_route(problem, narrative)
-        if (
-            required_method is not None
-            and required_method["operation"] not in {
-                step.operation for step in narrative.math_steps
-            }
-        ):
-            raise LessonQualityError("讲解没有真正使用指定方法。")
 
     @staticmethod
     def _validate_narrative_size(narrative: NarrativeDraft) -> None:
@@ -847,6 +963,140 @@ class LessonGenerationService:
             raise LessonQualityError(
                 "讲解中的数学路线未通过验证。"
             ) from None
+
+    def _validate_math_route_draft(
+        self,
+        problem: ProblemInput,
+        route: MathRouteDraft,
+        equation_degree: int,
+    ) -> str:
+        named_families = {
+            "factor",
+            "complete_the_square",
+            "quadratic_formula",
+        }
+        used_families = {
+            step.operation
+            for step in route.math_steps
+            if step.operation in named_families
+        }
+        if problem.required_method is not None:
+            if used_families != {problem.required_method}:
+                code = (
+                    "route_required_method_missing"
+                    if problem.required_method not in used_families
+                    else "route_method_family_conflict"
+                )
+                raise _RouteValidationError(
+                    code,
+                    "数学路线未通过验证。",
+                )
+            method_family = problem.required_method
+        elif equation_degree == 2:
+            if len(used_families) != 1:
+                raise _RouteValidationError(
+                    "route_method_family_conflict",
+                    "数学路线未通过验证。",
+                )
+            method_family = next(iter(used_families))
+        elif equation_degree == 1:
+            basic_operations = {
+                "simplify",
+                "add_both_sides",
+                "subtract_both_sides",
+                "multiply_both_sides",
+                "divide_both_sides",
+                "expand",
+                "combine_like_terms",
+            }
+            if used_families or any(
+                step.operation not in basic_operations
+                for step in route.math_steps
+            ):
+                raise _RouteValidationError(
+                    "route_method_family_conflict",
+                    "数学路线未通过验证。",
+                )
+            method_family = "basic_equation_operations"
+        else:
+            raise _RouteValidationError(
+                "route_method_family_conflict",
+                "数学路线未通过验证。",
+            )
+
+        for step in route.math_steps:
+            try:
+                self.math_engine.validate_step(step)
+            except MathValidationError:
+                raise _RouteValidationError(
+                    "route_step_invalid",
+                    "数学路线未通过验证。",
+                ) from None
+
+        try:
+            original_equation = self.math_engine.extract_problem_equation(
+                problem.problem_text
+            )
+            if (
+                len(route.math_steps[0].state_before) != 1
+                or self._normalized_state(
+                    route.math_steps[0].state_before
+                )
+                != self._normalized_state([original_equation])
+            ):
+                raise _RouteValidationError(
+                    "route_first_state_mismatch",
+                    "数学路线未通过验证。",
+                )
+
+            for previous, current in zip(
+                route.math_steps,
+                route.math_steps[1:],
+            ):
+                if self._normalized_state(previous.state_after) != (
+                    self._normalized_state(current.state_before)
+                ):
+                    raise _RouteValidationError(
+                        "route_disconnected",
+                        "数学路线未通过验证。",
+                    )
+
+            final_solutions = self.math_engine.solution_set(
+                route.math_steps[-1].state_after
+            )
+            expected_solutions = self.math_engine.solution_set(
+                [original_equation]
+            )
+            if final_solutions != expected_solutions:
+                raise _RouteValidationError(
+                    "route_final_solution_mismatch",
+                    "数学路线未通过验证。",
+                )
+        except _RouteValidationError:
+            raise
+        except MathValidationError:
+            raise _RouteValidationError(
+                "route_step_invalid",
+                "数学路线未通过验证。",
+            ) from None
+        return method_family
+
+    def _assert_route_fingerprint(
+        self,
+        draft: LessonDraft,
+        verified_route: _VerifiedMathRoute,
+    ) -> None:
+        assembled = MathRouteDraft(
+            math_steps=[
+                step.model_copy(deep=True)
+                for step in draft.math_steps
+            ]
+        )
+        actual = hashlib.sha256(
+            assembled.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if actual != verified_route.fingerprint:
+            raise LessonQualityError("已验证数学路线的完整性检查失败。")
 
     def _normalized_state(self, state: Any) -> Any:
         if (

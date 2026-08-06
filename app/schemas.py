@@ -428,16 +428,19 @@ class MethodIntroduction(SchemaModel):
         return f"{fragment}。"
 
 
+class MathRouteDraft(SchemaModel):
+    math_steps: List[NarrativeMathStep] = Field(
+        min_length=1,
+        max_length=16,
+    )
+
+
 class NarrativeDraft(SchemaModel):
     title: NarrativeTitle
     learning_goal: NarrativeLearningGoal
     opening: MomentNarration
     method_rationale: NarrativeRationale
     method_introduction: MethodIntroduction
-    math_steps: List[NarrativeMathStep] = Field(
-        min_length=1,
-        max_length=16,
-    )
     moments: List[NarrativeMoment] = Field(
         min_length=1,
         max_length=16,
