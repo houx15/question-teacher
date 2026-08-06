@@ -65,7 +65,33 @@ def test_lesson_page_has_fullscreen_classroom_regions():
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
     assert 'src="/static/lesson.js"' in html
+    assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
+
+
+def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
+    source = page_client().get("/static/lesson.js").text
+
+    assert 'import { renderMathText } from "./math-text.mjs";' in source
+    assert "renderMathText(dom.title, lesson.title)" in source
+    assert "renderMathText(dom.problem, lesson.problem.problem_text)" in source
+    assert "renderMathText(dom.narration, beat.narration)" in source
+    assert "renderMathText(heading, interaction.prompt)" in source
+    assert "renderMathText(button, option.label)" in source
+    assert "renderMathText(ui.feedback, presentation.message)" in source
+    assert "content.dataset.source" in source
+    assert "content.textContent !== value.content" not in source
+    assert "renderMathText(content, source)" in source
+
+
+def test_choice_submission_passes_selected_option_without_exposing_answer_key():
+    source = page_client().get("/static/lesson.js").text
+
+    assert "submitInteraction(interaction, option.option_id, option," in source
+    assert "async function submitInteraction(interaction, answer, selectedOption, ui)" in source
+    assert "resolveInteractionPresentation" in source
+    assert "expected: interaction.expected_answer" not in source
+    assert "interaction.expected_answer" not in source
 
 
 def test_static_pages_include_accessibility_and_responsive_contracts():
@@ -108,6 +134,8 @@ def test_point_select_prompt_does_not_block_board_pointer_or_keyboard_access():
     assert ".interaction-stage.is-point-select .interaction-card" in styles
     assert "pointer-events: auto" in styles
     assert 'node.setAttribute("role", "button")' in source
+    assert 'node.querySelector(".board-content")?.dataset.source' in source
+    assert '`选择 ${boardSource}`' in source
     assert 'event.key === "Enter" || event.key === " "' in source
 
 

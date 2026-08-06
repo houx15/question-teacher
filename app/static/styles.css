@@ -940,6 +940,7 @@ button {
   display: inline-flex;
   min-width: 88px;
   min-height: 48px;
+  max-width: 100%;
   align-items: center;
   padding: 8px 10px;
   color: var(--board-ink);
@@ -953,6 +954,45 @@ button {
     color 220ms ease,
     filter 220ms ease,
     transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.math-inline,
+.katex {
+  max-width: 100%;
+  font-size: 1.05em;
+}
+
+.math-display,
+.katex-display {
+  display: block;
+  max-width: 100%;
+  margin: 0.32em auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+  -webkit-overflow-scrolling: touch;
+}
+
+.math-fallback {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: "Times New Roman", Cambria, var(--serif);
+  font-size: 1.05em;
+}
+
+.board-content {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  vertical-align: middle;
+  -webkit-overflow-scrolling: touch;
+}
+
+.board-content .katex,
+.comparison-sheet .katex {
+  font-size: 1.22em;
 }
 
 .board-object.is-new {
@@ -1104,8 +1144,18 @@ button {
 }
 
 .comparison-sheet > div {
+  min-width: 0;
   min-height: 110px;
   padding: 26px;
+}
+
+.comparison-sheet > div > span {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .comparison-sheet > div + div {
@@ -1287,6 +1337,7 @@ button {
 .interaction-submit,
 .interaction-continue {
   min-height: 52px;
+  min-width: 0;
   padding: 10px 18px;
   color: var(--board-ink);
   font-size: 14px;
@@ -1294,6 +1345,18 @@ button {
   border: 1px solid #bcb5a9;
   border-radius: 8px;
   transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.interaction-option {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.interaction-option .katex {
+  font-size: 1.16em;
+  white-space: nowrap;
 }
 
 .interaction-option:hover,

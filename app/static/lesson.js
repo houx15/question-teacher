@@ -3,8 +3,10 @@ import {
   classifyInteractionControl,
   cloneBoard,
   fallbackDurationForNarration,
+  resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs";
+import { renderMathText } from "./math-text.mjs";
 
 
 const dom = {
@@ -170,10 +172,10 @@ async function fetchLesson() {
 
 
 function hydrateLesson() {
-  dom.title.textContent = lesson.title;
-  dom.startTitle.textContent = lesson.title;
-  dom.goal.textContent = lesson.learning_goal;
-  dom.problem.textContent = lesson.problem.problem_text;
+  renderMathText(dom.title, lesson.title);
+  renderMathText(dom.startTitle, lesson.title);
+  renderMathText(dom.goal, lesson.learning_goal);
+  renderMathText(dom.problem, lesson.problem.problem_text);
   dom.progressTotal.textContent = String(lesson.beats.length);
   document.title = `${lesson.title} · 拾光讲题`;
   updateControls();
@@ -211,10 +213,12 @@ function renderAnnotations(container, annotations = []) {
     const mark = document.createElement("span");
     const type = annotation.type || "highlight";
     mark.className = `annotation annotation-${type}`;
-    if (type === "label") mark.textContent = annotation.content || "";
+    if (type === "label") renderMathText(mark, annotation.content || "");
     if (type === "arrow") {
-      mark.textContent = annotation.content
-        || humanizeTarget(annotation.relationTarget);
+      renderMathText(
+        mark,
+        annotation.content || humanizeTarget(annotation.relationTarget),
+      );
     }
     container.append(mark);
   }
@@ -234,10 +238,16 @@ function renderComparison(region, value, registry) {
     region.append(node);
   }
   const values = node.querySelectorAll("span");
-  values[0].textContent = value.leftContent || humanizeTarget(value.target);
-  values[1].textContent = (
-    value.rightContent || humanizeTarget(value.relationTarget)
-  );
+  const sources = [
+    value.leftContent || humanizeTarget(value.target),
+    value.rightContent || humanizeTarget(value.relationTarget),
+  ];
+  values.forEach((content, index) => {
+    const source = sources[index];
+    if (content.dataset.source === source) return;
+    content.dataset.source = source;
+    renderMathText(content, source);
+  });
 }
 
 
@@ -265,8 +275,10 @@ function renderBoard(board, region) {
       window.setTimeout(() => node.classList.remove("is-new"), 500);
     }
     const content = node.querySelector(".board-content");
-    if (content.textContent !== value.content) {
-      content.textContent = value.content || humanizeTarget(target);
+    const source = value.content || humanizeTarget(target);
+    if (content.dataset.source !== source) {
+      content.dataset.source = source;
+      renderMathText(content, source);
       if (value.transforming) {
         node.classList.add("is-transforming");
         window.setTimeout(
@@ -517,8 +529,8 @@ function playCurrentBeat() {
     beatSnapshots.set(beat.beat_id, cloneBoard(runtime.baseBoard));
   }
   prepareBeatLayer(beat);
-  dom.purpose.textContent = beat.purpose;
-  dom.narration.textContent = beat.narration;
+  renderMathText(dom.purpose, beat.purpose);
+  renderMathText(dom.narration, beat.narration);
   dom.announcer.textContent = `第 ${runtime.currentIndex + 1} 段：${beat.purpose}`;
   updateControls();
   beginBeatPlayback(beat, token);
@@ -567,8 +579,11 @@ function advanceBeat() {
     playCurrentBeat();
     return;
   }
-  dom.purpose.textContent = "本课完成";
-  dom.narration.textContent = "这条数学路线已经走完，可以重播任意一步。";
+  renderMathText(dom.purpose, "本课完成");
+  renderMathText(
+    dom.narration,
+    lesson.summary || "这条数学路线已经走完，可以重播任意一步。",
+  );
   dom.next.disabled = true;
   dom.pause.disabled = true;
   dom.shell.classList.remove("is-speaking");
@@ -633,9 +648,11 @@ function enablePointSelection(onSelect) {
     ...dom.layerStage.querySelectorAll(".board-object"),
   ];
   nodes.forEach((node) => {
+    const boardSource = node.querySelector(".board-content")?.dataset.source
+      || humanizeTarget(node.dataset.boardTarget);
     node.classList.add("is-selectable");
     node.setAttribute("role", "button");
-    node.setAttribute("aria-label", `选择 ${node.textContent.trim()}`);
+    node.setAttribute("aria-label", `选择 ${boardSource}`);
     node.tabIndex = 0;
     const select = () => onSelect(node.dataset.boardTarget);
     node.onclick = select;
@@ -673,7 +690,8 @@ function showInteraction(interaction) {
     "interaction-kicker",
     interaction.kind === "transfer" ? "NEAR TRANSFER" : "PAUSE & THINK",
   );
-  const heading = element("h2", "", interaction.prompt);
+  const heading = element("h2", "");
+  renderMathText(heading, interaction.prompt);
   const controls = element("div", "interaction-controls");
   const feedback = element("p", "interaction-feedback");
   feedback.setAttribute("aria-live", "polite");
@@ -690,15 +708,13 @@ function showInteraction(interaction) {
   if (controlType === "options") {
     const optionGrid = element("div", "interaction-options");
     for (const option of interaction.options || []) {
-      const button = element("button", "interaction-option", option.label);
+      const button = element("button", "interaction-option");
+      renderMathText(button, option.label);
       button.type = "button";
       button.addEventListener(
         "click",
-        () => submitInteraction(interaction, option.option_id, {
-          controls,
-          feedback,
-          hint,
-          continueButton,
+        () => submitInteraction(interaction, option.option_id, option, {
+          controls, feedback, hint, continueButton,
         }),
       );
       optionGrid.append(button);
@@ -711,7 +727,7 @@ function showInteraction(interaction) {
     );
     enablePointSelection((answer) => {
       clearPointSelection();
-      submitInteraction(interaction, answer, {
+      submitInteraction(interaction, answer, null, {
         controls,
         feedback,
         hint,
@@ -739,7 +755,7 @@ function showInteraction(interaction) {
         input.focus();
         return;
       }
-      submitInteraction(interaction, answer, {
+      submitInteraction(interaction, answer, null, {
         controls,
         feedback,
         hint,
@@ -785,7 +801,7 @@ function playFeedbackAudio(url) {
 }
 
 
-async function submitInteraction(interaction, answer, ui) {
+async function submitInteraction(interaction, answer, selectedOption, ui) {
   const interactiveNodes = ui.controls.querySelectorAll("button, input");
   interactiveNodes.forEach((node) => { node.disabled = true; });
   ui.feedback.classList.remove("is-wrong");
@@ -797,36 +813,40 @@ async function submitInteraction(interaction, answer, ui) {
       classification: result.classification,
       hints: interaction.hints || [],
     });
+    const presentation = resolveInteractionPresentation({
+      result,
+      interaction,
+      selectedOption,
+      outcome,
+    });
     if (!outcome.canContinue) {
-      ui.feedback.textContent = "这一步还可以再想一想。";
       ui.feedback.classList.add("is-wrong");
-      ui.hint.textContent = outcome.hint
-        ? `提示：${outcome.hint}`
-        : "回到题目中的已知关系再试一次。";
-      const hintAudio = outcome.hintIndex === null
-        ? null
-        : interaction.hint_audio_urls?.[outcome.hintIndex];
-      await playFeedbackAudio(hintAudio);
+      if (selectedOption?.feedback) {
+        renderMathText(ui.feedback, presentation.message);
+        renderMathText(ui.hint, "");
+      } else {
+        renderMathText(ui.feedback, "这一步还可以再想一想。");
+        renderMathText(ui.hint, presentation.message);
+      }
+      await playFeedbackAudio(presentation.audioUrl);
       interactiveNodes.forEach((node) => { node.disabled = false; });
       if (interaction.kind === "point_select") {
         enablePointSelection((retryAnswer) => {
           clearPointSelection();
-          submitInteraction(interaction, retryAnswer, ui);
+          submitInteraction(interaction, retryAnswer, null, ui);
         });
       }
       ui.controls.querySelector("input, button")?.focus();
       return;
     }
 
-    ui.feedback.textContent = result.classification === "needs_review"
-      ? (result.message || "思路已经记录，我们继续沿主线往下走。")
-      : (interaction.explanation_after_correct || "判断正确。");
-    ui.hint.textContent = "";
+    renderMathText(ui.feedback, presentation.message);
+    renderMathText(ui.hint, "");
     ui.continueButton.hidden = false;
     clearPointSelection();
     updateControls();
     const answeredBeatToken = beatToken;
-    await playFeedbackAudio(interaction.correct_audio_url);
+    await playFeedbackAudio(presentation.audioUrl);
     if (
       answeredBeatToken === beatToken
       && interactionVisible

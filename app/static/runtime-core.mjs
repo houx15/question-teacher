@@ -182,6 +182,49 @@ export function classifyInteractionControl(interaction) {
 }
 
 
+export function resolveInteractionPresentation({
+  result = {},
+  interaction = {},
+  selectedOption = null,
+  outcome = {},
+} = {}) {
+  const classification = result?.classification || outcome?.classification;
+  if (classification === "needs_review") {
+    return {
+      message: result?.message
+        || "思路已经记录，我们继续沿主线往下走。",
+      audioUrl: null,
+    };
+  }
+
+  if (selectedOption?.feedback) {
+    return {
+      message: selectedOption.feedback,
+      audioUrl: selectedOption.feedback_audio_url || null,
+    };
+  }
+
+  if (classification !== "correct") {
+    const hintIndex = Number.isInteger(outcome?.hintIndex)
+      ? outcome.hintIndex
+      : null;
+    return {
+      message: outcome?.hint
+        ? `提示：${outcome.hint}`
+        : "回到题目中的已知关系再试一次。",
+      audioUrl: hintIndex === null
+        ? null
+        : (interaction?.hint_audio_urls?.[hintIndex] || null),
+    };
+  }
+
+  return {
+    message: interaction?.explanation_after_correct || "判断正确。",
+    audioUrl: interaction?.correct_audio_url || null,
+  };
+}
+
+
 export class LessonRuntime {
   constructor(beats = []) {
     this.beats = Array.isArray(beats) ? beats.slice() : [];

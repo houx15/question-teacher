@@ -6,6 +6,7 @@ import {
   applyBoardAction,
   classifyInteractionControl,
   cloneBoard,
+  resolveInteractionPresentation,
   scheduleBoardActions,
 } from "../app/static/runtime-core.mjs";
 
@@ -264,6 +265,107 @@ test("interaction kinds route to deterministic controls", () => {
   assert.equal(classifyInteractionControl({ kind: "transfer" }), "math-input");
   assert.equal(classifyInteractionControl({ kind: "free_text" }), "text-input");
   assert.equal(classifyInteractionControl(null), "none");
+});
+
+
+test("wrong diagnostic option presents its own feedback and audio", () => {
+  const presentation = resolveInteractionPresentation({
+    result: { classification: "incorrect" },
+    interaction: {
+      hints: ["先看常数项。"],
+      hint_audio_urls: ["/audio/hint-1.mp3"],
+    },
+    selectedOption: {
+      feedback: "这里应满足 \\(ab=5\\)，这组数的乘积不对。",
+      feedback_audio_url: "/audio/option-b.mp3",
+    },
+    outcome: { hint: "先看常数项。", hintIndex: 0 },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "这里应满足 \\(ab=5\\)，这组数的乘积不对。",
+    audioUrl: "/audio/option-b.mp3",
+  });
+});
+
+
+test("wrong legacy response presents its staged hint and matching audio", () => {
+  const presentation = resolveInteractionPresentation({
+    result: { classification: "incorrect" },
+    interaction: {
+      hints: ["先看乘积。", "再看和。"],
+      hint_audio_urls: ["/audio/hint-1.mp3", "/audio/hint-2.mp3"],
+    },
+    selectedOption: { option_id: "legacy-option", label: "旧选项" },
+    outcome: { hint: "再看和。", hintIndex: 1 },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "提示：再看和。",
+    audioUrl: "/audio/hint-2.mp3",
+  });
+});
+
+
+test("correct diagnostic option presents its own feedback and audio", () => {
+  const presentation = resolveInteractionPresentation({
+    result: { classification: "correct" },
+    interaction: {
+      explanation_after_correct: "旧的正确解释。",
+      correct_audio_url: "/audio/correct.mp3",
+    },
+    selectedOption: {
+      feedback: "对，\\(2+3=5\\) 且 \\(2\\times3=6\\)。",
+      feedback_audio_url: "/audio/option-a.mp3",
+    },
+    outcome: { canContinue: true },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "对，\\(2+3=5\\) 且 \\(2\\times3=6\\)。",
+    audioUrl: "/audio/option-a.mp3",
+  });
+});
+
+
+test("correct legacy response presents the shared explanation and audio", () => {
+  const presentation = resolveInteractionPresentation({
+    result: { classification: "correct" },
+    interaction: {
+      explanation_after_correct: "两边同时加 \\(3\\)，等式仍成立。",
+      correct_audio_url: "/audio/correct.mp3",
+    },
+    selectedOption: null,
+    outcome: { canContinue: true },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "两边同时加 \\(3\\)，等式仍成立。",
+    audioUrl: "/audio/correct.mp3",
+  });
+});
+
+
+test("needs-review response preserves the server message and fallback", () => {
+  const withMessage = resolveInteractionPresentation({
+    result: { classification: "needs_review", message: "已记录你的思路。" },
+    interaction: { correct_audio_url: "/audio/correct.mp3" },
+    selectedOption: null,
+    outcome: { canContinue: true },
+  });
+  const fallback = resolveInteractionPresentation({
+    result: { classification: "needs_review" },
+    interaction: {},
+    selectedOption: null,
+    outcome: { canContinue: true },
+  });
+
+  assert.deepEqual(withMessage, {
+    message: "已记录你的思路。",
+    audioUrl: null,
+  });
+  assert.equal(fallback.message, "思路已经记录，我们继续沿主线往下走。");
+  assert.equal(fallback.audioUrl, null);
 });
 
 
