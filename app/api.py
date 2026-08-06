@@ -55,6 +55,9 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
     payload["problem"].pop("reference_answer", None)
     payload["problem"].pop("reference_solution_text", None)
     payload["transfer_item"].pop("expected_answer", None)
+    payload["transfer_item"].pop("correct_option_id", None)
+    for option in payload["transfer_item"].get("options", []):
+        option.pop("canonical_answer", None)
     payload.pop("validation_report", None)
     for beat in payload["beats"]:
         interaction = beat.get("interaction")

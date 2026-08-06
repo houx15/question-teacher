@@ -16,6 +16,8 @@ from app.schemas import (
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
+    TransferItem,
+    TransferOption,
 )
 from app.store import MemoryStore
 
@@ -403,6 +405,70 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
         },
     )
     assert evaluation.json() == {"classification": "correct"}
+
+
+def test_public_lesson_payload_redacts_diagnostic_transfer_answers():
+    lesson = runtime_lesson(problem_input()).model_copy(
+        update={
+            "transfer_item": TransferItem(
+                problem_text="用因式分解法解方程：x^2-7x+12=0",
+                expected_answer="x=3 或 x=4",
+                method_signal="寻找乘积为 12、和为 -7 的两个数。",
+                options=[
+                    TransferOption(
+                        option_id="both-roots",
+                        label="x=3 或 x=4",
+                        canonical_answer="x=3 或 x=4",
+                        feedback="两个根都能使原方程成立。",
+                    ),
+                    TransferOption(
+                        option_id="only-three",
+                        label="x=3",
+                        canonical_answer="x=3",
+                        feedback="还遗漏了另一个根。",
+                    ),
+                    TransferOption(
+                        option_id="only-four",
+                        label="x=4",
+                        canonical_answer="x=4",
+                        feedback="还遗漏了另一个根。",
+                    ),
+                ],
+                correct_option_id="both-roots",
+            )
+        }
+    )
+    store = MemoryStore()
+    store.save_lesson(lesson)
+    client, _, _ = build_client(store=store)
+
+    response = client.get(f"/api/lessons/{lesson.lesson_id}")
+
+    assert response.status_code == 200
+    transfer_item = response.json()["transfer_item"]
+    assert "expected_answer" not in transfer_item
+    assert "correct_option_id" not in transfer_item
+    assert all(
+        "canonical_answer" not in option
+        for option in transfer_item["options"]
+    )
+    assert transfer_item["options"] == [
+        {
+            "option_id": "both-roots",
+            "label": "x=3 或 x=4",
+            "feedback": "两个根都能使原方程成立。",
+        },
+        {
+            "option_id": "only-three",
+            "label": "x=3",
+            "feedback": "还遗漏了另一个根。",
+        },
+        {
+            "option_id": "only-four",
+            "label": "x=4",
+            "feedback": "还遗漏了另一个根。",
+        },
+    ]
 
 
 @pytest.mark.parametrize("kind", ["choice", "point_select"])
