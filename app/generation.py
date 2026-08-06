@@ -44,6 +44,7 @@ class LessonInputError(LessonQualityError):
 
 class LessonGenerationService:
     MAX_REVISIONS = 2
+    MAX_DRAFT_ATTEMPTS = 2
 
     def __init__(
         self,
@@ -81,7 +82,7 @@ class LessonGenerationService:
             self._validate_reference_audit(problem, reference_audit)
 
         await self._emit(on_stage, "正在设计完整讲解")
-        draft = await self._create_draft(
+        draft = await self._create_validated_draft(
             problem,
             problem_report.solution_strings,
             reference_audit,
@@ -134,6 +135,7 @@ class LessonGenerationService:
         problem: ProblemInput,
         solution_strings: Any,
         reference_audit: Optional[ReferenceMaterialAudit],
+        previous_validation_error: Optional[str] = None,
     ) -> LessonDraft:
         payload = await self._complete_json(
             DIRECTOR_SYSTEM,
@@ -141,6 +143,7 @@ class LessonGenerationService:
                 problem,
                 list(solution_strings),
                 reference_audit,
+                previous_validation_error,
             ),
             "完整讲解生成失败。",
         )
@@ -148,6 +151,29 @@ class LessonGenerationService:
             return LessonDraft.model_validate(payload)
         except ValidationError:
             raise LessonQualityError("模型生成的讲解结构无效。") from None
+
+    async def _create_validated_draft(
+        self,
+        problem: ProblemInput,
+        solution_strings: Any,
+        reference_audit: Optional[ReferenceMaterialAudit],
+    ) -> LessonDraft:
+        previous_validation_error = None
+        for attempt in range(self.MAX_DRAFT_ATTEMPTS):
+            draft = await self._create_draft(
+                problem,
+                solution_strings,
+                reference_audit,
+                previous_validation_error,
+            )
+            try:
+                self._validate_draft(problem, draft)
+                return draft
+            except LessonQualityError as error:
+                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
+                    raise
+                previous_validation_error = str(error)
+        raise LessonQualityError("完整讲解生成失败。")
 
     async def _review(
         self,

@@ -398,7 +398,7 @@ def test_original_problem_is_validated_before_model_request():
 def test_invalid_math_step_stops_before_review_with_safe_error():
     draft = valid_draft()
     draft["math_steps"][0]["state_after"] = ["(x-1)(x-6)=0"]
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError) as exc_info:
@@ -406,14 +406,14 @@ def test_invalid_math_step_stops_before_review_with_safe_error():
 
     assert "数学步骤" in str(exc_info.value)
     assert "(x-1)(x-6)" not in str(exc_info.value)
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 def test_math_route_rejects_unrelated_first_step_with_safe_error():
     draft = valid_draft()
     draft["math_steps"][0]["state_before"] = ["x^2-9=0"]
     draft["math_steps"][0]["state_after"] = ["(x-3)(x+3)=0"]
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError) as exc_info:
@@ -421,7 +421,7 @@ def test_math_route_rejects_unrelated_first_step_with_safe_error():
 
     assert "数学路线" in str(exc_info.value)
     assert "x^2-9" not in str(exc_info.value)
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 def test_math_route_rejects_disconnected_consecutive_steps():
@@ -436,13 +436,13 @@ def test_math_route_rejects_disconnected_consecutive_steps():
             "reason": "等式两边同时乘二。",
         }
     )
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError, match="数学路线"):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 def test_math_route_rejects_final_solution_mismatch():
@@ -452,7 +452,7 @@ def test_math_route_rejects_final_solution_mismatch():
 
     draft = valid_draft()
     draft["math_steps"][0]["state_after"] = ["x=99"]
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(
         client,
         PermissiveStepMathEngine(),
@@ -463,7 +463,7 @@ def test_math_route_rejects_final_solution_mismatch():
 
     assert "数学路线" in str(exc_info.value)
     assert "x=99" not in str(exc_info.value)
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 def test_math_route_accepts_contiguous_normalized_steps():
@@ -549,25 +549,69 @@ def test_math_route_preserves_valid_no_real_solution_state():
 
 
 def test_required_method_must_be_used_as_an_operation():
-    client = FakeClient([valid_draft()])
+    client = FakeClient([valid_draft(), valid_draft()])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError, match="指定方法"):
         asyncio.run(service.generate(problem("complete_the_square")))
 
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 def test_invalid_transfer_item_stops_before_review():
     draft = valid_draft()
     draft["transfer_item"]["expected_answer"] = "x=30 或 x=40"
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError, match="近迁移题"):
         asyncio.run(service.generate(problem()))
 
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
+
+
+def test_invalid_initial_draft_is_regenerated_once_with_safe_feedback():
+    invalid_draft = valid_draft()
+    invalid_draft["transfer_item"] = {
+        "problem_text": "x^2-7x+12=0",
+        "expected_answer": "x=30 或 x=40",
+        "method_signal": "寻找乘积与和。",
+    }
+    client = FakeClient(
+        [invalid_draft, valid_draft(), approved_review()]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    lesson = asyncio.run(service.generate(problem()))
+
+    assert lesson.validation_report["review_status"] == "approved"
+    assert [call[0] for call in client.calls] == [
+        DIRECTOR_SYSTEM,
+        DIRECTOR_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    retry_payload = json.loads(client.calls[1][1])
+    assert retry_payload["previous_validation_error"] == (
+        "近迁移题未通过数学验证。"
+    )
+
+
+def test_two_invalid_initial_drafts_still_fail_quality_gate():
+    invalid_draft = valid_draft()
+    invalid_draft["transfer_item"] = {
+        "problem_text": "x^2-7x+12=0",
+        "expected_answer": "x=30 或 x=40",
+        "method_signal": "寻找乘积与和。",
+    }
+    client = FakeClient(
+        [invalid_draft, copy.deepcopy(invalid_draft)]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError, match="近迁移题"):
+        asyncio.run(service.generate(problem()))
+
+    assert len(client.calls) == 2
 
 
 def test_draft_requires_at_least_one_interaction():
@@ -575,7 +619,7 @@ def test_draft_requires_at_least_one_interaction():
     for moment in draft["moments"]:
         moment.pop("interaction", None)
         moment["layer"] = "base"
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError, match="学生互动"):
@@ -591,7 +635,7 @@ def test_draft_rejects_unexecutable_choice_before_review():
         "expected_answer": "A",
         "options": [],
     }
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError) as exc_info:
@@ -620,7 +664,7 @@ def test_draft_rejects_invalid_auto_graded_answer_before_review(
             "expected_answer": invalid_expected,
         }
     )
-    client = FakeClient([draft])
+    client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
 
     with pytest.raises(LessonQualityError) as exc_info:
@@ -628,7 +672,7 @@ def test_draft_rejects_invalid_auto_graded_answer_before_review(
 
     assert "互动答案" in str(exc_info.value)
     assert invalid_expected not in str(exc_info.value)
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -749,6 +793,10 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "直接输出两个方程分支" in DIRECTOR_SYSTEM
     assert "参考解析" in DIRECTOR_SYSTEM
     assert "Reference Material Auditor" in DIRECTOR_SYSTEM
+    assert "expression" in DIRECTOR_SYSTEM
+    assert "不得包含等号" in DIRECTOR_SYSTEM
+    assert "expected_answer" in DIRECTOR_SYSTEM
+    assert "近迁移" in DIRECTOR_SYSTEM
     assert "整节课" in REVIEWER_SYSTEM
     assert "参考解析审阅" in REVIEWER_SYSTEM
     assert "无信息增益" in REVIEWER_SYSTEM
