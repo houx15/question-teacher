@@ -531,6 +531,9 @@ def test_readme_documents_reference_grounded_scope_and_parameter_example():
     assert "2n" in readme and "m-n" in readme
     assert "python scripts/smoke_live.py --grounded-parameter-root" in readme
     assert "Task 8 待执行" in readme
+    assert "该参数将在 Task 8 新增" in readme
+    assert "当前版本不可执行" in readme
+    assert "仅为未来验收命令" in readme
 
 
 def test_generation_page_has_focused_authoring_form():

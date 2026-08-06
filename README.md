@@ -216,7 +216,7 @@ python scripts/smoke_live.py
 python scripts/smoke_live.py --with-reference-audit
 ```
 
-Task 8 待执行：参数根路径将使用真实文本模型与语音端点运行以下命令。本文档只记录验收命令，不表示该 live smoke 已经通过：
+Task 8 待执行：该参数将在 Task 8 新增：`--grounded-parameter-root`。当前版本不可执行。下列内容仅为未来验收命令，届时参数根路径将使用真实文本模型与语音端点运行它；本文档不表示该 live smoke 已经通过：
 
 ```bash
 source /opt/anaconda3/etc/profile.d/conda.sh
