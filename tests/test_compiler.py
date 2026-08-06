@@ -19,19 +19,21 @@ def test_compiler_creates_ordered_beats_with_stable_navigation():
     )
 
     assert lesson.lesson_id == "lesson-fixed"
-    assert len(lesson.beats) == len(valid_draft()["moments"]) + 3
+    assert len(lesson.beats) == len(valid_draft()["moments"]) + 4
     assert [beat.beat_id for beat in lesson.beats] == [
         "beat-001",
         "beat-002",
         "beat-003",
         "beat-004",
         "beat-005",
+        "beat-006",
     ]
     assert [beat.next_beat_id for beat in lesson.beats] == [
         "beat-002",
         "beat-003",
         "beat-004",
         "beat-005",
+        "beat-006",
         None,
     ]
 
@@ -50,11 +52,44 @@ def test_compiler_opens_by_writing_the_original_problem():
     }
 
 
+def test_compiler_introduces_method_before_first_manuscript_moment():
+    draft = valid_draft()
+    lesson = compile_lesson()
+    introduction = draft["method_introduction"]
+    method_beat = lesson.beats[1]
+
+    assert method_beat.purpose == "先认识方法"
+    assert method_beat.layer == "micro_explanation"
+    assert method_beat.narration.startswith(
+        f"今天用{introduction['method_name']}。"
+    )
+    assert introduction["student_definition"] in method_beat.narration
+    assert introduction["why_it_helps"] in method_beat.narration
+    assert introduction["target_form"] not in method_beat.narration
+    assert r"\(" not in method_beat.narration
+    assert [
+        action.model_dump(exclude_none=True)
+        for action in method_beat.board_actions
+    ] == [
+        {
+            "type": "write",
+            "target": "method_name",
+            "content": introduction["method_name"],
+        },
+        {"type": "focus", "target": "method_name"},
+        {
+            "type": "write",
+            "target": "method_target_form",
+            "content": introduction["target_form"],
+        },
+    ]
+
+
 def test_compiler_preserves_manuscript_moments_in_order():
     draft = valid_draft()
     lesson = compile_lesson()
 
-    manuscript_beats = lesson.beats[1 : 1 + len(draft["moments"])]
+    manuscript_beats = lesson.beats[2 : 2 + len(draft["moments"])]
     assert [beat.purpose for beat in manuscript_beats] == [
         moment["purpose"] for moment in draft["moments"]
     ]
@@ -74,15 +109,41 @@ def test_compiler_appends_summary_then_transfer_interaction():
     assert summary.board_actions[0].content == draft["summary"]
     assert transfer.purpose == "完成近迁移"
     assert transfer.layer == "interaction"
-    assert transfer.interaction.kind == "transfer"
+    assert transfer.interaction.kind == "choice"
     assert transfer.interaction.prompt == draft["transfer_item"]["problem_text"]
     assert (
         transfer.interaction.expected_answer
-        == draft["transfer_item"]["expected_answer"]
+        == draft["transfer_item"]["correct_option_id"]
     )
+    assert [
+        option.model_dump(exclude_none=True)
+        for option in transfer.interaction.options
+    ] == [
+        {
+            key: option[key]
+            for key in ("option_id", "label", "feedback")
+        }
+        for option in draft["transfer_item"]["options"]
+    ]
     assert transfer.interaction.hints == [
         draft["transfer_item"]["method_signal"]
     ]
+
+
+def test_compiler_preserves_legacy_text_transfer_without_options():
+    draft = valid_draft()
+    draft["transfer_item"]["options"] = []
+    draft["transfer_item"]["correct_option_id"] = None
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
+    )
+
+    transfer = lesson.beats[-1].interaction
+    assert transfer.kind == "transfer"
+    assert transfer.expected_answer == draft["transfer_item"]["expected_answer"]
+    assert transfer.options == []
 
 
 @pytest.mark.parametrize(

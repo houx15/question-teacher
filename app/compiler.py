@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.schemas import (
     BoardAction,
     Interaction,
+    InteractionOption,
     LessonDraft,
     ProblemInput,
     RuntimeBeat,
@@ -51,6 +52,33 @@ class LessonCompiler:
             )
         ]
 
+        method_introduction = draft.method_introduction
+        beats.append(
+            RuntimeBeat(
+                beat_id="pending",
+                purpose="先认识方法",
+                narration=(
+                    f"今天用{method_introduction.method_name}。"
+                    f"{method_introduction.student_definition}"
+                    f"{method_introduction.why_it_helps}"
+                ),
+                board_actions=[
+                    BoardAction(
+                        type="write",
+                        target="method_name",
+                        content=method_introduction.method_name,
+                    ),
+                    BoardAction(type="focus", target="method_name"),
+                    BoardAction(
+                        type="write",
+                        target="method_target_form",
+                        content=method_introduction.target_form,
+                    ),
+                ],
+                layer="micro_explanation",
+            )
+        )
+
         for moment in draft.moments:
             beats.append(
                 RuntimeBeat(
@@ -62,6 +90,35 @@ class LessonCompiler:
                     interaction=moment.interaction,
                 )
             )
+
+        transfer_item = draft.transfer_item
+        transfer_interaction = (
+            Interaction(
+                interaction_id="near-transfer",
+                kind="choice",
+                prompt=transfer_item.problem_text,
+                expected_answer=transfer_item.correct_option_id,
+                options=[
+                    InteractionOption(
+                        option_id=option.option_id,
+                        label=option.label,
+                        feedback=option.feedback,
+                    )
+                    for option in transfer_item.options
+                ],
+                hints=[transfer_item.method_signal],
+                explanation_after_correct="你已经识别并使用了同一方法结构。",
+            )
+            if transfer_item.options
+            else Interaction(
+                interaction_id="near-transfer",
+                kind="transfer",
+                prompt=transfer_item.problem_text,
+                expected_answer=transfer_item.expected_answer,
+                hints=[transfer_item.method_signal],
+                explanation_after_correct="你已经识别并使用了同一方法结构。",
+            )
+        )
 
         beats.extend(
             [
@@ -84,16 +141,7 @@ class LessonCompiler:
                     narration="现在换一道表面不同、结构相同的题。",
                     board_actions=[],
                     layer="interaction",
-                    interaction=Interaction(
-                        interaction_id="near-transfer",
-                        kind="transfer",
-                        prompt=draft.transfer_item.problem_text,
-                        expected_answer=draft.transfer_item.expected_answer,
-                        hints=[draft.transfer_item.method_signal],
-                        explanation_after_correct=(
-                            "你已经识别并使用了同一方法结构。"
-                        ),
-                    ),
+                    interaction=transfer_interaction,
                 ),
             ]
         )

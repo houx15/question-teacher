@@ -7,12 +7,14 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.api import run_generation, safe_generation_error
+from app.compiler import LessonCompiler
 from app.config import Settings
 from app.generation import LessonInputError
 from app.main import create_app
 from app.schemas import (
     Interaction,
     InteractionOption,
+    LessonDraft,
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
@@ -20,6 +22,7 @@ from app.schemas import (
     TransferOption,
 )
 from app.store import MemoryStore
+from tests.test_generation import problem, valid_draft
 
 
 def problem_input() -> ProblemInput:
@@ -468,6 +471,35 @@ def test_public_lesson_payload_redacts_diagnostic_transfer_answers():
             "label": "x=4",
             "feedback": "还遗漏了另一个根。",
         },
+    ]
+
+
+def test_public_compiled_diagnostic_transfer_hides_answer_key():
+    draft = valid_draft()
+    lesson = LessonCompiler(
+        lesson_id_factory=lambda: "lesson-compiled-choice"
+    ).compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
+    )
+    store = MemoryStore()
+    store.save_lesson(lesson)
+    client, _, _ = build_client(store=store)
+
+    response = client.get(f"/api/lessons/{lesson.lesson_id}")
+
+    assert response.status_code == 200
+    transfer = response.json()["beats"][-1]["interaction"]
+    assert transfer["kind"] == "choice"
+    assert "expected_answer" not in transfer
+    assert transfer["options"] == [
+        {
+            "option_id": option["option_id"],
+            "label": option["label"],
+            "feedback": option["feedback"],
+        }
+        for option in draft["transfer_item"]["options"]
     ]
 
 
