@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import httpx
 import pytest
 
 from app.main import create_app
@@ -129,6 +130,10 @@ def test_live_smoke_defaults_to_core_and_requires_explicit_audit_flag():
         (
             SpeechGenerationError("private tts response"),
             "语音生成失败，请检查 TTS 配置或稍后重试。",
+        ),
+        (
+            httpx.ConnectError("private network endpoint"),
+            "现场服务网络请求失败，请检查网络连接或稍后重试。",
         ),
     ],
 )

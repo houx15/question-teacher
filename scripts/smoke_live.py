@@ -6,6 +6,8 @@ import sys
 import tempfile
 from typing import List
 
+import httpx
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -298,6 +300,10 @@ def run_cli(argv=None) -> None:
     except SpeechGenerationError:
         raise SystemExit(
             "语音生成失败，请检查 TTS 配置或稍后重试。"
+        ) from None
+    except httpx.HTTPError:
+        raise SystemExit(
+            "现场服务网络请求失败，请检查网络连接或稍后重试。"
         ) from None
     except SmokeContractError:
         raise SystemExit("现场课程未通过 smoke 合同检查。") from None
