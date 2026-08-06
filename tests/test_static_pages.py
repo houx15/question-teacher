@@ -50,12 +50,22 @@ def test_live_smoke_rejects_method_action_without_exact_semantic_shape(
         assert_generated_lesson_contract(lesson)
 
 
-def test_live_smoke_rejects_latex_command_in_method_narration():
+@pytest.mark.parametrize("unsafe_latex", (r"\frac", r"\,", r"\)", r"\("))
+def test_live_smoke_rejects_any_backslash_in_method_narration(
+    unsafe_latex,
+):
     lesson = _smoke_contract_lesson()
-    lesson.beats[1].narration = "今天用配方法，先写 \\frac。"
+    lesson.beats[1].narration = f"今天用配方法，先写 {unsafe_latex}。"
 
-    with pytest.raises(RuntimeError, match="LaTeX"):
+    with pytest.raises(RuntimeError, match="反斜杠"):
         assert_generated_lesson_contract(lesson)
+
+
+def test_live_smoke_accepts_normal_spoken_chinese_method_narration():
+    lesson = _smoke_contract_lesson()
+    lesson.beats[1].narration = "今天用配方法，先把式子变成完全平方的形式。"
+
+    assert assert_generated_lesson_contract(lesson)["method_first"] is True
 
 
 def _smoke_contract_lesson():
@@ -120,11 +130,17 @@ def test_readme_documents_method_first_choice_generation_and_local_katex():
     for phrase in (
         "先认识方法",
         "配方法",
-        "选择或点选",
+        "自动评分",
         "兼容读取",
         "free_text",
         "低风险反思",
         "needs_review",
+        "运行时",
+        "Director",
+        "Reviewer",
+        "确定性",
+        "语义",
+        "point_select",
         "诊断",
         "选项",
         "KaTeX",

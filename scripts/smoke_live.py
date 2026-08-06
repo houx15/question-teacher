@@ -1,13 +1,11 @@
 import asyncio
 import json
 from pathlib import Path
-import re
 import sys
 from typing import List
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_LATEX_COMMAND = re.compile(r"\\[A-Za-z]+")
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
@@ -55,13 +53,8 @@ def assert_generated_lesson_contract(lesson) -> dict:
         "方法介绍口语讲稿未以配方法开头。",
     )
     _require_contract(
-        r"\(" not in method_beat.narration
-        and r"\[" not in method_beat.narration,
-        "方法介绍口语讲稿含有未渲染 LaTeX 分隔符。",
-    )
-    _require_contract(
-        _LATEX_COMMAND.search(method_beat.narration) is None,
-        "方法介绍口语讲稿含有 LaTeX 命令。",
+        "\\" not in method_beat.narration,
+        "方法介绍口语讲稿含有反斜杠。",
     )
 
     interactions = [

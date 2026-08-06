@@ -42,6 +42,14 @@ def problem(required_method="factor", reference_solution_text=None):
     )
 
 
+def test_valid_draft_uses_choice_for_the_main_math_interaction():
+    interaction = valid_draft()["moments"][0]["interaction"]
+
+    assert interaction["kind"] == "choice"
+    assert len(interaction["options"]) == 3
+    assert all(option["feedback"] for option in interaction["options"])
+
+
 def valid_draft():
     return {
         "title": "把二次式拆成两个一次因式",
@@ -72,14 +80,7 @@ def valid_draft():
                     {"type": "focus", "target": "constant_and_linear_terms"}
                 ],
                 "layer": "interaction",
-                "interaction": {
-                    "interaction_id": "find-factor-pair",
-                    "kind": "free_text",
-                    "prompt": "写出这两个数。",
-                    "expected_answer": "-2 和 -3",
-                    "hints": ["先列出 6 的整数因数对。"],
-                    "explanation_after_correct": "这组数同时满足乘积和相加条件。",
-                },
+                "interaction": valid_diagnostic_choice(),
             },
             {
                 "purpose": "写出因式分解",
@@ -800,7 +801,9 @@ def test_draft_rejects_new_math_input_interaction_kinds_before_review(
     expected_answer,
 ):
     draft = valid_draft()
-    draft["moments"][0]["interaction"].update(
+    interaction = draft["moments"][0]["interaction"]
+    interaction.pop("options")
+    interaction.update(
         {
             "kind": kind,
             "expected_answer": expected_answer,
