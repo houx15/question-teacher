@@ -1,5 +1,5 @@
 import katex from "./vendor/katex/katex.mjs";
-import { emphasisClassName } from "./runtime-core.mjs";
+import { emphasisClassName } from "./runtime-core.mjs?v=20260807-2";
 
 
 const SUPERSCRIPTS = {

@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -24,8 +24,10 @@ from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
+    REFERENCE_AUDITOR_SYSTEM,
     REFERENCE_GROUNDING_SYSTEM,
     REVIEWER_SYSTEM,
+    REVISION_SYSTEM,
 )
 from app.schemas import ProblemInput
 from app.tts_client import (
@@ -79,46 +81,128 @@ def _require_contract(condition: bool, message: str) -> None:
         raise SmokeContractError(message)
 
 
+PromptRun = Tuple[str, int]
+_PROMPT_STAGE_CAPS = {
+    "A": 2,
+    "G": 2,
+    "D": 4,
+    "M": 4,
+    "R": 2,
+    "REV": 4,
+}
+_CORE_PROMPT_STAGES = {
+    REFERENCE_AUDITOR_SYSTEM: "A",
+    DIRECTOR_SYSTEM: "D",
+    MATERIALS_SYSTEM: "M",
+    REVIEWER_SYSTEM: "R",
+    REVISION_SYSTEM: "REV",
+}
+_GROUNDED_PROMPT_STAGES = {
+    REFERENCE_GROUNDING_SYSTEM: "G",
+    DIRECTOR_SYSTEM: "D",
+    MATERIALS_SYSTEM: "M",
+    REVIEWER_SYSTEM: "R",
+    REVISION_SYSTEM: "REV",
+}
+
+
+def _prompt_runs(
+    system_prompts: Sequence[str],
+    *,
+    prompt_stages: Dict[str, str],
+    unknown_message: str,
+) -> List[PromptRun]:
+    runs: List[PromptRun] = []
+    for prompt in system_prompts:
+        stage = prompt_stages.get(prompt)
+        _require_contract(stage is not None, unknown_message)
+        assert stage is not None
+        if runs and runs[-1][0] == stage:
+            runs[-1] = (stage, runs[-1][1] + 1)
+        else:
+            runs.append((stage, 1))
+        _require_contract(
+            runs[-1][1] <= _PROMPT_STAGE_CAPS[stage],
+            f"{stage} Agent 重试次数超过 smoke 合同。",
+        )
+    return runs
+
+
+def _require_complete_stage_trace(
+    runs: Sequence[PromptRun],
+    *,
+    initial: Sequence[str],
+    cycle: Sequence[str],
+    max_cycles: int,
+    message: str,
+) -> None:
+    stages = [stage for stage, _count in runs]
+    _require_contract(stages[: len(initial)] == list(initial), message)
+    remainder = stages[len(initial) :]
+    _require_contract(
+        len(remainder) % len(cycle) == 0,
+        message,
+    )
+    cycle_count = len(remainder) // len(cycle)
+    _require_contract(cycle_count <= max_cycles, message)
+    _require_contract(
+        all(
+            remainder[index : index + len(cycle)] == list(cycle)
+            for index in range(0, len(remainder), len(cycle))
+        ),
+        message,
+    )
+
+
 def assert_model_call_contract(
-    system_prompts,
+    system_prompts: Sequence[str],
     grounded_parameter_root: bool = False,
+    with_reference_audit: bool = False,
 ) -> None:
     _require_contract(
         MATH_ROUTE_SYSTEM not in system_prompts,
         "配方法 smoke 未使用确定性数学路线。",
     )
-    core_calls = [
-        prompt
-        for prompt in system_prompts
-        if prompt in {
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        }
-    ]
-    _require_contract(
-        core_calls[:3]
-        == [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-        "核心教学 Agent 调用顺序不符合 smoke 合同。",
-    )
     if grounded_parameter_root:
-        _require_contract(
-            system_prompts[:4]
-            == [
-                REFERENCE_GROUNDING_SYSTEM,
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            "参数根 smoke 未按参考材料路线完成核心 Agent 调用。",
+        runs = _prompt_runs(
+            system_prompts,
+            prompt_stages=_GROUNDED_PROMPT_STAGES,
+            unknown_message="参数根 smoke 出现未知 Agent 调用。",
         )
+        _require_complete_stage_trace(
+            runs,
+            initial=("G", "D", "M", "R"),
+            cycle=("REV", "M", "R"),
+            max_cycles=LessonGenerationService.MAX_REVISIONS,
+            message=(
+                "参数根 smoke 未按参考材料路线完成核心 Agent 调用。"
+            ),
+        )
+        return
+
+    runs = _prompt_runs(
+        system_prompts,
+        prompt_stages=_CORE_PROMPT_STAGES,
+        unknown_message="core smoke 出现未知 Agent 调用。",
+    )
+    _require_complete_stage_trace(
+        runs,
+        initial=(
+            ("A", "D", "M", "R")
+            if with_reference_audit
+            else ("D", "M", "R")
+        ),
+        cycle=("REV", "M", "R"),
+        max_cycles=LessonGenerationService.MAX_REVISIONS,
+        message="core smoke 的 Agent 调用顺序或修订轮次不符合合同。",
+    )
 
 
-def assert_common_lesson_contract(lesson) -> dict:
+def assert_common_lesson_contract(
+    lesson,
+    *,
+    require_audio: bool = True,
+) -> dict:
     """Assert shared lesson structure without using symbolic math tools."""
     beats = lesson.beats
     _require_contract(
@@ -179,8 +263,14 @@ def assert_common_lesson_contract(lesson) -> dict:
             "近迁移选项显示标签与内部课程记录不一致。",
         )
 
-    audio_ready = all(bool(beat.audio_url) for beat in beats)
-    _require_contract(audio_ready, "生成课程缺少讲解语音。")
+    audio_ready = all(
+        all(bool(cue.audio_url) for cue in beat.sync_cues)
+        if getattr(beat, "sync_cues", None)
+        else bool(beat.audio_url)
+        for beat in beats
+    )
+    if require_audio:
+        _require_contract(audio_ready, "生成课程缺少讲解语音。")
     return {
         "interaction_kinds": interaction_kinds,
         "diagnostic_choice_count": len(choices),
@@ -323,9 +413,54 @@ def _is_parameter_root_conclusion(value: str) -> bool:
     return _parse_half_expression(right) == Fraction(1, 2)
 
 
+def _is_parameter_root_substitution(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    compact = re.sub(
+        r"\s+",
+        "",
+        _strip_outer_math_delimiters(value),
+    ).replace("−", "-")
+    return compact == "4n^2-4mn+2n=0"
+
+
 def assert_grounded_parameter_root_contract(lesson) -> dict:
     """Check a grounded live lesson without returning private lesson content."""
-    common = assert_common_lesson_contract(lesson)
+    common = assert_common_lesson_contract(lesson, require_audio=False)
+    _require_contract(
+        all(beat.sync_cues for beat in lesson.beats),
+        "参数根课程并非每个 Beat 都有同步 Cue。",
+    )
+    cues = [
+        cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+    ]
+    cue_audio_ready = all(bool(cue.audio_url) for cue in cues)
+    _require_contract(
+        cue_audio_ready,
+        "参数根课程缺少 Cue 语音。",
+    )
+    _require_contract(
+        any(
+            action.surface == "problem"
+            and action.type == "emphasize"
+            and action.target == "problem-math-001"
+            for cue in cues
+            for action in cue.lead_actions
+        ),
+        "参数根课程缺少第一个题目公式的 Cue lead 强调。",
+    )
+    _require_contract(
+        any(
+            action.surface == "board"
+            and action.type in {"write", "transform"}
+            and _is_parameter_root_substitution(action.content)
+            for cue in cues
+            for action in cue.start_actions
+        ),
+        "参数根课程缺少包含 4n 的 Cue start 板书。",
+    )
     report = lesson.validation_report
     mode = report.get("verification_mode")
     _require_contract(
@@ -364,10 +499,10 @@ def assert_grounded_parameter_root_contract(lesson) -> dict:
     return {
         "lesson_id": lesson.lesson_id,
         "beat_count": len(lesson.beats),
+        "cue_count": len(cues),
         "interaction_kinds": common["interaction_kinds"],
-        "mode": mode,
         "review_status": review_status,
-        "audio_ready": common["audio_ready"],
+        "audio_ready": cue_audio_ready,
         "conclusion_present": conclusion_present,
     }
 
@@ -492,7 +627,8 @@ async def main(argv=None) -> None:
             )
             assert_model_call_contract(
                 model_client.system_prompts,
-                args.grounded_parameter_root,
+                grounded_parameter_root=args.grounded_parameter_root,
+                with_reference_audit=args.with_reference_audit,
             )
             lesson = await LessonAudioService(
                 speech_client,

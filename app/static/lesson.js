@@ -12,13 +12,13 @@ import {
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
-} from "./runtime-core.mjs";
-import { CuePlayer } from "./cue-player.mjs?v=20260807-1";
+} from "./runtime-core.mjs?v=20260807-2";
+import { CuePlayer } from "./cue-player.mjs?v=20260807-2";
 import {
   mathTextToPlainText,
   renderMathText,
   renderProblemMathText,
-} from "./math-text.mjs?v=20260807-1";
+} from "./math-text.mjs?v=20260807-2";
 
 
 const dom = {

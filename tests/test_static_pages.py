@@ -17,8 +17,10 @@ from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
+    REFERENCE_AUDITOR_SYSTEM,
     REFERENCE_GROUNDING_SYSTEM,
     REVIEWER_SYSTEM,
+    REVISION_SYSTEM,
 )
 
 
@@ -40,6 +42,25 @@ def test_live_smoke_asserts_method_first_choice_contract_without_answers():
         "audio_ready": True,
     }
     assert "expected_answer" not in summary
+
+
+def test_live_smoke_uses_cue_audio_for_cue_based_core_lessons():
+    lesson = _smoke_contract_lesson()
+    for index, beat in enumerate(lesson.beats):
+        beat.audio_url = None
+        beat.sync_cues = [
+            SimpleNamespace(audio_url=f"/audio/core-cue-{index}.mp3")
+        ]
+
+    assert assert_generated_lesson_contract(lesson)["audio_ready"] is True
+
+
+def test_live_smoke_still_requires_beat_audio_for_legacy_lessons():
+    lesson = _smoke_contract_lesson()
+    lesson.beats[0].audio_url = None
+
+    with pytest.raises(smoke_live.SmokeContractError, match="讲解语音"):
+        assert_generated_lesson_contract(lesson)
 
 
 @pytest.mark.parametrize(
@@ -159,13 +180,45 @@ def _grounded_smoke_contract_lesson():
             for value in ("a", "b", "c")
         ],
     )
+    problem_lead = SimpleNamespace(
+        surface="problem",
+        type="emphasize",
+        target="problem-math-001",
+        content=None,
+        source=None,
+        relation_target=None,
+        annotation=None,
+        emphasis_style="underline",
+        persistence="trace",
+    )
+    substitution_start = SimpleNamespace(
+        surface="board",
+        type="write",
+        target="substitution-result",
+        content=r"$4n^2-4mn+2n=0$",
+        source=None,
+        relation_target=None,
+        annotation=None,
+        emphasis_style=None,
+        persistence=None,
+    )
     return SimpleNamespace(
         lesson_id="grounded-smoke-lesson",
         beats=[
             SimpleNamespace(
                 interaction=None,
                 board_actions=[],
-                audio_url="/audio/opening.mp3",
+                audio_url=None,
+                sync_cues=[
+                    SimpleNamespace(
+                        cue_id="cue-opening",
+                        spoken_text="先看题目条件。",
+                        audio_url="/audio/cue-opening.mp3",
+                        lead_actions=[problem_lead],
+                        start_actions=[],
+                        end_actions=[],
+                    )
+                ],
             ),
             SimpleNamespace(
                 interaction=choice,
@@ -175,7 +228,17 @@ def _grounded_smoke_contract_lesson():
                         content=r"$m-n=\frac{1}{2}$",
                     )
                 ],
-                audio_url="/audio/conclusion.mp3",
+                audio_url=None,
+                sync_cues=[
+                    SimpleNamespace(
+                        cue_id="cue-substitution",
+                        spoken_text="把根代回方程。",
+                        audio_url="/audio/cue-conclusion.mp3",
+                        lead_actions=[],
+                        start_actions=[substitution_start],
+                        end_actions=[],
+                    )
+                ],
             ),
         ],
         transfer_item=SimpleNamespace(
@@ -204,12 +267,82 @@ def test_grounded_parameter_root_contract_checks_route_choice_audio_and_conclusi
     assert summary == {
         "lesson_id": "grounded-smoke-lesson",
         "beat_count": 2,
+        "cue_count": 2,
         "interaction_kinds": ["choice"],
-        "mode": "model_cross_checked",
         "review_status": "approved",
         "audio_ready": True,
         "conclusion_present": True,
     }
+
+
+def test_grounded_parameter_root_contract_uses_cue_audio_without_beat_audio():
+    lesson = _grounded_smoke_contract_lesson()
+    assert all(beat.audio_url is None for beat in lesson.beats)
+
+    summary = smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    assert summary["audio_ready"] is True
+    assert summary["cue_count"] == 2
+
+
+def test_grounded_parameter_root_contract_requires_complete_cue_sync_evidence():
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[0].sync_cues = []
+    with pytest.raises(smoke_live.SmokeContractError, match="同步 Cue"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[0].sync_cues[0].audio_url = None
+    with pytest.raises(smoke_live.SmokeContractError, match="Cue 语音"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[0].sync_cues[0].lead_actions = []
+    with pytest.raises(smoke_live.SmokeContractError, match="题目公式"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[0].sync_cues[0].lead_actions[0].type = "fade"
+    with pytest.raises(smoke_live.SmokeContractError, match="题目公式"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
+
+
+@pytest.mark.parametrize(
+    "equation",
+    (
+        r"$4n^2 - 4mn + 2n = 0$",
+        r"\( 4n^2-4mn+2n=0 \)",
+        r"\[4n^2 − 4mn + 2n = 0\]",
+    ),
+)
+def test_grounded_parameter_root_contract_accepts_safe_substitution_variants(
+    equation,
+):
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[1].sync_cues[0].start_actions[0].content = equation
+
+    assert smoke_live.assert_grounded_parameter_root_contract(
+        lesson
+    )["audio_ready"] is True
+
+
+@pytest.mark.parametrize(
+    "equation",
+    (
+        r"$14n^2-4mn+2n=0$",
+        r"$4not^2-4mn+2n=0$",
+        r"$4n^2-4mn+2n=1$",
+        r"错误：$4n^2-4mn+2n=0$",
+    ),
+)
+def test_grounded_parameter_root_contract_rejects_substring_equations(
+    equation,
+):
+    lesson = _grounded_smoke_contract_lesson()
+    lesson.beats[1].sync_cues[0].start_actions[0].content = equation
+
+    with pytest.raises(smoke_live.SmokeContractError, match="4n"):
+        smoke_live.assert_grounded_parameter_root_contract(lesson)
 
 
 @pytest.mark.parametrize(
@@ -236,11 +369,6 @@ def test_grounded_parameter_root_contract_requires_choice_only_audio_and_conclus
     lesson = _grounded_smoke_contract_lesson()
     lesson.beats[1].interaction.kind = "free_text"
     with pytest.raises(smoke_live.SmokeContractError, match="选择式互动"):
-        smoke_live.assert_grounded_parameter_root_contract(lesson)
-
-    lesson = _grounded_smoke_contract_lesson()
-    lesson.beats[0].audio_url = None
-    with pytest.raises(smoke_live.SmokeContractError, match="讲解语音"):
         smoke_live.assert_grounded_parameter_root_contract(lesson)
 
     lesson = _grounded_smoke_contract_lesson()
@@ -377,8 +505,8 @@ def test_grounded_parameter_root_cli_prints_only_safe_contract_fields(
     assert set(summary) == {
         "lesson_id",
         "beat_count",
+        "cue_count",
         "interaction_kinds",
-        "mode",
         "review_status",
         "audio_ready",
         "conclusion_present",
@@ -389,6 +517,71 @@ def test_grounded_parameter_root_cli_prints_only_safe_contract_fields(
     assert "option-a" not in output
     assert model_client.close_calls == 1
     assert speech_client.close_calls == 1
+
+
+def test_reference_audit_cli_passes_mode_to_model_call_contract(
+    monkeypatch,
+):
+    model_client = _LifecycleClient()
+    speech_client = _LifecycleClient()
+    _configure_smoke_clients(
+        monkeypatch,
+        model_client,
+        speech_client,
+    )
+    lesson = _smoke_contract_lesson()
+    lesson.lesson_id = "reference-audit-smoke"
+    lesson.validation_report = {
+        "reference_material_status": "approved",
+        "math_status": "verified",
+        "review_status": "approved",
+        "revision_count": 0,
+        "math_route_source": "deterministic",
+    }
+    contract_modes = []
+
+    class SuccessfulGenerationService:
+        def __init__(self, *_args):
+            pass
+
+        async def generate(self, _problem):
+            return lesson
+
+    class SuccessfulAudioService:
+        def __init__(self, *_args):
+            pass
+
+        async def attach_audio(self, candidate):
+            return candidate
+
+    def record_contract_mode(
+        _prompts,
+        grounded_parameter_root=False,
+        with_reference_audit=False,
+    ):
+        contract_modes.append(
+            (grounded_parameter_root, with_reference_audit)
+        )
+
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonGenerationService",
+        SuccessfulGenerationService,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "LessonAudioService",
+        SuccessfulAudioService,
+    )
+    monkeypatch.setattr(
+        smoke_live,
+        "assert_model_call_contract",
+        record_contract_mode,
+    )
+
+    asyncio.run(smoke_live.main(["--with-reference-audit"]))
+
+    assert contract_modes == [(False, True)]
 
 
 def test_live_smoke_requires_deterministic_route_then_narrative_materials_review():
@@ -414,6 +607,58 @@ def test_live_smoke_requires_deterministic_route_then_narrative_materials_review
         )
 
 
+@pytest.mark.parametrize(
+    ("calls", "with_reference_audit"),
+    [
+        (
+            [
+                *([DIRECTOR_SYSTEM] * 4),
+                *([MATERIALS_SYSTEM] * 4),
+                *([REVIEWER_SYSTEM] * 2),
+            ],
+            False,
+        ),
+        (
+            [
+                *([REFERENCE_AUDITOR_SYSTEM] * 2),
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+                *([REVISION_SYSTEM] * 4),
+                *([MATERIALS_SYSTEM] * 4),
+                *([REVIEWER_SYSTEM] * 2),
+            ],
+            True,
+        ),
+        (
+            [
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+                REVISION_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+                REVISION_SYSTEM,
+                REVISION_SYSTEM,
+                MATERIALS_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            False,
+        ),
+    ],
+)
+def test_live_smoke_allows_bounded_core_revision_traces(
+    calls,
+    with_reference_audit,
+):
+    smoke_live.assert_model_call_contract(
+        calls,
+        with_reference_audit=with_reference_audit,
+    )
+
+
 def test_grounded_live_smoke_requires_grounder_then_teaching_agents():
     smoke_live.assert_model_call_contract(
         [
@@ -436,6 +681,391 @@ def test_grounded_live_smoke_requires_grounder_then_teaching_agents():
                 REVIEWER_SYSTEM,
             ],
             grounded_parameter_root=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [
+            *([REFERENCE_GROUNDING_SYSTEM] * 2),
+            *([DIRECTOR_SYSTEM] * 4),
+            *([MATERIALS_SYSTEM] * 4),
+            *([REVIEWER_SYSTEM] * 2),
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            *([REVISION_SYSTEM] * 4),
+            *([MATERIALS_SYSTEM] * 4),
+            *([REVIEWER_SYSTEM] * 2),
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+            REVISION_SYSTEM,
+            MATERIALS_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+    ],
+)
+def test_grounded_live_smoke_allows_bounded_revision_traces(calls):
+    smoke_live.assert_model_call_contract(
+        calls,
+        grounded_parameter_root=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("calls", "grounded"),
+    [
+        (
+            [
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                DIRECTOR_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            False,
+        ),
+        (
+            [
+                REFERENCE_GROUNDING_SYSTEM,
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                DIRECTOR_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            True,
+        ),
+    ],
+)
+def test_live_smoke_rejects_return_to_earlier_stage_before_review(
+    calls,
+    grounded,
+):
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            calls,
+            grounded_parameter_root=grounded,
+        )
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+            MATERIALS_SYSTEM,
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+    ],
+)
+def test_grounded_live_smoke_rejects_incomplete_revision_cycle(calls):
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            calls,
+            grounded_parameter_root=True,
+        )
+
+
+def test_grounded_live_smoke_rejects_third_revision_cycle():
+    calls = [
+        REFERENCE_GROUNDING_SYSTEM,
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    calls.extend(
+        [REVISION_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM] * 3
+    )
+
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            calls,
+            grounded_parameter_root=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            REFERENCE_GROUNDING_SYSTEM,
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            *([DIRECTOR_SYSTEM] * 5),
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            *([MATERIALS_SYSTEM] * 5),
+            REVIEWER_SYSTEM,
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            *([REVIEWER_SYSTEM] * 3),
+        ],
+        [
+            REFERENCE_GROUNDING_SYSTEM,
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            *([REVISION_SYSTEM] * 5),
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+    ],
+)
+def test_grounded_live_smoke_rejects_excessive_stage_retries(calls):
+    with pytest.raises(smoke_live.SmokeContractError, match="重试"):
+        smoke_live.assert_model_call_contract(
+            calls,
+            grounded_parameter_root=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [DIRECTOR_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM],
+        [REFERENCE_GROUNDING_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM],
+        [REFERENCE_GROUNDING_SYSTEM, DIRECTOR_SYSTEM, REVIEWER_SYSTEM],
+        [REFERENCE_GROUNDING_SYSTEM, DIRECTOR_SYSTEM, MATERIALS_SYSTEM],
+    ],
+)
+def test_grounded_live_smoke_rejects_missing_initial_stage(calls):
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            calls,
+            grounded_parameter_root=True,
+        )
+
+
+def test_grounded_live_smoke_keeps_strict_unfiltered_stage_prefix():
+    with pytest.raises(
+        smoke_live.SmokeContractError,
+        match="未知",
+    ):
+        smoke_live.assert_model_call_contract(
+            [
+                REFERENCE_GROUNDING_SYSTEM,
+                DIRECTOR_SYSTEM,
+                "optional unrelated prompt",
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            grounded_parameter_root=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "unexpected_prompt",
+    ("unknown provider prompt", REFERENCE_AUDITOR_SYSTEM),
+)
+def test_grounded_live_smoke_rejects_unknown_prompt_suffix(
+    unexpected_prompt,
+):
+    with pytest.raises(
+        smoke_live.SmokeContractError,
+        match="未知",
+    ):
+        smoke_live.assert_model_call_contract(
+            [
+                REFERENCE_GROUNDING_SYSTEM,
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+                unexpected_prompt,
+            ],
+            grounded_parameter_root=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            DIRECTOR_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            MATERIALS_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            REVISION_SYSTEM,
+            MATERIALS_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            *(
+                [REVISION_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM]
+                * 3
+            ),
+        ],
+        [
+            *([DIRECTOR_SYSTEM] * 5),
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            *([MATERIALS_SYSTEM] * 5),
+            REVIEWER_SYSTEM,
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            *([REVIEWER_SYSTEM] * 3),
+        ],
+        [
+            DIRECTOR_SYSTEM,
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+            *([REVISION_SYSTEM] * 5),
+            MATERIALS_SYSTEM,
+            REVIEWER_SYSTEM,
+        ],
+    ],
+)
+def test_live_smoke_rejects_invalid_bounded_core_trace(calls):
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(calls)
+
+
+@pytest.mark.parametrize(
+    ("calls", "with_reference_audit"),
+    [
+        (
+            [DIRECTOR_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM],
+            True,
+        ),
+        (
+            [
+                REFERENCE_AUDITOR_SYSTEM,
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            False,
+        ),
+        (
+            [
+                DIRECTOR_SYSTEM,
+                REFERENCE_AUDITOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            True,
+        ),
+        (
+            [
+                REFERENCE_AUDITOR_SYSTEM,
+                DIRECTOR_SYSTEM,
+                REFERENCE_AUDITOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            True,
+        ),
+        (
+            [
+                *([REFERENCE_AUDITOR_SYSTEM] * 3),
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            True,
+        ),
+        (
+            [
+                REFERENCE_GROUNDING_SYSTEM,
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            False,
+        ),
+        (
+            [
+                "unknown core prompt",
+                DIRECTOR_SYSTEM,
+                MATERIALS_SYSTEM,
+                REVIEWER_SYSTEM,
+            ],
+            False,
+        ),
+    ],
+)
+def test_live_smoke_rejects_invalid_core_prompt_identity(
+    calls,
+    with_reference_audit,
+):
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            calls,
+            with_reference_audit=with_reference_audit,
         )
 
 
@@ -672,7 +1302,7 @@ def test_live_smoke_close_only_failure_is_safely_classified(
     monkeypatch.setattr(
         smoke_live,
         "assert_model_call_contract",
-        lambda *_args: None,
+        lambda *_args, **_kwargs: None,
     )
 
     with pytest.raises(SystemExit) as exc_info:
@@ -829,6 +1459,26 @@ def test_readme_documents_reference_grounded_scope_and_parameter_example():
     assert "当前版本不可执行" not in readme
 
 
+def test_readme_documents_cue_sync_contract_and_evidence_boundaries():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    assert "Cue 级" in readme and "火山引擎" in readme
+    assert "公式渲染" in readme and "强调" in readme
+    assert "相互独立的白名单合同" in readme
+    assert "固定参数根 smoke" in readme
+    assert "所有题型" in readme and "学习效果" in readme
+    assert "可读降级" in readme
+    assert "同步语音成功" in readme
+    assert (
+        "它只输出课程 ID、Beat/Cue 数量、互动类型、审稿状态、音频就绪和"
+        in readme
+    )
+    assert "配置的 TTS provider" in readme
+    assert "火山引擎是当前默认路径" in readme
+    assert "每个 Cue\n使用一段火山引擎语音" not in readme
+    assert "所有 Beat 都有音频" not in readme
+
+
 def test_generation_page_has_focused_authoring_form():
     response = page_client().get("/")
 
@@ -895,7 +1545,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260807-1"' in html
+    assert 'src="/static/lesson.js?v=20260807-2"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -925,7 +1575,8 @@ def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
 def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
     source = page_client().get("/static/lesson.js").text
 
-    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-1";' in source
+    assert '} from "./runtime-core.mjs?v=20260807-2";' in source
+    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-2";' in source
     assert "applySyncVisualAction" in source
     assert "let cuePlayer = null;" in source
     assert "cuePlayer = new CuePlayer({" in source
@@ -975,7 +1626,7 @@ def test_choice_buttons_use_nonempty_plain_text_accessible_names():
     source = page_client().get("/static/lesson.js").text
 
     assert "mathTextToPlainText" in source
-    assert '"./math-text.mjs?v=20260807-1";' in source
+    assert '"./math-text.mjs?v=20260807-2";' in source
     assert "for (const [optionIndex, option] of" in source
     assert "const accessibleLabel = mathTextToPlainText(option.label);" in source
     assert 'button.setAttribute(' in source
@@ -993,6 +1644,11 @@ def test_synchronized_emphasis_uses_fixed_classes_and_no_inner_html():
 
     assert ".innerHTML" not in lesson_source
     assert ".innerHTML" not in math_source
+    assert (
+        'import { emphasisClassName } '
+        'from "./runtime-core.mjs?v=20260807-2";'
+        in math_source
+    )
     assert "emphasisClassName(value.emphasis?.style)" in lesson_source
     assert 'node.classList.remove(...EMPHASIS_CLASSES)' in lesson_source
     assert 'highlight: "is-highlighted"' in runtime_source
