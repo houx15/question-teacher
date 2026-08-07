@@ -178,6 +178,13 @@ class ProblemInput(SchemaModel):
     lesson_length: Literal["concise", "standard"] = "standard"
 
 
+class ProblemFocusTarget(SchemaModel):
+    target_id: NonEmptyString
+    math_text: NonEmptyString
+    display_mode: bool = False
+    ordinal: int = Field(ge=1, le=64)
+
+
 class MathStep(SchemaModel):
     purpose: NonEmptyString
     operation: MathOperation

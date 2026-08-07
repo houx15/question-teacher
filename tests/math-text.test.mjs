@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   MAX_ACCESSIBLE_TEXT_LENGTH,
@@ -8,8 +9,98 @@ import {
   mathSegments,
   mathTextToPlainText,
   normalizeLegacyMath,
+  problemFocusTargets,
   renderMathText,
 } from "../app/static/math-text.mjs";
+
+
+const problemFocusCases = JSON.parse(readFileSync(
+  new URL("./fixtures/problem-focus-cases.json", import.meta.url),
+  "utf8",
+));
+
+
+test("problem focus targets match shared explicit delimiter cases", () => {
+  for (const fixture of problemFocusCases) {
+    if (fixture.code_points) {
+      assert.deepEqual(
+        Array.from(fixture.source, (character) => character.codePointAt(0)),
+        fixture.code_points,
+        fixture.name,
+      );
+    }
+
+    const targets = problemFocusTargets(fixture.source);
+
+    assert.deepEqual(
+      targets.map((target) => target.math_text),
+      fixture.math,
+      fixture.name,
+    );
+    assert.deepEqual(
+      targets.map((target) => target.target_id),
+      fixture.math.map((_, index) => (
+        `problem-math-${String(index + 1).padStart(3, "0")}`
+      )),
+      fixture.name,
+    );
+    if (fixture.display_modes) {
+      assert.deepEqual(
+        targets.map((target) => target.display_mode),
+        fixture.display_modes,
+        fixture.name,
+      );
+    }
+  }
+});
+
+
+test("problem focus targets expose display mode and stable ordinal", () => {
+  assert.deepEqual(
+    problemFocusTargets(String.raw`先看\(x=2\)，再看\[\frac{1}{2}\]`)
+      .map(({ display_mode, ordinal }) => ({ display_mode, ordinal })),
+    [
+      { display_mode: false, ordinal: 1 },
+      { display_mode: true, ordinal: 2 },
+    ],
+  );
+});
+
+
+test("problem focus targets enforce 64 target boundary", () => {
+  const targets = problemFocusTargets(String.raw`\(x=1\)`.repeat(64));
+
+  assert.equal(targets.length, 64);
+  assert.equal(targets.at(-1).target_id, "problem-math-064");
+  assert.equal(targets.at(-1).ordinal, 64);
+  assert.deepEqual(problemFocusTargets(String.raw`\(x=1\)`.repeat(65)), []);
+});
+
+
+test("problem focus targets count Unicode code points for budget", () => {
+  const withinBudget = `${"😀".repeat(4091)}${String.raw`\(x\)`}`;
+  const overBudget = `${"😀".repeat(4092)}${String.raw`\(x\)`}`;
+
+  assert.equal([...withinBudget].length, 4096);
+  assert.equal(withinBudget.length > MAX_MATH_TEXT_LENGTH, true);
+  assert.deepEqual(
+    problemFocusTargets(withinBudget).map((target) => target.math_text),
+    ["x"],
+  );
+  assert.equal([...overBudget].length, 4097);
+  assert.deepEqual(problemFocusTargets(overBudget), []);
+});
+
+
+test("problem focus targets exclude renderable legacy math", () => {
+  const source = "解方程 x^2-6x+5=0";
+
+  assert.equal(
+    mathSegments(source).some((segment) => segment.type === "math"),
+    true,
+  );
+  assert.deepEqual(problemFocusTargets(source), []);
+});
 
 
 test("plain-text accessibility helper removes visual math wrappers without duplication", () => {

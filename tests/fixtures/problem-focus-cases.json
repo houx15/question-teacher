@@ -1,0 +1,155 @@
+[
+  {
+    "name": "dollar_delimited_parameter_root",
+    "source": "若$2n$ ($n\\ne 0$)是方程$x^2-2mx+2n=0$的根",
+    "math": [
+      "2n",
+      "n\\ne 0",
+      "x^2-2mx+2n=0"
+    ]
+  },
+  {
+    "name": "parenthesis_and_display_delimiters",
+    "source": "先看\\(x=2\\)，再看\\[\\frac{1}{2}\\]",
+    "math": [
+      "x=2",
+      "\\frac{1}{2}"
+    ],
+    "display_modes": [
+      false,
+      true
+    ]
+  },
+  {
+    "name": "malformed_delimiter_is_plain_text",
+    "source": "未闭合的$x^2+1",
+    "math": []
+  },
+  {
+    "name": "escaped_currency_is_not_math",
+    "source": "价格\\$100 和 \\$200",
+    "math": []
+  },
+  {
+    "name": "legacy_math_is_renderable_but_not_focusable",
+    "source": "解方程 x^2-6x+5=0",
+    "math": []
+  },
+  {
+    "name": "blank_explicit_formula",
+    "source": "$   $",
+    "math": []
+  },
+  {
+    "name": "trim_explicit_formula",
+    "source": "$ x $",
+    "math": [
+      "x"
+    ]
+  },
+  {
+    "name": "blank_formula_invalidates_entire_source",
+    "source": "$x$ 和 $   $",
+    "math": []
+  },
+  {
+    "name": "whitespace_only_display_math_invalidates_source",
+    "source": "空$$   $$公式",
+    "math": []
+  },
+  {
+    "name": "consecutive_valid_dollar_delimiters",
+    "source": "$x$$y$",
+    "math": [
+      "x",
+      "y"
+    ],
+    "display_modes": [
+      false,
+      false
+    ]
+  },
+  {
+    "name": "ordinary_dollar_display_math",
+    "source": "$$display$$",
+    "math": [
+      "display"
+    ],
+    "display_modes": [
+      true
+    ]
+  },
+  {
+    "name": "display_to_inline_dollar_adjacency",
+    "source": "$$x$$$y$",
+    "math": [
+      "x",
+      "y"
+    ],
+    "display_modes": [
+      true,
+      false
+    ]
+  },
+  {
+    "name": "inline_to_display_dollar_adjacency",
+    "source": "$x$$$y$$",
+    "math": [
+      "x",
+      "y"
+    ],
+    "display_modes": [
+      false,
+      true
+    ]
+  },
+  {
+    "name": "escaped_first_dollar_then_inline_formula",
+    "source": "\\$$x$",
+    "code_points": [
+      92,
+      36,
+      36,
+      120,
+      36
+    ],
+    "math": [
+      "x"
+    ],
+    "display_modes": [
+      false
+    ]
+  },
+  {
+    "name": "escaped_dollar_inside_formula_leaves_unmatched_trailing_dollar",
+    "source": "$x\\$$y$",
+    "code_points": [
+      36,
+      120,
+      92,
+      36,
+      36,
+      121,
+      36
+    ],
+    "math": [],
+    "display_modes": []
+  },
+  {
+    "name": "mixed_opener_and_closer",
+    "source": "混合\\(x$",
+    "math": []
+  },
+  {
+    "name": "odd_preceding_backslash_escapes_dollar",
+    "source": "奇数\\$x$",
+    "math": []
+  },
+  {
+    "name": "even_preceding_backslashes_keep_dollar_active",
+    "source": "偶数\\\\$x$",
+    "math": [
+      "x"
+    ]
+  }
+]

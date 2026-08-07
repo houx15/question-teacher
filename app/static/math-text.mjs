@@ -32,8 +32,18 @@ function mathSegment(value, displayMode) {
 }
 
 
+function exceedsCodePointLimit(value, limit) {
+  let count = 0;
+  for (const _character of value) {
+    count += 1;
+    if (count > limit) return true;
+  }
+  return false;
+}
+
+
 function explicitMathSegments(value) {
-  const delimiterToken = /\\([()[\]])|\$\$|\$/g;
+  const delimiterToken = /\\([()[\]])|\$+/g;
   const tokens = [];
   let active = null;
   let match;
@@ -41,18 +51,55 @@ function explicitMathSegments(value) {
   while ((match = delimiterToken.exec(value)) !== null) {
     const rawToken = match[0];
     if (rawToken.startsWith("$")) {
-      let precedingBackslashes = 0;
-      for (
-        let index = match.index - 1;
-        index >= 0 && value[index] === "\\";
-        index -= 1
-      ) {
-        precedingBackslashes += 1;
+      let offset = 0;
+      while (offset < rawToken.length) {
+        const dollarIndex = match.index + offset;
+        let precedingBackslashes = 0;
+        for (
+          let index = dollarIndex - 1;
+          index >= 0 && value[index] === "\\";
+          index -= 1
+        ) {
+          precedingBackslashes += 1;
+        }
+        if (precedingBackslashes % 2 === 1) {
+          offset += 1;
+          continue;
+        }
+
+        const remaining = rawToken.length - offset;
+
+        if (active) {
+          if (active.closingToken !== "$" && active.closingToken !== "$$") {
+            return null;
+          }
+          const delimiterWidth = active.closingToken.length;
+          if (remaining < delimiterWidth) return null;
+          tokens.push({
+            start: active.index,
+            end: dollarIndex + delimiterWidth,
+            value: value.slice(active.contentStart, dollarIndex),
+            displayMode: active.displayMode,
+          });
+          active = null;
+          offset += delimiterWidth;
+          continue;
+        }
+
+        const delimiterWidth = remaining >= 2 ? 2 : 1;
+        const delimiter = "$".repeat(delimiterWidth);
+        active = {
+          closingToken: delimiter,
+          index: dollarIndex,
+          contentStart: dollarIndex + delimiterWidth,
+          displayMode: delimiterWidth === 2,
+        };
+        offset += delimiterWidth;
       }
-      if (precedingBackslashes % 2 === 1) continue;
+      continue;
     }
 
-    const token = match[1] ?? rawToken;
+    const token = match[1];
     if (active) {
       if (token !== active.closingToken) return null;
       tokens.push({
@@ -143,6 +190,32 @@ export function mathSegments(value) {
     ));
   }
   return legacyMathSegments(source);
+}
+
+
+export function problemFocusTargets(value) {
+  const source = String(value ?? "");
+  if (exceedsCodePointLimit(source, MAX_MATH_TEXT_LENGTH)) return [];
+
+  const explicit = explicitMathSegments(source);
+  if (!explicit) return [];
+
+  const math = explicit
+    .filter((segment) => segment.type === "math")
+    .map((segment) => ({
+      ...segment,
+      value: segment.value.trim(),
+    }));
+  if (math.some((segment) => !segment.value)) return [];
+  if (math.length > 64) return [];
+
+  return math
+    .map((segment, index) => ({
+      target_id: `problem-math-${String(index + 1).padStart(3, "0")}`,
+      math_text: segment.value,
+      display_mode: segment.displayMode,
+      ordinal: index + 1,
+    }));
 }
 
 
