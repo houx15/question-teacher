@@ -27,6 +27,10 @@ MomentNarration = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=90),
 ]
+CueSpokenText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=90),
+]
 METHOD_NAME_MAX_LENGTH = 8
 METHOD_DEFINITION_MAX_LENGTH = 36
 METHOD_TARGET_FORM_MAX_LENGTH = 80
@@ -441,6 +445,114 @@ class NarrativeBoardAction(BoardAction):
     relation_target: Optional[NarrativeBoardTarget] = None
 
 
+class SyncVisualAction(SchemaModel):
+    surface: Literal["problem", "board"]
+    type: Literal[
+        "write",
+        "transform",
+        "focus",
+        "emphasize",
+        "annotate",
+        "fade",
+        "reveal",
+        "clear_focus",
+    ]
+    target: GeneratedId
+    content: Optional[NarrativeBoardContent] = None
+    source: Optional[GeneratedId] = None
+    relation_target: Optional[GeneratedId] = None
+    annotation: Optional[
+        Literal["underline", "arrow", "bracket", "label"]
+    ] = None
+    emphasis_style: Optional[
+        Literal["highlight", "underline", "red"]
+    ] = None
+    persistence: Optional[Literal["transient", "trace"]] = None
+
+    @model_validator(mode="after")
+    def require_executable_payload(self) -> "SyncVisualAction":
+        if self.surface == "problem" and self.type in {
+            "write",
+            "transform",
+            "annotate",
+        }:
+            raise ValueError(
+                f"problem actions cannot use {self.type}"
+            )
+
+        if self.type in {"write", "transform"} and not self.content:
+            raise ValueError(f"{self.type} requires content")
+        if self.type == "emphasize" and not self.emphasis_style:
+            raise ValueError("emphasize requires emphasis_style")
+        if self.persistence and self.type != "emphasize":
+            raise ValueError("persistence is valid only for emphasize")
+
+        allowed_fields = {
+            "write": {"content"},
+            "transform": {"content", "source"},
+            "focus": set(),
+            "emphasize": {"emphasis_style", "persistence"},
+            "annotate": {"annotation", "content", "relation_target"},
+            "fade": set(),
+            "reveal": set(),
+            "clear_focus": set(),
+        }[self.type]
+        optional_fields = {
+            "content": self.content,
+            "source": self.source,
+            "relation_target": self.relation_target,
+            "annotation": self.annotation,
+            "emphasis_style": self.emphasis_style,
+            "persistence": self.persistence,
+        }
+        irrelevant_fields = [
+            field
+            for field, value in optional_fields.items()
+            if value is not None and field not in allowed_fields
+        ]
+        if irrelevant_fields:
+            raise ValueError(
+                f"{self.type} does not accept "
+                f"{', '.join(irrelevant_fields)}"
+            )
+
+        if self.type == "annotate":
+            if not self.annotation:
+                raise ValueError("annotate requires annotation")
+            if self.annotation == "label" and not self.content:
+                raise ValueError("label annotation requires content")
+            if self.annotation != "label" and self.content:
+                raise ValueError(
+                    "content is valid only for label annotation"
+                )
+            if self.annotation == "arrow" and not self.relation_target:
+                raise ValueError(
+                    "arrow annotation requires relation_target"
+                )
+            if self.annotation != "arrow" and self.relation_target:
+                raise ValueError(
+                    "relation_target is valid only for arrow annotation"
+                )
+        return self
+
+
+class NarrativeSyncCue(SchemaModel):
+    cue_id: GeneratedId
+    spoken_text: CueSpokenText
+    lead_actions: List[SyncVisualAction] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+    start_actions: List[SyncVisualAction] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    end_actions: List[SyncVisualAction] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+
+
 class InteractionOption(SchemaModel):
     option_id: NonEmptyString
     label: NonEmptyString
@@ -765,6 +877,15 @@ class RuntimeBeat(SchemaModel):
     interaction: Optional[Interaction] = None
     audio_url: Optional[NonEmptyString] = None
     next_beat_id: Optional[NonEmptyString] = None
+
+
+class RuntimeSyncCue(SchemaModel):
+    cue_id: NonEmptyString
+    spoken_text: NonEmptyString
+    lead_actions: List[SyncVisualAction] = Field(default_factory=list)
+    start_actions: List[SyncVisualAction] = Field(default_factory=list)
+    end_actions: List[SyncVisualAction] = Field(default_factory=list)
+    audio_url: Optional[NonEmptyString] = None
 
 
 class RuntimeLesson(SchemaModel):

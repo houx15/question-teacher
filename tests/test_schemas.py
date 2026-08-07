@@ -11,12 +11,14 @@ from app.schemas import (
     LessonMoment,
     MathStep,
     MethodIntroduction,
+    NarrativeSyncCue,
     ProblemInput,
     ReferenceGroundingBrief,
     ReferenceMaterialAudit,
     ReviewDecision,
     RuntimeBeat,
     RuntimeLesson,
+    SyncVisualAction,
     TransferItem,
     TransferOption,
 )
@@ -652,6 +654,175 @@ def test_board_action_rejects_unknown_coordinate_fields(coordinate):
                 "target": "factorized_equation",
                 coordinate: 20,
             }
+        )
+
+
+def sync_visual_action_payload(**overrides):
+    return {
+        "surface": "board",
+        "type": "focus",
+        "target": "solution-line-001",
+        **overrides,
+    }
+
+
+def test_narrative_sync_cue_accepts_voice_only_cue():
+    cue = NarrativeSyncCue(
+        cue_id="cue-voice-only",
+        spoken_text="先观察这个式子的结构。",
+    )
+
+    assert cue.lead_actions == []
+    assert cue.start_actions == []
+    assert cue.end_actions == []
+
+
+def test_sync_visual_action_accepts_problem_emphasis_with_semantic_target():
+    action = SyncVisualAction(
+        surface="problem",
+        type="emphasize",
+        target="problem-math-001",
+        emphasis_style="underline",
+        persistence="trace",
+    )
+
+    assert action.target == "problem-math-001"
+    assert action.emphasis_style == "underline"
+    assert action.persistence == "trace"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target", "problem-math-001[data-secret]"),
+        ("target", "problem-math-001:nth-child(2)"),
+        ("emphasis_style", "background:url(javascript:alert(1))"),
+        ("emphasis_style", "[[red]]"),
+    ],
+)
+def test_sync_visual_action_rejects_selectors_and_inline_styles(
+    field,
+    value,
+):
+    payload = {
+        "surface": "problem",
+        "type": "emphasize",
+        "target": "problem-math-001",
+        "emphasis_style": "underline",
+        "persistence": "trace",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        SyncVisualAction.model_validate(payload)
+
+
+def test_sync_visual_action_accepts_math_comparison_content():
+    action = SyncVisualAction(
+        surface="board",
+        type="write",
+        target="solution-line-001",
+        content="a < b > c",
+    )
+
+    assert action.content == "a < b > c"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        sync_visual_action_payload(
+            surface="problem",
+            type="write",
+            content="x = 1",
+        ),
+        sync_visual_action_payload(
+            surface="problem",
+            type="transform",
+            content="x = 1",
+        ),
+        sync_visual_action_payload(
+            surface="problem",
+            type="annotate",
+            annotation="underline",
+        ),
+    ],
+)
+def test_sync_visual_action_rejects_problem_surface_mutation(payload):
+    with pytest.raises(ValidationError):
+        SyncVisualAction.model_validate(payload)
+
+
+@pytest.mark.parametrize("action_type", ("write", "transform"))
+def test_sync_visual_action_requires_content_for_mutation(action_type):
+    with pytest.raises(ValidationError):
+        SyncVisualAction(
+            surface="board",
+            type=action_type,
+            target="solution-line-001",
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        sync_visual_action_payload(type="emphasize"),
+        sync_visual_action_payload(persistence="transient"),
+        sync_visual_action_payload(content="x = 1"),
+        sync_visual_action_payload(
+            type="write",
+            content="x = 1",
+            source="source-line-001",
+        ),
+        sync_visual_action_payload(type="annotate", annotation="label"),
+        sync_visual_action_payload(type="annotate", annotation="arrow"),
+        sync_visual_action_payload(
+            type="annotate",
+            annotation="underline",
+            relation_target="source-line-001",
+        ),
+    ],
+)
+def test_sync_visual_action_rejects_irrelevant_or_incomplete_fields(
+    payload,
+):
+    with pytest.raises(ValidationError):
+        SyncVisualAction.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("action_field", "action_count"),
+    [
+        ("lead_actions", 7),
+        ("start_actions", 9),
+        ("end_actions", 7),
+    ],
+)
+def test_narrative_sync_cue_rejects_oversized_action_lists(
+    action_field,
+    action_count,
+):
+    payload = {
+        "cue_id": "cue-oversized",
+        "spoken_text": "观察这一行。",
+        action_field: [
+            sync_visual_action_payload(
+                target=f"solution-line-{index}",
+            )
+            for index in range(action_count)
+        ],
+    }
+
+    with pytest.raises(ValidationError):
+        NarrativeSyncCue.model_validate(payload)
+
+
+@pytest.mark.parametrize("spoken_text", ("", "讲" * 91))
+def test_narrative_sync_cue_rejects_invalid_spoken_text(spoken_text):
+    with pytest.raises(ValidationError):
+        NarrativeSyncCue(
+            cue_id="cue-invalid-spoken-text",
+            spoken_text=spoken_text,
         )
 
 
