@@ -65,6 +65,7 @@ function activeEmphasis(action) {
   if (!emphasisClassName(style)) return null;
   if (
     action.persistence !== undefined
+    && action.persistence !== null
     && action.persistence !== "trace"
     && action.persistence !== "transient"
   ) {

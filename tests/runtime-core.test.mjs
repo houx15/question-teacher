@@ -84,6 +84,24 @@ test("problem emphasis stores active trace metadata only for known targets", () 
 });
 
 
+test("problem emphasis treats nullable persistence as transient", () => {
+  const initial = emptyVisualState(["problem-math-001"]);
+  const result = applySyncVisualAction(initial, {
+    surface: "problem",
+    type: "emphasize",
+    target: "problem-math-001",
+    emphasis_style: "highlight",
+    persistence: null,
+  });
+
+  assert.deepEqual(result.problem.get("problem-math-001"), {
+    style: "highlight",
+    strength: "active",
+    persistence: "transient",
+  });
+});
+
+
 test("selective trace lifecycle downgrades trace and removes transient emphasis", () => {
   const seeded = emptyVisualState([
     "problem-math-001",
@@ -229,6 +247,75 @@ test("selective trace board write and transform accept explicit safe emphasis", 
     strength: "active",
     persistence: "transient",
   });
+});
+
+
+test("board write and emphasize treat nullable persistence as transient", () => {
+  const written = applySyncVisualAction(emptyVisualState(), {
+    surface: "board",
+    type: "write",
+    target: "equation",
+    content: "x²-5x+6=0",
+    emphasis_style: "highlight",
+    persistence: null,
+  });
+  const emphasized = applySyncVisualAction(written, {
+    surface: "board",
+    type: "emphasize",
+    target: "equation",
+    emphasis_style: "underline",
+    persistence: null,
+  });
+
+  assert.deepEqual(written.board.get("equation").emphasis, {
+    style: "highlight",
+    strength: "active",
+    persistence: "transient",
+  });
+  assert.deepEqual(emphasized.board.get("equation").emphasis, {
+    style: "underline",
+    strength: "active",
+    persistence: "transient",
+  });
+});
+
+
+test("emphasis rejects non-null unsupported persistence strings", () => {
+  const problem = applySyncVisualAction(
+    emptyVisualState(["problem-math-001"]),
+    {
+      surface: "problem",
+      type: "emphasize",
+      target: "problem-math-001",
+      emphasis_style: "highlight",
+      persistence: "sticky",
+    },
+  );
+  const written = applySyncVisualAction(emptyVisualState(), {
+    surface: "board",
+    type: "write",
+    target: "written-equation",
+    content: "x²-5x+6=0",
+    emphasis_style: "highlight",
+    persistence: "sticky",
+  });
+  let board = applySyncVisualAction(emptyVisualState(), {
+    surface: "board",
+    type: "write",
+    target: "equation",
+    content: "x²-5x+6=0",
+  });
+  board = applySyncVisualAction(board, {
+    surface: "board",
+    type: "emphasize",
+    target: "equation",
+    emphasis_style: "underline",
+    persistence: "sticky",
+  });
+
+  assert.equal(problem.problem.get("problem-math-001"), null);
+  assert.equal("emphasis" in written.board.get("written-equation"), false);
+  assert.equal("emphasis" in board.board.get("equation"), false);
 });
 
 
