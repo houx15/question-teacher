@@ -12,6 +12,7 @@ from app.generation import (
     LessonQualityError,
     _VerifiedMathRoute,
     _normalize_grounded_choice_option_label,
+    _prune_orphan_cue_cleanup_actions,
 )
 from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
@@ -154,6 +155,55 @@ def add_required_lead_emphasis(payload):
             "type": "emphasize",
             "target": "problem-math-001",
             "emphasis_style": "highlight",
+        }
+    ]
+    return payload
+
+
+def narrative_with_cleanup_actions():
+    payload = narrative_payload()
+    cue = first_cue(payload["moments"][0])
+    cue["start_actions"].append(
+        {
+            "surface": "board",
+            "type": "emphasize",
+            "target": "equation",
+            "emphasis_style": "highlight",
+        }
+    )
+    cue["end_actions"] = [
+        {
+            "surface": "board",
+            "type": "clear_focus",
+            "target": "equation",
+        },
+        {
+            "surface": "board",
+            "type": "clear_focus",
+            "target": "constant_and_linear_terms",
+        },
+        {
+            "surface": "board",
+            "type": "fade",
+            "target": "constant_and_linear_terms",
+        },
+        {
+            "surface": "board",
+            "type": "fade",
+            "target": "equation",
+        },
+    ]
+    return payload
+
+
+def narrative_with_unknown_cleanup(surface, target):
+    payload = narrative_payload()
+    cue = first_cue(payload["moments"][0])
+    cue["end_actions"] = [
+        {
+            "surface": surface,
+            "type": "clear_focus",
+            "target": target,
         }
     ]
     return payload
@@ -1426,6 +1476,251 @@ def test_problem_end_cleanup_accepts_state_from_current_cue(
     )
 
 
+def test_generated_cleanup_sanitizer_is_precise_and_does_not_mutate_input():
+    original = NarrativeDraft.model_validate(
+        narrative_with_cleanup_actions()
+    )
+    before = original.model_dump()
+
+    sanitized = _prune_orphan_cue_cleanup_actions(original)
+
+    assert original.model_dump() == before
+    original_cue = original.moments[0].sync_cues[0]
+    sanitized_cue = sanitized.moments[0].sync_cues[0]
+    assert sanitized is not original
+    assert sanitized_cue.spoken_text == original_cue.spoken_text
+    assert sanitized_cue.lead_actions == original_cue.lead_actions
+    assert sanitized_cue.start_actions == original_cue.start_actions
+    assert [
+        (action.type, action.target)
+        for action in sanitized_cue.end_actions
+    ] == [
+        ("clear_focus", "constant_and_linear_terms"),
+        ("fade", "equation"),
+    ]
+
+
+def test_cleanup_sanitizer_prunes_known_prior_base_target():
+    payload = narrative_payload()
+    second_cue = first_cue(payload["moments"][1])
+    second_cue["end_actions"] = [
+        {
+            "surface": "board",
+            "type": "fade",
+            "target": "equation",
+        }
+    ]
+    narrative = NarrativeDraft.model_validate(payload)
+
+    sanitized = _prune_orphan_cue_cleanup_actions(
+        narrative,
+        problem_focus_targets=[],
+    )
+
+    assert sanitized.moments[1].sync_cues[0].end_actions == []
+
+
+def test_cleanup_sanitizer_recognizes_new_same_cue_board_target():
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "create-then-orphan-cleanup",
+                    "先写出这一行。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "new-same-cue-target",
+                            "content": r"\(x=1\)",
+                        }
+                    ],
+                    end_actions=[
+                        {
+                            "surface": "board",
+                            "type": "clear_focus",
+                            "target": "new-same-cue-target",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    sanitized = _prune_orphan_cue_cleanup_actions(
+        narrative,
+        problem_focus_targets=[],
+    )
+
+    assert sanitized.moments[0].sync_cues[0].end_actions == []
+    assert sanitized.moments[0].sync_cues[0].start_actions == (
+        narrative.moments[0].sync_cues[0].start_actions
+    )
+
+
+def test_cleanup_sanitizer_does_not_leak_temporary_target():
+    payload = narrative_payload()
+    payload["moments"][0]["layer"] = "micro_explanation"
+    second_cue = first_cue(payload["moments"][1])
+    second_cue["end_actions"] = [
+        {
+            "surface": "board",
+            "type": "clear_focus",
+            "target": "constant_and_linear_terms",
+        }
+    ]
+    narrative = NarrativeDraft.model_validate(payload)
+
+    sanitized = _prune_orphan_cue_cleanup_actions(
+        narrative,
+        problem_focus_targets=[],
+    )
+
+    assert [
+        (action.type, action.target)
+        for action in sanitized.moments[1].sync_cues[0].end_actions
+    ] == [("clear_focus", "constant_and_linear_terms")]
+
+
+def test_cleanup_sanitizer_prunes_known_problem_target_only():
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "known-problem-cleanup",
+                    "观察题面对象。",
+                    end_actions=[
+                        {
+                            "surface": "problem",
+                            "type": "clear_focus",
+                            "target": "problem-math-001",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    sanitized = _prune_orphan_cue_cleanup_actions(
+        narrative,
+        problem_focus_targets=[
+            ProblemFocusTarget(
+                target_id="problem-math-001",
+                math_text="2n",
+                display_mode=False,
+                ordinal=1,
+            )
+        ],
+    )
+
+    assert sanitized.moments[0].sync_cues[0].end_actions == []
+
+
+def test_direct_narrative_validation_still_rejects_unsanitized_cleanup():
+    narrative = NarrativeDraft.model_validate(
+        narrative_with_cleanup_actions()
+    )
+
+    with pytest.raises(LessonQualityError, match="当前 cue"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("action_phases", "message"),
+    (
+        (
+            {
+                "lead_actions": [
+                    {
+                        "surface": "board",
+                        "type": "focus",
+                        "target": "unknown-lead-target",
+                    }
+                ]
+            },
+            "尚未创建",
+        ),
+        (
+            {
+                "start_actions": [
+                    {
+                        "surface": "board",
+                        "type": "focus",
+                        "target": "unknown-start-target",
+                    }
+                ]
+            },
+            "尚未创建",
+        ),
+        (
+            {
+                "lead_actions": [
+                    {
+                        "surface": "board",
+                        "type": "write",
+                        "target": "invalid-lead-write",
+                        "content": r"\(x=1\)",
+                    }
+                ]
+            },
+            "lead_actions",
+        ),
+        (
+            {
+                "start_actions": [
+                    {
+                        "surface": "board",
+                        "type": "fade",
+                        "target": "invalid-start-fade",
+                    }
+                ]
+            },
+            "start_actions",
+        ),
+    ),
+    ids=(
+        "unknown-lead-reference",
+        "unknown-start-reference",
+        "invalid-lead-type",
+        "invalid-start-type",
+    ),
+)
+def test_generated_cleanup_sanitizer_preserves_other_quality_failures(
+    action_phases,
+    message,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "still-invalid-after-cleanup-sanitizer",
+                    "观察这一步。",
+                    **action_phases,
+                )
+            ]
+        )
+    )
+
+    sanitized = _prune_orphan_cue_cleanup_actions(narrative)
+
+    with pytest.raises(LessonQualityError, match=message):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            sanitized,
+            problem_focus_targets=[],
+        )
+
+
 @pytest.mark.parametrize(
     "end_action",
     (
@@ -2401,6 +2696,80 @@ def test_service_composes_materials_before_reviewer_and_reviewer_sees_whole_draf
     )
 
 
+def test_initial_generated_narrative_prunes_only_orphan_cleanup():
+    client = FakeClient(
+        [
+            narrative_with_cleanup_actions(),
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    runtime_cue = next(
+        cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+        if cue.cue_id == "find-factor-pair-cue"
+    )
+    assert any(
+        action.type == "emphasize"
+        and action.target == "equation"
+        for action in runtime_cue.start_actions
+    )
+    assert [
+        (action.type, action.target)
+        for action in runtime_cue.end_actions
+    ] == [
+        ("clear_focus", "constant_and_linear_terms"),
+        ("fade", "equation"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("surface", "target", "message"),
+    (
+        ("board", "unknown-board-cleanup", "尚未创建"),
+        ("problem", "problem-math-999", "未知的题面目标"),
+    ),
+)
+def test_initial_generation_preserves_unknown_cleanup_for_bounded_failure(
+    surface,
+    target,
+    message,
+):
+    invalid = narrative_with_unknown_cleanup(surface, target)
+    client = FakeClient(
+        [
+            invalid,
+            copy.deepcopy(invalid),
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    with pytest.raises(LessonQualityError, match=message):
+        asyncio.run(
+            LessonGenerationService(
+                client,
+                MathEngine(),
+            ).generate(problem())
+        )
+
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        DIRECTOR_SYSTEM,
+    ]
+
+
 @pytest.mark.parametrize("count", [0, 4])
 def test_materials_reject_zero_or_four_interactions_after_one_retry(count):
     invalid = materials_payload()
@@ -2621,6 +2990,89 @@ def test_revision_rebuilds_narrative_then_regenerates_all_materials():
     assert regenerated_materials["review"]["must_fix"] == (
         revision_review()["must_fix"]
     )
+
+
+def test_revision_output_prunes_orphan_cleanup_without_extra_retry():
+    revised = narrative_with_cleanup_actions()
+    revised["opening"] = "先明确条件，再寻找满足条件的因数对。"
+    client = FakeClient(
+        [
+            narrative_payload(),
+            materials_payload(),
+            revision_review(),
+            revised,
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    runtime_cue = next(
+        cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+        if cue.cue_id == "find-factor-pair-cue"
+    )
+    assert [
+        (action.type, action.target)
+        for action in runtime_cue.end_actions
+    ] == [
+        ("clear_focus", "constant_and_linear_terms"),
+        ("fade", "equation"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("surface", "target", "message"),
+    (
+        ("board", "unknown-board-cleanup", "尚未创建"),
+        ("problem", "problem-math-999", "未知的题面目标"),
+    ),
+)
+def test_revision_preserves_unknown_cleanup_for_bounded_failure(
+    surface,
+    target,
+    message,
+):
+    invalid = narrative_with_unknown_cleanup(surface, target)
+    client = FakeClient(
+        [
+            narrative_payload(),
+            materials_payload(),
+            revision_review(),
+            invalid,
+            copy.deepcopy(invalid),
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    with pytest.raises(LessonQualityError, match=message):
+        asyncio.run(
+            LessonGenerationService(
+                client,
+                MathEngine(),
+            ).generate(problem())
+        )
+
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+        REVISION_SYSTEM,
+    ]
 
 
 def test_oversized_revision_retries_before_regenerating_materials():

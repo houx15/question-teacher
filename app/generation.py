@@ -113,6 +113,67 @@ def _spoken_text_mentions_token(
     )
 
 
+def _prune_orphan_cue_cleanup_actions(
+    narrative: NarrativeDraft,
+    problem_focus_targets: Sequence[ProblemFocusTarget] = (),
+) -> NarrativeDraft:
+    sanitized = narrative.model_copy(deep=True)
+    problem_target_ids = {
+        target.target_id
+        for target in problem_focus_targets
+    }
+    base_targets = set()
+    for moment in sanitized.moments:
+        active_targets = set(base_targets)
+        for cue in moment.sync_cues:
+            setup_actions = [
+                *cue.lead_actions,
+                *cue.start_actions,
+            ]
+            for action in setup_actions:
+                if (
+                    action.surface == "board"
+                    and action.type in {"write", "transform"}
+                ):
+                    active_targets.add(action.target)
+            focused = {
+                (action.surface, action.target)
+                for action in setup_actions
+                if action.type == "focus"
+            }
+            emphasized = {
+                (action.surface, action.target)
+                for action in setup_actions
+                if action.type == "emphasize"
+            }
+            retained_cleanup = []
+            for action in cue.end_actions:
+                known_targets = (
+                    problem_target_ids
+                    if action.surface == "problem"
+                    else active_targets
+                )
+                if action.target not in known_targets:
+                    retained_cleanup.append(action)
+                    continue
+                action_key = (action.surface, action.target)
+                if (
+                    action.type == "clear_focus"
+                    and action_key not in focused
+                ):
+                    continue
+                if (
+                    action.type == "fade"
+                    and action_key not in emphasized
+                ):
+                    continue
+                retained_cleanup.append(action)
+            cue.end_actions = retained_cleanup
+        if moment.layer == "base":
+            base_targets = active_targets
+    return sanitized
+
+
 REQUIRED_METHODS = {
     "factor": {
         "display_name": "因式分解法",
@@ -793,11 +854,15 @@ class LessonGenerationService:
             ),
         )
         try:
-            return NarrativeDraft.model_validate(payload)
+            narrative = NarrativeDraft.model_validate(payload)
         except ValidationError as error:
             raise _DraftSchemaValidationError(
                 _narrative_schema_validation_summary(error)
             ) from None
+        return _prune_orphan_cue_cleanup_actions(
+            narrative,
+            problem_focus_targets or (),
+        )
 
     async def _create_validated_narrative(
         self,
@@ -1078,6 +1143,10 @@ class LessonGenerationService:
                     _narrative_schema_validation_summary(error)
                 )
                 continue
+            revised = _prune_orphan_cue_cleanup_actions(
+                revised,
+                problem_focus_targets,
+            )
             try:
                 self._validate_narrative(
                     problem,
