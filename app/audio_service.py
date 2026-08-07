@@ -4,9 +4,9 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
-from app.schemas import RuntimeLesson
+from app.schemas import RuntimeLesson, RuntimeSyncCue
 from app.tts_client import SpeechGenerationError
 
 
@@ -105,15 +105,120 @@ class LessonAudioService:
             temporary_path.unlink(missing_ok=True)
         return f"/audio/{lesson_id}/{filename}"
 
+    def _preflight(self, lesson: RuntimeLesson) -> Path:
+        lesson_dir = self._lesson_directory(lesson.lesson_id)
+        planned_asset_ids = set()
+
+        def plan_asset(asset_id: str) -> None:
+            self._validate_identifier(asset_id)
+            if asset_id in planned_asset_ids:
+                raise SpeechGenerationError(
+                    "Duplicate audio asset identifier"
+                )
+            self._asset_destination(
+                lesson.lesson_id,
+                asset_id,
+            )
+            planned_asset_ids.add(asset_id)
+
+        for beat in lesson.beats:
+            self._validate_identifier(beat.beat_id)
+            if beat.sync_cues:
+                for cue in beat.sync_cues:
+                    self._validate_identifier(cue.cue_id)
+                    plan_asset(
+                        f"{beat.beat_id}-{cue.cue_id}",
+                    )
+            else:
+                plan_asset(beat.beat_id)
+
+            interaction = beat.interaction
+            if interaction is None:
+                continue
+            for index, _hint in enumerate(
+                interaction.hints,
+                start=1,
+            ):
+                plan_asset(
+                    f"{beat.beat_id}-hint-{index}",
+                )
+            for index, option in enumerate(
+                interaction.options,
+                start=1,
+            ):
+                if option.feedback:
+                    plan_asset(
+                        f"{beat.beat_id}-option-{index}",
+                    )
+            if interaction.explanation_after_correct:
+                plan_asset(
+                    f"{beat.beat_id}-correct",
+                )
+        return lesson_dir
+
+    async def _voice_sync_cues(
+        self,
+        lesson: RuntimeLesson,
+    ) -> Dict[int, List[RuntimeSyncCue]]:
+        cue_jobs: List[Tuple[int, str, RuntimeSyncCue]] = [
+            (
+                beat_index,
+                beat.beat_id,
+                cue,
+            )
+            for beat_index, beat in enumerate(lesson.beats)
+            for cue in beat.sync_cues
+        ]
+        if not cue_jobs:
+            return {}
+
+        cue_semaphore = asyncio.Semaphore(3)
+
+        async def voice_cue(
+            beat_id: str,
+            cue: RuntimeSyncCue,
+        ) -> RuntimeSyncCue:
+            async with cue_semaphore:
+                audio_url = await self._write(
+                    lesson.lesson_id,
+                    f"{beat_id}-{cue.cue_id}",
+                    cue.spoken_text,
+                )
+            return cue.model_copy(
+                deep=True,
+                update={"audio_url": audio_url},
+            )
+
+        cue_tasks = [
+            asyncio.create_task(voice_cue(beat_id, cue))
+            for _beat_index, beat_id, cue in cue_jobs
+        ]
+        try:
+            voiced_cues = await asyncio.gather(*cue_tasks)
+        except BaseException:
+            for task in cue_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *cue_tasks,
+                return_exceptions=True,
+            )
+            raise
+
+        cues_by_beat: Dict[int, List[RuntimeSyncCue]] = {}
+        for (beat_index, _beat_id, _cue), voiced_cue in zip(
+            cue_jobs,
+            voiced_cues,
+        ):
+            cues_by_beat.setdefault(beat_index, []).append(voiced_cue)
+        return cues_by_beat
+
     async def attach_audio(
         self,
         lesson: RuntimeLesson,
         on_stage: Optional[Callable] = None,
     ) -> RuntimeLesson:
-        lesson_dir = self._lesson_directory(lesson.lesson_id)
-        for beat in lesson.beats:
-            self._validate_identifier(beat.beat_id)
-
+        lesson_dir = self._preflight(lesson)
         lesson_dir.mkdir(parents=True, exist_ok=True)
         try:
             if on_stage is not None:
@@ -121,13 +226,30 @@ class LessonAudioService:
                 if inspect.isawaitable(stage_result):
                     await stage_result
 
+            voiced_cues_by_beat = await self._voice_sync_cues(lesson)
             voiced_beats = []
-            for beat in lesson.beats:
-                audio_url = await self._write(
-                    lesson.lesson_id,
-                    beat.beat_id,
-                    beat.narration,
+            for beat_index, beat in enumerate(lesson.beats):
+                if beat.sync_cues:
+                    audio_url = None
+                    sync_cues = voiced_cues_by_beat[beat_index]
+                else:
+                    audio_url = await self._write(
+                        lesson.lesson_id,
+                        beat.beat_id,
+                        beat.narration,
+                    )
+                    sync_cues = []
+                voiced_beats.append(
+                    beat.model_copy(
+                        update={
+                            "audio_url": audio_url,
+                            "sync_cues": sync_cues,
+                        }
+                    )
                 )
+
+            fully_voiced_beats = []
+            for beat in voiced_beats:
                 interaction = beat.interaction
                 if interaction is not None:
                     hint_audio_urls = []
@@ -196,15 +318,16 @@ class LessonAudioService:
                         }
                     )
 
-                voiced_beats.append(
+                fully_voiced_beats.append(
                     beat.model_copy(
                         update={
-                            "audio_url": audio_url,
                             "interaction": interaction,
                         }
                     )
                 )
-            return lesson.model_copy(update={"beats": voiced_beats})
+            return lesson.model_copy(
+                update={"beats": fully_voiced_beats}
+            )
         except BaseException:
             if lesson_dir.exists():
                 shutil.rmtree(lesson_dir)

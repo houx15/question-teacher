@@ -12,6 +12,8 @@ from app.schemas import (
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
+    RuntimeSyncCue,
+    SyncVisualAction,
     TransferItem,
     TransferOption,
 )
@@ -136,6 +138,35 @@ def choice_runtime_lesson(*, with_feedback=True):
     return lesson.model_copy(update={"beats": beats})
 
 
+def cue_runtime_lesson():
+    lesson = runtime_lesson()
+    cue_texts = [
+        ["先看未知数的位置。", "再看常数项的位置。"],
+        ["先说出要消去的项。", "再执行等式两边的相同运算。"],
+    ]
+    beats = [
+        beat.model_copy(
+            update={
+                "sync_cues": [
+                    RuntimeSyncCue(
+                        cue_id=f"cue-{beat_index}-{cue_index}",
+                        spoken_text=spoken_text,
+                    )
+                    for cue_index, spoken_text in enumerate(
+                        beat_cue_texts,
+                        start=1,
+                    )
+                ]
+            }
+        )
+        for beat_index, (beat, beat_cue_texts) in enumerate(
+            zip(lesson.beats, cue_texts),
+            start=1,
+        )
+    ]
+    return lesson.model_copy(update={"beats": beats})
+
+
 class FakeSpeechClient:
     def __init__(self, outcomes=None):
         self.outcomes = list(outcomes or [])
@@ -242,6 +273,101 @@ class FailingOptionFeedbackClient:
         async with self._condition:
             await self._condition.wait_for(
                 lambda: self.active_feedback_calls >= count
+            )
+
+
+class ControlledCueSpeechClient:
+    def __init__(self, cue_texts):
+        self.cue_texts = set(cue_texts)
+        self.releases = {
+            cue_text: asyncio.Event() for cue_text in cue_texts
+        }
+        self.texts = []
+        self.non_cue_texts = []
+        self.started_cues = []
+        self.completed_cues = []
+        self.cancelled_cues = []
+        self.active_cue_calls = 0
+        self.max_active_cue_calls = 0
+        self._condition = asyncio.Condition()
+
+    async def synthesize(self, text):
+        self.texts.append(text)
+        if text not in self.cue_texts:
+            self.non_cue_texts.append(text)
+            return f"audio:{text}".encode()
+
+        async with self._condition:
+            self.active_cue_calls += 1
+            self.max_active_cue_calls = max(
+                self.max_active_cue_calls,
+                self.active_cue_calls,
+            )
+            self.started_cues.append(text)
+            self._condition.notify_all()
+        try:
+            await self.releases[text].wait()
+            async with self._condition:
+                self.completed_cues.append(text)
+                self._condition.notify_all()
+            return f"audio:{text}".encode()
+        except asyncio.CancelledError:
+            self.cancelled_cues.append(text)
+            raise
+        finally:
+            async with self._condition:
+                self.active_cue_calls -= 1
+                self._condition.notify_all()
+
+    async def wait_for_started_cues(self, count):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: len(self.started_cues) >= count
+            )
+
+    async def wait_for_completed_cues(self, count):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: len(self.completed_cues) >= count
+            )
+
+
+class FailingCueSpeechClient:
+    def __init__(self, cue_texts, failing_text):
+        self.cue_texts = set(cue_texts)
+        self.failing_text = failing_text
+        self.failure_release = asyncio.Event()
+        self.texts = []
+        self.cancelled_cues = []
+        self.active_cue_calls = 0
+        self._condition = asyncio.Condition()
+
+    async def synthesize(self, text):
+        self.texts.append(text)
+        if text not in self.cue_texts:
+            return f"audio:{text}".encode()
+
+        async with self._condition:
+            self.active_cue_calls += 1
+            self._condition.notify_all()
+        try:
+            if text == self.failing_text:
+                await self.failure_release.wait()
+                raise SpeechGenerationError("private upstream detail")
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled_cues.append(text)
+                raise
+        finally:
+            async with self._condition:
+                self.active_cue_calls -= 1
+                self._condition.notify_all()
+
+    async def wait_for_active_cue_calls(self, count):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: self.active_cue_calls >= count
             )
 
 
@@ -488,6 +614,336 @@ def test_audio_service_writes_every_narration_hint_and_feedback(tmp_path):
     assert voiced.problem == lesson.problem
     assert voiced.validation_report == {"math_valid": True}
     assert lesson.model_dump() == original_dump
+
+
+def test_cue_audio_uses_spoken_text_and_preserves_source_order(tmp_path):
+    lesson = cue_runtime_lesson()
+    original_dump = lesson.model_dump()
+    original_cues = [
+        cue for beat in lesson.beats for cue in beat.sync_cues
+    ]
+    cue_texts = [cue.spoken_text for cue in original_cues]
+    client = FakeSpeechClient()
+
+    voiced = run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert client.texts[:4] == cue_texts
+    assert [beat.audio_url for beat in voiced.beats] == [None, None]
+    assert [
+        cue.audio_url for beat in voiced.beats for cue in beat.sync_cues
+    ] == [
+        "/audio/lesson-001/beat-001-cue-1-1.mp3",
+        "/audio/lesson-001/beat-001-cue-1-2.mp3",
+        "/audio/lesson-001/beat-002-cue-2-1.mp3",
+        "/audio/lesson-001/beat-002-cue-2-2.mp3",
+    ]
+    for beat in voiced.beats:
+        for cue in beat.sync_cues:
+            assert (
+                tmp_path
+                / "lesson-001"
+                / f"{beat.beat_id}-{cue.cue_id}.mp3"
+            ).read_bytes() == f"audio:{cue.spoken_text}".encode()
+    assert voiced.beats[1].interaction is not None
+    assert voiced.beats[1].interaction.hint_audio_urls
+    assert lesson.model_dump() == original_dump
+    assert voiced.beats is not lesson.beats
+    for original_beat, voiced_beat in zip(
+        lesson.beats,
+        voiced.beats,
+    ):
+        assert voiced_beat is not original_beat
+        assert voiced_beat.sync_cues is not original_beat.sync_cues
+        for original_cue, voiced_cue in zip(
+            original_beat.sync_cues,
+            voiced_beat.sync_cues,
+        ):
+            assert voiced_cue is not original_cue
+
+
+def test_cue_audio_deeply_isolates_nested_visual_actions(tmp_path):
+    lesson = cue_runtime_lesson()
+    source_action = SyncVisualAction(
+        surface="board",
+        type="focus",
+        target="solution-line-001",
+    )
+    source_cue = lesson.beats[0].sync_cues[0].model_copy(
+        update={"start_actions": [source_action]}
+    )
+    source_beat = lesson.beats[0].model_copy(
+        update={
+            "sync_cues": [
+                source_cue,
+                *lesson.beats[0].sync_cues[1:],
+            ]
+        }
+    )
+    lesson = lesson.model_copy(
+        update={"beats": [source_beat, *lesson.beats[1:]]}
+    )
+
+    voiced = run(
+        LessonAudioService(FakeSpeechClient(), tmp_path).attach_audio(
+            lesson
+        )
+    )
+
+    voiced_cue = voiced.beats[0].sync_cues[0]
+    voiced_action = voiced_cue.start_actions[0]
+    voiced_action.target = "solution-line-mutated"
+    voiced_cue.start_actions.clear()
+    voiced_cue.start_actions.append(
+        SyncVisualAction(
+            surface="board",
+            type="focus",
+            target="solution-line-appended",
+        )
+    )
+
+    assert voiced_cue.start_actions is not source_cue.start_actions
+    assert voiced_action is not source_action
+    assert len(source_cue.start_actions) == 1
+    assert source_cue.start_actions[0] is source_action
+    assert source_action.target == "solution-line-001"
+
+
+def test_cue_audio_has_lesson_wide_bounded_concurrency_and_delays_interaction(
+    tmp_path,
+):
+    lesson = cue_runtime_lesson()
+    cue_texts = [
+        cue.spoken_text for beat in lesson.beats for cue in beat.sync_cues
+    ]
+
+    async def scenario():
+        client = ControlledCueSpeechClient(cue_texts)
+        task = asyncio.create_task(
+            LessonAudioService(client, tmp_path).attach_audio(lesson)
+        )
+        try:
+            await asyncio.wait_for(
+                client.wait_for_started_cues(3),
+                timeout=0.5,
+            )
+            assert client.started_cues == cue_texts[:3]
+            assert client.active_cue_calls == 3
+            assert client.non_cue_texts == []
+
+            client.releases[cue_texts[2]].set()
+            await client.wait_for_started_cues(4)
+            assert client.started_cues == cue_texts
+            assert client.active_cue_calls == 3
+            assert client.non_cue_texts == []
+
+            client.releases[cue_texts[3]].set()
+            await client.wait_for_completed_cues(2)
+            assert client.non_cue_texts == []
+            client.releases[cue_texts[1]].set()
+            await client.wait_for_completed_cues(3)
+            assert client.non_cue_texts == []
+            client.releases[cue_texts[0]].set()
+            return await task, client
+        finally:
+            for release in client.releases.values():
+                release.set()
+            if not task.done():
+                await task
+
+    voiced, client = run(scenario())
+
+    assert client.max_active_cue_calls == 3
+    assert client.completed_cues == [
+        cue_texts[2],
+        cue_texts[3],
+        cue_texts[1],
+        cue_texts[0],
+    ]
+    assert [
+        cue.spoken_text
+        for beat in voiced.beats
+        for cue in beat.sync_cues
+    ] == cue_texts
+    assert [
+        cue.audio_url for beat in voiced.beats for cue in beat.sync_cues
+    ] == [
+        "/audio/lesson-001/beat-001-cue-1-1.mp3",
+        "/audio/lesson-001/beat-001-cue-1-2.mp3",
+        "/audio/lesson-001/beat-002-cue-2-1.mp3",
+        "/audio/lesson-001/beat-002-cue-2-2.mp3",
+    ]
+    assert client.non_cue_texts == [
+        "观察常数项。",
+        "等式两边要做相同运算。",
+        "对，先把未知数项集中到等号左边。",
+    ]
+
+
+def test_cue_audio_failure_retries_cancels_and_cleans_whole_lesson(
+    tmp_path,
+):
+    lesson = cue_runtime_lesson()
+    cue_texts = [
+        cue.spoken_text for beat in lesson.beats for cue in beat.sync_cues
+    ]
+
+    async def scenario():
+        client = FailingCueSpeechClient(cue_texts, cue_texts[0])
+        task = asyncio.create_task(
+            LessonAudioService(client, tmp_path).attach_audio(lesson)
+        )
+        try:
+            await asyncio.wait_for(
+                client.wait_for_active_cue_calls(3),
+                timeout=0.5,
+            )
+        except asyncio.TimeoutError:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            pytest.fail("cue synthesis did not start three bounded tasks")
+        client.failure_release.set()
+        with pytest.raises(SpeechGenerationError) as error:
+            await task
+        return error.value, client
+
+    error, client = run(scenario())
+
+    assert str(error) == "Audio generation failed for beat-001-cue-1-1"
+    assert "private upstream detail" not in str(error)
+    assert client.texts.count(cue_texts[0]) == 2
+    assert set(client.cancelled_cues) == set(cue_texts[1:])
+    assert client.active_cue_calls == 0
+    assert not (tmp_path / "lesson-001").exists()
+    assert not list(tmp_path.rglob("*.mp3"))
+
+
+def test_legacy_beat_audio_remains_beat_level(tmp_path):
+    lesson = runtime_lesson()
+    client = FakeSpeechClient()
+
+    voiced = run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert [beat.audio_url for beat in voiced.beats] == [
+        "/audio/lesson-001/beat-001.mp3",
+        "/audio/lesson-001/beat-002.mp3",
+    ]
+    assert [beat.sync_cues for beat in voiced.beats] == [[], []]
+    assert client.texts[:2] == [
+        lesson.beats[0].narration,
+        lesson.beats[1].narration,
+    ]
+
+
+def test_cue_identifier_path_safety_preflights_before_writes(tmp_path):
+    lesson = cue_runtime_lesson()
+    malicious_cue = lesson.beats[0].sync_cues[0].model_copy(
+        update={"cue_id": "../outside"}
+    )
+    first_beat = lesson.beats[0].model_copy(
+        update={
+            "sync_cues": [
+                malicious_cue,
+                *lesson.beats[0].sync_cues[1:],
+            ]
+        }
+    )
+    lesson = lesson.model_copy(
+        update={"beats": [first_beat, *lesson.beats[1:]]}
+    )
+    client = FakeSpeechClient()
+
+    with pytest.raises(
+        SpeechGenerationError,
+        match="Invalid audio asset identifier",
+    ):
+        run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert client.texts == []
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("lesson_factory", "cue_id"),
+    [
+        (runtime_lesson, "hint-1"),
+        (runtime_lesson, "correct"),
+        (choice_runtime_lesson, "option-1"),
+    ],
+)
+def test_cue_audio_rejects_interaction_asset_collision_before_writes(
+    tmp_path,
+    lesson_factory,
+    cue_id,
+):
+    lesson = lesson_factory()
+    colliding_beat = lesson.beats[1].model_copy(
+        update={
+            "sync_cues": [
+                RuntimeSyncCue(
+                    cue_id=cue_id,
+                    spoken_text="这段语音不应开始生成。",
+                )
+            ]
+        }
+    )
+    lesson = lesson.model_copy(
+        update={"beats": [lesson.beats[0], colliding_beat]}
+    )
+    client = FakeSpeechClient()
+
+    with pytest.raises(
+        SpeechGenerationError,
+        match="^Duplicate audio asset identifier$",
+    ):
+        run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert client.texts == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cue_audio_rejects_cross_beat_derived_id_collision_before_writes(
+    tmp_path,
+):
+    lesson = runtime_lesson()
+    beats = [
+        lesson.beats[0].model_copy(
+            update={
+                "beat_id": "beat-a",
+                "sync_cues": [
+                    RuntimeSyncCue(
+                        cue_id="b-c",
+                        spoken_text="第一段不应生成。",
+                    )
+                ],
+            }
+        ),
+        lesson.beats[1].model_copy(
+            update={
+                "beat_id": "beat-a-b",
+                "sync_cues": [
+                    RuntimeSyncCue(
+                        cue_id="c",
+                        spoken_text="第二段不应生成。",
+                    )
+                ],
+            }
+        ),
+    ]
+    lesson = lesson.model_copy(update={"beats": beats})
+    client = FakeSpeechClient()
+
+    with pytest.raises(
+        SpeechGenerationError,
+        match="^Duplicate audio asset identifier$",
+    ):
+        run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert client.texts == []
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_audio_service_writes_choice_feedback_with_numeric_asset_ids(tmp_path):
