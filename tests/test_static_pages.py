@@ -1535,6 +1535,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     response = page_client().get("/lesson/example")
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
     html = response.text
     for region_id in (
         "classroom-shell",
