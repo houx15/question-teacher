@@ -5,6 +5,7 @@ class BrowserPausableTimeline {
     clearTimeoutImpl = globalThis.clearTimeout,
   } = {}) {
     this.now = now;
+    // Injected timer functions follow the browser API's unbound-call contract.
     this.setTimeoutImpl = setTimeoutImpl;
     this.clearTimeoutImpl = clearTimeoutImpl;
     this.timer = null;
@@ -25,7 +26,8 @@ class BrowserPausableTimeline {
   start() {
     if (!this.resolve || this.paused) return;
     this.startedAt = this.now();
-    this.timer = this.setTimeoutImpl(() => this.finish(), this.remaining);
+    const setTimeoutImpl = this.setTimeoutImpl;
+    this.timer = setTimeoutImpl(() => this.finish(), this.remaining);
   }
 
   finish() {
@@ -40,7 +42,8 @@ class BrowserPausableTimeline {
   pause() {
     if (this.paused || !this.resolve) return;
     this.paused = true;
-    if (this.timer !== null) this.clearTimeoutImpl(this.timer);
+    const clearTimeoutImpl = this.clearTimeoutImpl;
+    if (this.timer !== null) clearTimeoutImpl(this.timer);
     this.timer = null;
     this.remaining = Math.max(
       0,
@@ -55,7 +58,8 @@ class BrowserPausableTimeline {
   }
 
   cancel() {
-    if (this.timer !== null) this.clearTimeoutImpl(this.timer);
+    const clearTimeoutImpl = this.clearTimeoutImpl;
+    if (this.timer !== null) clearTimeoutImpl(this.timer);
     this.timer = null;
     const resolve = this.resolve;
     this.resolve = null;

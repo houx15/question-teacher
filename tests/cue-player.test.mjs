@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CuePlayer } from "../app/static/cue-player.mjs";
+import {
+  BrowserPausableTimeline,
+  CuePlayer,
+} from "../app/static/cue-player.mjs";
 
 
 const flush = async () => {
@@ -9,6 +12,76 @@ const flush = async () => {
     await Promise.resolve();
   }
 };
+
+
+test("browser timeline calls injected setTimeout without a receiver", async () => {
+  let scheduled = null;
+  function strictSetTimeout(callback, delay) {
+    if (this !== undefined) throw new TypeError("Illegal invocation");
+    scheduled = { callback, delay };
+    return 41;
+  }
+  const timeline = new BrowserPausableTimeline({
+    now: () => 0,
+    setTimeoutImpl: strictSetTimeout,
+    clearTimeoutImpl: () => {},
+  });
+
+  const waiting = timeline.wait(200);
+  if (!scheduled) await waiting;
+  assert.equal(scheduled.delay, 200);
+  scheduled.callback();
+  await waiting;
+
+  assert.equal(timeline.timer, null);
+});
+
+
+test("browser timeline pauses resumes and cancels with unbound clearTimeout", async () => {
+  let now = 0;
+  let nextTimer = 1;
+  const scheduled = new Map();
+  const setCalls = [];
+  const clearCalls = [];
+  const setTimeoutImpl = (callback, delay) => {
+    const timer = nextTimer;
+    nextTimer += 1;
+    setCalls.push({ timer, delay });
+    scheduled.set(timer, callback);
+    return timer;
+  };
+  function strictClearTimeout(timer) {
+    if (this !== undefined) throw new TypeError("Illegal invocation");
+    clearCalls.push(timer);
+    scheduled.delete(timer);
+  }
+  const timeline = new BrowserPausableTimeline({
+    now: () => now,
+    setTimeoutImpl,
+    clearTimeoutImpl: strictClearTimeout,
+  });
+
+  const waiting = timeline.wait(200);
+  now = 80;
+  timeline.pause();
+
+  assert.deepEqual(setCalls, [{ timer: 1, delay: 200 }]);
+  assert.deepEqual(clearCalls, [1]);
+  assert.equal(timeline.remaining, 120);
+
+  timeline.resume();
+  assert.deepEqual(setCalls, [
+    { timer: 1, delay: 200 },
+    { timer: 2, delay: 120 },
+  ]);
+
+  timeline.cancel();
+  await waiting;
+
+  assert.deepEqual(clearCalls, [1, 2]);
+  assert.equal(scheduled.size, 0);
+  assert.equal(timeline.timer, null);
+});
 
 
 class FakeTimeline {
