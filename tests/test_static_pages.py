@@ -1565,7 +1565,15 @@ def test_versioned_lesson_module_remains_cacheable():
     response = page_client().get("/static/lesson.js")
 
     assert response.status_code == 200
-    assert response.headers.get("cache-control") != "no-cache"
+    cache_directives = {
+        directive.partition("=")[0].strip().lower()
+        for directive in response.headers.get(
+            "cache-control",
+            "",
+        ).split(",")
+        if directive.strip()
+    }
+    assert cache_directives.isdisjoint({"no-cache", "no-store"})
 
 
 def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
