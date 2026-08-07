@@ -23,6 +23,12 @@
   --classroom-line: #d8d2c6;
   --classroom-reason: #4f8b7b;
   --classroom-focus: #e9b949;
+  --emphasis-highlight-active: rgba(244, 196, 74, 0.42);
+  --emphasis-highlight-trace: rgba(244, 196, 74, 0.18);
+  --emphasis-underline-active: #b47a0a;
+  --emphasis-underline-trace: rgba(180, 122, 10, 0.46);
+  --emphasis-red-active: #b83f35;
+  --emphasis-red-trace: #9c6b67;
   --serif: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC",
     "STSong", "SimSun", serif;
   --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
@@ -867,7 +873,7 @@ button {
   border-bottom: 1px solid var(--classroom-line);
 }
 
-.problem-display span {
+.problem-display > span {
   flex: 0 0 auto;
   padding: 3px 7px;
   color: #3d341f;
@@ -886,6 +892,16 @@ button {
   letter-spacing: 0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.focus-target {
+  display: inline-block;
+  padding: 0.08em 0.14em;
+  border-radius: 0.22em;
+  transition:
+    color 180ms ease,
+    background-color 180ms ease,
+    text-decoration-color 180ms ease;
 }
 
 .board-stage {
@@ -1037,6 +1053,46 @@ button {
 
 .board-object.is-revealed {
   animation: reveal-chalk 420ms ease-out;
+}
+
+.focus-target.is-highlighted.is-active,
+.board-object.is-highlighted.is-active {
+  background: var(--emphasis-highlight-active);
+  box-shadow: 0 0 0 0.12em var(--emphasis-highlight-active);
+}
+
+.focus-target.is-highlighted.is-trace,
+.board-object.is-highlighted.is-trace {
+  background: var(--emphasis-highlight-trace);
+  box-shadow: none;
+}
+
+.focus-target.is-underlined.is-active,
+.board-object.is-underlined.is-active {
+  text-decoration-line: underline;
+  text-decoration-color: var(--emphasis-underline-active);
+  text-decoration-thickness: 0.13em;
+  text-underline-offset: 0.16em;
+}
+
+.focus-target.is-underlined.is-trace,
+.board-object.is-underlined.is-trace {
+  text-decoration-line: underline;
+  text-decoration-color: var(--emphasis-underline-trace);
+  text-decoration-thickness: 0.07em;
+  text-underline-offset: 0.16em;
+}
+
+.focus-target.is-red-emphasis.is-active,
+.board-object.is-red-emphasis.is-active {
+  color: var(--emphasis-red-active);
+  text-shadow: 0 0.04em 0 rgba(184, 63, 53, 0.2);
+}
+
+.focus-target.is-red-emphasis.is-trace,
+.board-object.is-red-emphasis.is-trace {
+  color: var(--emphasis-red-trace);
+  text-shadow: none;
 }
 
 @keyframes chalk-write {

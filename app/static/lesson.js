@@ -4,13 +4,19 @@ import {
   classifyInteractionControl,
   cloneBoard,
   createBoundedSettlement,
+  emphasisClassName,
+  emptyVisualState,
   fallbackDurationForNarration,
   isCurrentInteractionSubmission,
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs";
-import { mathTextToPlainText, renderMathText } from "./math-text.mjs?v=20260807-1";
+import {
+  mathTextToPlainText,
+  renderMathText,
+  renderProblemMathText,
+} from "./math-text.mjs?v=20260807-1";
 
 
 const dom = {
@@ -49,6 +55,13 @@ const TEMPORARY_LAYERS = new Set([
 const AUTO_ADVANCE_DELAY_MS = 760;
 const EVALUATION_TIMEOUT_MS = 14000;
 const FEEDBACK_AUDIO_TIMEOUT_MS = 12000;
+const EMPHASIS_CLASSES = [
+  "is-highlighted",
+  "is-underlined",
+  "is-red-emphasis",
+  "is-active",
+  "is-trace",
+];
 
 let lesson = null;
 let runtime = null;
@@ -65,6 +78,7 @@ let interactionVisible = false;
 let interactionSubmitting = false;
 let appliedActionIndexes = new Set();
 let beatSnapshots = new Map();
+let visualState = emptyVisualState();
 
 const boardRegistries = new WeakMap();
 
@@ -182,13 +196,24 @@ async function fetchLesson() {
 
 
 function hydrateLesson() {
+  const problemTargetIds = (lesson.problem_focus_targets || [])
+    .map((target) => target.target_id);
+  visualState = emptyVisualState(problemTargetIds);
   renderMathText(dom.title, lesson.title);
   renderMathText(dom.startTitle, lesson.title);
   renderMathText(dom.goal, lesson.learning_goal);
-  renderMathText(dom.problem, lesson.problem.problem_text);
+  renderProblemFocus();
   dom.progressTotal.textContent = String(lesson.beats.length);
   document.title = `${lesson.title} · 拾光讲题`;
   updateControls();
+}
+
+
+function renderProblemFocus() {
+  renderProblemMathText(dom.problem, lesson.problem.problem_text, {
+    focusTargets: lesson.problem_focus_targets || [],
+    visualState: visualState.problem,
+  });
 }
 
 
@@ -246,10 +271,14 @@ function renderComparison(region, value, registry) {
   if (!node) {
     node = document.createElement("article");
     node.className = "comparison-sheet";
-    node.innerHTML = (
-      "<div><small>观察 A</small><span></span></div>"
-      + "<div><small>观察 B</small><span></span></div>"
-    );
+    for (const label of ["观察 A", "观察 B"]) {
+      const column = document.createElement("div");
+      const heading = document.createElement("small");
+      const content = document.createElement("span");
+      heading.textContent = label;
+      column.append(heading, content);
+      node.append(column);
+    }
     registry.set("__comparison__", node);
     region.append(node);
   }
@@ -304,9 +333,23 @@ function renderBoard(board, region) {
       }
     }
     node.classList.toggle("is-focused", value.focused === true);
-    node.classList.toggle("is-faded", value.faded === true);
+    node.classList.toggle(
+      "is-faded",
+      value.faded === true || value.focusFaded === true,
+    );
     node.classList.toggle("is-masked", value.masked === true);
     node.classList.toggle("is-revealed", value.revealed === true);
+    node.classList.remove(...EMPHASIS_CLASSES);
+    const emphasisClass = emphasisClassName(value.emphasis?.style);
+    if (emphasisClass) {
+      node.classList.add(emphasisClass);
+      if (
+        value.emphasis?.strength === "active"
+        || value.emphasis?.strength === "trace"
+      ) {
+        node.classList.add(`is-${value.emphasis.strength}`);
+      }
+    }
     renderAnnotations(
       node.querySelector(".board-annotations"),
       value.annotations,

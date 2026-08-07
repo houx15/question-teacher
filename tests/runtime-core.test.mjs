@@ -1,18 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
+import * as runtimeCore from "../app/static/runtime-core.mjs";
+
+
+const {
   LessonRuntime,
   applyBoardAction,
+  applySyncVisualAction,
   boardActionAnnouncement,
   classifyInteractionControl,
   cloneBoard,
   createBoundedSettlement,
+  emphasisClassName,
+  emptyVisualState,
   isCurrentInteractionSubmission,
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
-} from "../app/static/runtime-core.mjs";
+} = runtimeCore;
 
 
 const beats = [
@@ -48,6 +54,321 @@ const beats = [
     },
   },
 ];
+
+
+test("problem emphasis reducer exports the synchronized visual contract", () => {
+  assert.equal(typeof emptyVisualState, "function");
+  assert.equal(typeof applySyncVisualAction, "function");
+  assert.equal(typeof emphasisClassName, "function");
+});
+
+
+test("problem emphasis stores active trace metadata only for known targets", () => {
+  const initial = emptyVisualState(["problem-math-001"]);
+  const result = applySyncVisualAction(initial, {
+    surface: "problem",
+    type: "emphasize",
+    target: "problem-math-001",
+    emphasis_style: "highlight",
+    persistence: "trace",
+  });
+
+  assert.deepEqual(result.problem.get("problem-math-001"), {
+    style: "highlight",
+    strength: "active",
+    persistence: "trace",
+  });
+  assert.equal(initial.problem.get("problem-math-001"), null);
+  assert.notEqual(result.problem, initial.problem);
+  assert.notEqual(result.board, initial.board);
+});
+
+
+test("selective trace lifecycle downgrades trace and removes transient emphasis", () => {
+  const seeded = emptyVisualState([
+    "problem-math-001",
+    "problem-math-002",
+  ]);
+  const traced = applySyncVisualAction(seeded, {
+    surface: "problem",
+    type: "emphasize",
+    target: "problem-math-001",
+    emphasis_style: "underline",
+    persistence: "trace",
+  });
+  const transient = applySyncVisualAction(traced, {
+    surface: "problem",
+    type: "emphasize",
+    target: "problem-math-002",
+    emphasis_style: "red",
+  });
+  const clearedTrace = applySyncVisualAction(transient, {
+    surface: "problem",
+    type: "clear_focus",
+    target: "problem-math-001",
+  });
+  const fadedTransient = applySyncVisualAction(clearedTrace, {
+    surface: "problem",
+    type: "fade",
+    target: "problem-math-002",
+  });
+
+  assert.deepEqual(fadedTransient.problem.get("problem-math-001"), {
+    style: "underline",
+    strength: "trace",
+    persistence: "trace",
+  });
+  assert.equal(fadedTransient.problem.get("problem-math-002"), null);
+});
+
+
+test("problem emphasis ignores unknown targets and hostile styles", () => {
+  const initial = emptyVisualState(["problem-math-001"]);
+  const unknownTarget = applySyncVisualAction(initial, {
+    surface: "problem",
+    type: "emphasize",
+    target: "problem-math-999",
+    emphasis_style: "highlight",
+  });
+  const hostileStyle = applySyncVisualAction(unknownTarget, {
+    surface: "problem",
+    type: "emphasize",
+    target: "problem-math-001",
+    emphasis_style: "x; background:url(javascript:alert(1))",
+  });
+
+  assert.equal(hostileStyle.problem.has("problem-math-999"), false);
+  assert.equal(hostileStyle.problem.get("problem-math-001"), null);
+  assert.deepEqual(initial, hostileStyle);
+});
+
+
+test("problem emphasis rejects a mutation type even with an allowed style", () => {
+  const initial = emptyVisualState(["problem-math-001"]);
+
+  assert.throws(
+    () => applySyncVisualAction(initial, {
+      surface: "problem",
+      type: "write",
+      target: "problem-math-001",
+      content: "x = 1",
+      emphasis_style: "highlight",
+    }),
+    /Unsupported problem visual action: write/,
+  );
+  assert.equal(initial.problem.get("problem-math-001"), null);
+});
+
+
+test("selective trace board emphasis stays separate from unchanged content", () => {
+  let state = emptyVisualState();
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "equation",
+    content: String.raw`\(x^2-5x+6=0\)`,
+  });
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "reason",
+    content: "观察乘积与和",
+  });
+  const emphasized = applySyncVisualAction(state, {
+    surface: "board",
+    type: "emphasize",
+    target: "equation",
+    emphasis_style: "highlight",
+    persistence: "trace",
+  });
+  const traced = applySyncVisualAction(emphasized, {
+    surface: "board",
+    type: "fade",
+    target: "equation",
+  });
+
+  assert.equal(
+    traced.board.get("equation").content,
+    String.raw`\(x^2-5x+6=0\)`,
+  );
+  assert.deepEqual(traced.board.get("equation").emphasis, {
+    style: "highlight",
+    strength: "trace",
+    persistence: "trace",
+  });
+  assert.equal("emphasis" in traced.board.get("reason"), false);
+  assert.deepEqual(state.board.get("equation").emphasis, undefined);
+});
+
+
+test("selective trace board write and transform accept explicit safe emphasis", () => {
+  let state = emptyVisualState();
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "equation",
+    content: "x²-5x+6=0",
+    emphasis_style: "highlight",
+    persistence: "trace",
+  });
+  const transformed = applySyncVisualAction(state, {
+    surface: "board",
+    type: "transform",
+    target: "equation",
+    content: "(x-2)(x-3)=0",
+    emphasis_style: "underline",
+  });
+
+  assert.deepEqual(state.board.get("equation").emphasis, {
+    style: "highlight",
+    strength: "active",
+    persistence: "trace",
+  });
+  assert.deepEqual(transformed.board.get("equation").emphasis, {
+    style: "underline",
+    strength: "active",
+    persistence: "transient",
+  });
+});
+
+
+test("selective trace board focus clears without deleting content", () => {
+  let state = emptyVisualState();
+  const ignored = applySyncVisualAction(state, {
+    surface: "board",
+    type: "focus",
+    target: "missing",
+  });
+  assert.deepEqual(ignored, state);
+
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "left",
+    content: "左边",
+  });
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "right",
+    content: "右边",
+  });
+  const focused = applySyncVisualAction(state, {
+    surface: "board",
+    type: "focus",
+    target: "left",
+  });
+  const cleared = applySyncVisualAction(focused, {
+    surface: "board",
+    type: "clear_focus",
+    target: "left",
+  });
+
+  assert.equal(focused.board.get("left").focused, true);
+  assert.equal(focused.board.get("right").focusFaded, true);
+  assert.equal(cleared.board.get("left").focused, false);
+  assert.equal(cleared.board.get("right").focusFaded, false);
+  assert.equal(cleared.board.get("left").content, "左边");
+  assert.equal(cleared.board.get("right").content, "右边");
+});
+
+
+test("selective trace fade weakens only its named board target", () => {
+  let state = emptyVisualState();
+  for (const target of ["left", "right"]) {
+    state = applySyncVisualAction(state, {
+      surface: "board",
+      type: "write",
+      target,
+      content: target,
+    });
+    state = applySyncVisualAction(state, {
+      surface: "board",
+      type: "emphasize",
+      target,
+      emphasis_style: "highlight",
+      persistence: "trace",
+    });
+  }
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "focus",
+    target: "left",
+  });
+  const rightBefore = state.board.get("right");
+  const faded = applySyncVisualAction(state, {
+    surface: "board",
+    type: "fade",
+    target: "left",
+  });
+
+  assert.equal(faded.board.get("left").emphasis.strength, "trace");
+  assert.deepEqual(faded.board.get("right"), rightBefore);
+});
+
+
+test("selective trace fade leaves an ordinary board object unchanged", () => {
+  let state = emptyVisualState();
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "reason",
+    content: "观察乘积与和",
+  });
+  const before = state.board.get("reason");
+  const faded = applySyncVisualAction(state, {
+    surface: "board",
+    type: "fade",
+    target: "reason",
+  });
+
+  assert.deepEqual(faded.board.get("reason"), before);
+  assert.deepEqual(state.board.get("reason"), before);
+});
+
+
+test("selective trace transform preserves emphasis and input immutability", () => {
+  let state = emptyVisualState();
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "write",
+    target: "equation",
+    content: "x²-5x+6=0",
+  });
+  state = applySyncVisualAction(state, {
+    surface: "board",
+    type: "emphasize",
+    target: "equation",
+    emphasis_style: "red",
+  });
+  const before = state.board.get("equation");
+  const transformed = applySyncVisualAction(state, {
+    surface: "board",
+    type: "transform",
+    target: "equation",
+    content: "(x-2)(x-3)=0",
+  });
+
+  assert.equal(before.content, "x²-5x+6=0");
+  assert.equal(transformed.board.get("equation").content, "(x-2)(x-3)=0");
+  assert.deepEqual(
+    transformed.board.get("equation").emphasis,
+    before.emphasis,
+  );
+  assert.notEqual(transformed.board.get("equation"), before);
+  assert.notEqual(transformed.board, state.board);
+  assert.notEqual(transformed.problem, state.problem);
+});
+
+
+test("problem emphasis class mapping is a closed allowlist", () => {
+  assert.equal(emphasisClassName("highlight"), "is-highlighted");
+  assert.equal(emphasisClassName("underline"), "is-underlined");
+  assert.equal(emphasisClassName("red"), "is-red-emphasis");
+  assert.equal(emphasisClassName("green"), "");
+  assert.equal(emphasisClassName("x; color:red"), "");
+  assert.equal(emphasisClassName(null), "");
+});
 
 
 test("scheduling distributes actions across actual audio duration", () => {

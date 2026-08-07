@@ -1,5 +1,11 @@
 const MIN_FALLBACK_MS = 2200;
 const MAX_FALLBACK_MS = 9000;
+const SAFE_VISUAL_TARGET = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const EMPHASIS_CLASSES = Object.freeze({
+  highlight: "is-highlighted",
+  underline: "is-underlined",
+  red: "is-red-emphasis",
+});
 
 
 function cloneValue(value) {
@@ -12,6 +18,214 @@ export function cloneBoard(board) {
   return new Map(
     [...board.entries()].map(([key, value]) => [key, cloneValue(value)]),
   );
+}
+
+
+function cloneProblem(problem) {
+  return new Map(
+    [...problem.entries()].map(([key, value]) => [key, cloneValue(value)]),
+  );
+}
+
+
+export function emphasisClassName(style) {
+  return EMPHASIS_CLASSES[style] || "";
+}
+
+
+export function emptyVisualState(problemTargetIds = []) {
+  const problem = new Map();
+  if (Array.isArray(problemTargetIds)) {
+    for (const target of problemTargetIds) {
+      if (
+        typeof target === "string"
+        && SAFE_VISUAL_TARGET.test(target)
+        && !problem.has(target)
+      ) {
+        problem.set(target, null);
+      }
+    }
+  }
+  return { board: new Map(), problem };
+}
+
+
+function cloneVisualState(state) {
+  const board = state?.board instanceof Map ? state.board : new Map();
+  const problem = state?.problem instanceof Map ? state.problem : new Map();
+  return {
+    board: cloneBoard(board),
+    problem: cloneProblem(problem),
+  };
+}
+
+
+function activeEmphasis(action) {
+  const style = action?.emphasis_style;
+  if (!emphasisClassName(style)) return null;
+  if (
+    action.persistence !== undefined
+    && action.persistence !== "trace"
+    && action.persistence !== "transient"
+  ) {
+    return null;
+  }
+  return {
+    style,
+    strength: "active",
+    persistence: action.persistence || "transient",
+  };
+}
+
+
+function settledEmphasis(emphasis) {
+  if (emphasis?.persistence !== "trace") return null;
+  return { ...emphasis, strength: "trace" };
+}
+
+
+function rejectUnsupportedProblemAction(type) {
+  const runtimeProcess = globalThis.process;
+  if (runtimeProcess && runtimeProcess.env?.NODE_ENV !== "production") {
+    throw new Error(`Unsupported problem visual action: ${type}`);
+  }
+}
+
+
+function clearBoardFocus(board) {
+  for (const [key, value] of board.entries()) {
+    if (value?.kind !== "object") continue;
+    board.set(key, {
+      ...value,
+      focused: false,
+      focusFaded: false,
+    });
+  }
+}
+
+
+function boardHasFocus(board) {
+  return [...board.values()].some((value) => (
+    value?.kind === "object"
+    && (value.focused === true || value.focusFaded === true)
+  ));
+}
+
+
+function settleBoardTarget(board, target) {
+  const current = board.get(target);
+  if (!current || current.kind !== "object" || !current.emphasis) return;
+  const next = { ...current };
+  const emphasis = settledEmphasis(current.emphasis);
+  if (emphasis) next.emphasis = emphasis;
+  else delete next.emphasis;
+  board.set(target, next);
+}
+
+
+export function applySyncVisualAction(currentState, action) {
+  const state = cloneVisualState(currentState);
+  if (
+    !action
+    || typeof action.type !== "string"
+    || typeof action.surface !== "string"
+    || typeof action.target !== "string"
+    || !SAFE_VISUAL_TARGET.test(action.target)
+  ) {
+    return state;
+  }
+
+  const { target } = action;
+  if (action.surface === "problem") {
+    if (!state.problem.has(target)) return state;
+    if (
+      !["emphasize", "focus", "fade", "clear_focus"].includes(action.type)
+    ) {
+      rejectUnsupportedProblemAction(action.type);
+      return state;
+    }
+    if (action.type === "focus") {
+      state.problem.set(target, {
+        style: "highlight",
+        strength: "active",
+        persistence: "transient",
+      });
+    } else if (action.type === "emphasize") {
+      const emphasis = activeEmphasis(action);
+      if (emphasis) state.problem.set(target, emphasis);
+    } else if (
+      action.type === "fade"
+      || action.type === "clear_focus"
+    ) {
+      state.problem.set(
+        target,
+        settledEmphasis(state.problem.get(target)),
+      );
+    }
+    return state;
+  }
+
+  if (action.surface !== "board") return state;
+  if (action.type === "write") {
+    if (typeof action.content !== "string") return state;
+    state.board = applyBoardAction(state.board, action);
+    const emphasis = activeEmphasis(action);
+    if (emphasis) {
+      state.board.set(target, {
+        ...state.board.get(target),
+        emphasis,
+      });
+    }
+    return state;
+  }
+  if (
+    !state.board.has(target)
+    || state.board.get(target)?.kind !== "object"
+  ) {
+    return state;
+  }
+
+  if (action.type === "transform") {
+    if (typeof action.content !== "string") return state;
+    state.board = applyBoardAction(state.board, action);
+    const emphasis = activeEmphasis(action);
+    if (emphasis) {
+      state.board.set(target, {
+        ...state.board.get(target),
+        emphasis,
+      });
+    }
+  } else if (action.type === "annotate") {
+    if (!["underline", "arrow", "bracket", "label"].includes(action.annotation)) {
+      return state;
+    }
+    state.board = applyBoardAction(state.board, action);
+  } else if (action.type === "reveal") {
+    state.board = applyBoardAction(state.board, action);
+  } else if (action.type === "focus") {
+    for (const [key, value] of state.board.entries()) {
+      if (value?.kind !== "object") continue;
+      state.board.set(key, {
+        ...value,
+        focused: key === target,
+        focusFaded: key !== target,
+      });
+    }
+  } else if (action.type === "emphasize") {
+    const emphasis = activeEmphasis(action);
+    if (!emphasis) return state;
+    state.board.set(target, {
+      ...state.board.get(target),
+      emphasis,
+    });
+  } else if (action.type === "fade") {
+    settleBoardTarget(state.board, target);
+  } else if (action.type === "clear_focus") {
+    const hadFocus = boardHasFocus(state.board);
+    settleBoardTarget(state.board, target);
+    if (hadFocus) clearBoardFocus(state.board);
+  }
+  return state;
 }
 
 

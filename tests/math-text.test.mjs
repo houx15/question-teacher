@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import {
+import * as mathText from "../app/static/math-text.mjs";
+
+
+const {
   MAX_ACCESSIBLE_TEXT_LENGTH,
   MAX_MATH_TEXT_LENGTH,
   MAX_NORMALIZATION_PASSES,
@@ -11,13 +14,269 @@ import {
   normalizeLegacyMath,
   problemFocusTargets,
   renderMathText,
-} from "../app/static/math-text.mjs";
+  renderProblemMathText,
+} = mathText;
 
 
 const problemFocusCases = JSON.parse(readFileSync(
   new URL("./fixtures/problem-focus-cases.json", import.meta.url),
   "utf8",
 ));
+
+
+function fakeDom() {
+  const makeElement = (tagName) => ({
+    kind: tagName,
+    className: "",
+    textContent: "",
+    attributes: {},
+    children: [],
+    append(...children) {
+      this.children.push(...children);
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+  });
+  return {
+    documentImpl: {
+      createTextNode(value) {
+        return { kind: "text", value };
+      },
+      createElement: makeElement,
+    },
+    container: {
+      children: [],
+      replaceChildren(...children) {
+        this.children = children;
+      },
+    },
+  };
+}
+
+
+const PARAMETER_ROOT_SOURCE = String.raw`若$2n$且$n\ne0$`;
+const PARAMETER_ROOT_TARGETS = [
+  {
+    target_id: "problem-math-001",
+    math_text: "2n",
+    display_mode: false,
+    ordinal: 1,
+  },
+  {
+    target_id: "problem-math-002",
+    math_text: String.raw`n\ne0`,
+    display_mode: false,
+    ordinal: 2,
+  },
+];
+
+
+test("focus wrapper renderer exports the synchronized problem contract", () => {
+  assert.equal(typeof renderProblemMathText, "function");
+});
+
+
+test("focus wrapper renders exact problem formulas with safe active and trace classes", () => {
+  const { documentImpl, container } = fakeDom();
+  const calls = [];
+  const visualState = new Map([
+    [
+      "problem-math-001",
+      {
+        style: "highlight",
+        strength: "active",
+        persistence: "trace",
+      },
+    ],
+    [
+      "problem-math-002",
+      {
+        style: "underline",
+        strength: "trace",
+        persistence: "trace",
+      },
+    ],
+  ]);
+
+  renderProblemMathText(container, PARAMETER_ROOT_SOURCE, {
+    focusTargets: PARAMETER_ROOT_TARGETS,
+    visualState,
+    documentImpl,
+    renderImpl(expression, node, options) {
+      calls.push({ expression, node, options });
+    },
+  });
+
+  const wrappers = container.children.filter(
+    (node) => node.className?.includes("focus-target"),
+  );
+  assert.equal(wrappers.length, 2);
+  assert.deepEqual(
+    wrappers.map((node) => node.attributes["data-focus-target"]),
+    ["problem-math-001", "problem-math-002"],
+  );
+  assert.deepEqual(
+    wrappers.map((node) => node.className),
+    [
+      "focus-target is-highlighted is-active",
+      "focus-target is-underlined is-trace",
+    ],
+  );
+  assert.deepEqual(
+    container.children
+      .filter((node) => node.kind === "text")
+      .map((node) => node.value),
+    ["若", "且"],
+  );
+  assert.equal(
+    container.children.some(
+      (node) => node.value?.includes("$") || node.value?.includes(String.raw`\(`),
+    ),
+    false,
+  );
+  assert.deepEqual(
+    calls.map((call) => call.expression),
+    ["2n", String.raw`n\ne0`],
+  );
+  assert.deepEqual(
+    calls.map((call) => call.node),
+    wrappers.map((wrapper) => wrapper.children[0]),
+  );
+  for (const call of calls) {
+    assert.equal(call.options.displayMode, false);
+    assert.equal(call.options.trust, false);
+    assert.equal(call.options.maxSize, 20);
+    assert.equal(call.options.maxExpand, 200);
+    assert.equal(Number.isFinite(call.options.maxSize), true);
+    assert.equal(Number.isFinite(call.options.maxExpand), true);
+  }
+});
+
+
+test("focus wrapper never maps hostile emphasis text into class or style", () => {
+  const { documentImpl, container } = fakeDom();
+  const hostile = "x; background:url(javascript:alert(1))";
+
+  renderProblemMathText(container, PARAMETER_ROOT_SOURCE, {
+    focusTargets: PARAMETER_ROOT_TARGETS,
+    visualState: new Map([
+      [
+        "problem-math-001",
+        { style: hostile, strength: "active", persistence: "trace" },
+      ],
+    ]),
+    documentImpl,
+    renderImpl() {},
+  });
+
+  const wrapper = container.children[1];
+  assert.equal(wrapper.className, "focus-target");
+  assert.equal("style" in wrapper, false);
+  assert.equal(JSON.stringify(wrapper).includes(hostile), false);
+});
+
+
+test("focus wrapper fails closed for every server or local parsing mismatch", () => {
+  const mismatches = [
+    PARAMETER_ROOT_TARGETS.slice(0, 1),
+    [
+      { ...PARAMETER_ROOT_TARGETS[0], target_id: "problem-math-999" },
+      PARAMETER_ROOT_TARGETS[1],
+    ],
+    [
+      { ...PARAMETER_ROOT_TARGETS[0], math_text: "different" },
+      PARAMETER_ROOT_TARGETS[1],
+    ],
+    [
+      { ...PARAMETER_ROOT_TARGETS[0], display_mode: true },
+      PARAMETER_ROOT_TARGETS[1],
+    ],
+    [
+      { ...PARAMETER_ROOT_TARGETS[0], ordinal: 2 },
+      PARAMETER_ROOT_TARGETS[1],
+    ],
+  ];
+
+  for (const focusTargets of mismatches) {
+    const { documentImpl, container } = fakeDom();
+    const calls = [];
+    renderProblemMathText(container, PARAMETER_ROOT_SOURCE, {
+      focusTargets,
+      documentImpl,
+      renderImpl(...args) { calls.push(args); },
+    });
+    assert.equal(
+      container.children.some(
+        (node) => node.className?.includes("focus-target"),
+      ),
+      false,
+    );
+    assert.equal(calls.length, 2);
+  }
+
+  const malformed = fakeDom();
+  renderProblemMathText(
+    malformed.container,
+    String.raw`若$2n且$n\ne0$`,
+    {
+      focusTargets: PARAMETER_ROOT_TARGETS,
+      documentImpl: malformed.documentImpl,
+      renderImpl() {},
+    },
+  );
+  assert.equal(
+    malformed.container.children.some(
+      (node) => node.className?.includes("focus-target"),
+    ),
+    false,
+  );
+});
+
+
+test("focus wrapper leaves legacy-only math renderable but untargeted", () => {
+  const { documentImpl, container } = fakeDom();
+  const calls = [];
+
+  renderProblemMathText(container, "解方程 x^2-6x+5=0", {
+    focusTargets: [],
+    documentImpl,
+    renderImpl(...args) { calls.push(args); },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(
+    container.children.some(
+      (node) => node.className?.includes("focus-target"),
+    ),
+    false,
+  );
+});
+
+
+test("focus wrapper fails closed when shared parsing finds extra legacy math", () => {
+  const { documentImpl, container } = fakeDom();
+  const calls = [];
+
+  const result = renderProblemMathText(
+    container,
+    String.raw`解 x^2=1，再看$2n$`,
+    {
+      focusTargets: [PARAMETER_ROOT_TARGETS[0]],
+      documentImpl,
+      renderImpl(...args) { calls.push(args); },
+    },
+  );
+
+  assert.deepEqual(result, { focusWrapped: false });
+  assert.equal(calls.length, 2);
+  assert.equal(
+    container.children.some(
+      (node) => node.className?.includes("focus-target"),
+    ),
+    false,
+  );
+});
 
 
 test("problem focus targets match shared explicit delimiter cases", () => {
@@ -80,15 +339,46 @@ test("problem focus targets enforce 64 target boundary", () => {
 test("problem focus targets count Unicode code points for budget", () => {
   const withinBudget = `${"😀".repeat(4091)}${String.raw`\(x\)`}`;
   const overBudget = `${"😀".repeat(4092)}${String.raw`\(x\)`}`;
+  const withinDom = fakeDom();
+  const withinCalls = [];
+  const overDom = fakeDom();
+  const overCalls = [];
 
   assert.equal([...withinBudget].length, 4096);
   assert.equal(withinBudget.length > MAX_MATH_TEXT_LENGTH, true);
+  const withinTargets = problemFocusTargets(withinBudget);
+  assert.deepEqual(withinTargets.map((target) => target.math_text), ["x"]);
   assert.deepEqual(
-    problemFocusTargets(withinBudget).map((target) => target.math_text),
-    ["x"],
+    renderProblemMathText(withinDom.container, withinBudget, {
+      focusTargets: withinTargets,
+      documentImpl: withinDom.documentImpl,
+      renderImpl(...args) { withinCalls.push(args); },
+    }),
+    { focusWrapped: true },
   );
+  assert.equal(withinCalls.length, 1);
+  assert.equal(
+    withinDom.container.children.at(-1).attributes["data-focus-target"],
+    "problem-math-001",
+  );
+
   assert.equal([...overBudget].length, 4097);
   assert.deepEqual(problemFocusTargets(overBudget), []);
+  assert.deepEqual(
+    renderProblemMathText(overDom.container, overBudget, {
+      focusTargets: [],
+      documentImpl: overDom.documentImpl,
+      renderImpl(...args) { overCalls.push(args); },
+    }),
+    { focusWrapped: false },
+  );
+  assert.equal(overCalls.length, 0);
+  assert.equal(
+    overDom.container.children.some(
+      (node) => node.attributes?.["data-focus-target"],
+    ),
+    false,
+  );
 });
 
 

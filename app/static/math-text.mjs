@@ -1,4 +1,5 @@
 import katex from "./vendor/katex/katex.mjs";
+import { emphasisClassName } from "./runtime-core.mjs";
 
 
 const SUPERSCRIPTS = {
@@ -17,6 +18,13 @@ const SUPERSCRIPTS = {
 export const MAX_MATH_TEXT_LENGTH = 4096;
 export const MAX_NORMALIZATION_PASSES = 8;
 export const MAX_ACCESSIBLE_TEXT_LENGTH = 160;
+const SAFE_KATEX_OPTIONS = Object.freeze({
+  throwOnError: false,
+  trust: false,
+  strict: "warn",
+  maxSize: 20,
+  maxExpand: 200,
+});
 
 const LEGACY_CANDIDATE = /[A-Za-z0-9√⁰¹²³⁴⁵⁶⁷⁸⁹+\-−×÷*/^=()（）\s]+/g;
 const LEGACY_MATH_MARKER = /[=^⁰¹²³⁴⁵⁶⁷⁸⁹√×÷]|\bsqrt\s*\(|x\s*[+\-−*/]\s*(?:\d|\(|x\b)|(?:\d|\))\s*[+*/]\s*x\b/i;
@@ -180,7 +188,9 @@ function legacyMathSegments(value) {
 
 export function mathSegments(value) {
   const source = String(value ?? "");
-  if (source.length > MAX_MATH_TEXT_LENGTH) return [textSegment(source)];
+  if (exceedsCodePointLimit(source, MAX_MATH_TEXT_LENGTH)) {
+    return [textSegment(source)];
+  }
 
   const explicit = explicitMathSegments(source);
   if (explicit === null) return [textSegment(source)];
@@ -274,6 +284,24 @@ export function mathTextToPlainText(value) {
 }
 
 
+function renderSafeMath(
+  node,
+  expression,
+  displayMode,
+  renderImpl,
+) {
+  try {
+    renderImpl(expression, node, {
+      ...SAFE_KATEX_OPTIONS,
+      displayMode,
+    });
+  } catch {
+    node.className = "math-fallback";
+    node.textContent = expression;
+  }
+}
+
+
 export function renderMathText(
   container,
   value,
@@ -283,21 +311,101 @@ export function renderMathText(
     if (segment.type === "text") return documentImpl.createTextNode(segment.value);
 
     const node = documentImpl.createElement("span");
-    try {
-      renderImpl(segment.value, node, {
-        displayMode: segment.displayMode,
-        throwOnError: false,
-        trust: false,
-        strict: "warn",
-        maxSize: 20,
-        maxExpand: 200,
-      });
-    } catch {
-      node.className = "math-fallback";
-      node.textContent = segment.value;
-    }
+    renderSafeMath(node, segment.value, segment.displayMode, renderImpl);
     return node;
   });
 
   container.replaceChildren(...nodes);
+}
+
+
+function focusTargetsMatch(localTargets, serverTargets) {
+  if (
+    !Array.isArray(serverTargets)
+    || localTargets.length !== serverTargets.length
+  ) {
+    return false;
+  }
+  return localTargets.every((local, index) => {
+    const server = serverTargets[index];
+    return Boolean(
+      server
+      && local.target_id === server.target_id
+      && local.math_text === server.math_text
+      && local.display_mode === server.display_mode
+      && local.ordinal === server.ordinal
+    );
+  });
+}
+
+
+export function renderProblemMathText(
+  container,
+  value,
+  {
+    focusTargets = [],
+    visualState = new Map(),
+    documentImpl = document,
+    renderImpl = katex.render,
+  } = {},
+) {
+  const source = String(value ?? "");
+  const localTargets = problemFocusTargets(source);
+  const segments = mathSegments(source);
+  const renderableMath = segments.filter((segment) => segment.type === "math");
+  const renderableMathMatches = (
+    renderableMath.length === localTargets.length
+    && renderableMath.every((segment, index) => (
+      segment.value.trim() === localTargets[index].math_text
+      && segment.displayMode === localTargets[index].display_mode
+    ))
+  );
+  if (
+    localTargets.length === 0
+    || !renderableMathMatches
+    || !focusTargetsMatch(localTargets, focusTargets)
+  ) {
+    renderMathText(container, source, { documentImpl, renderImpl });
+    return { focusWrapped: false };
+  }
+
+  let mathIndex = 0;
+  const nodes = segments.map((segment) => {
+    if (segment.type === "text") {
+      return documentImpl.createTextNode(segment.value);
+    }
+
+    const target = focusTargets[mathIndex];
+    mathIndex += 1;
+    const wrapper = documentImpl.createElement("span");
+    const emphasis = visualState instanceof Map
+      ? visualState.get(target.target_id)
+      : null;
+    const emphasisClass = emphasisClassName(emphasis?.style);
+    const strengthClass = (
+      emphasisClass
+      && (emphasis?.strength === "active" || emphasis?.strength === "trace")
+    )
+      ? `is-${emphasis.strength}`
+      : "";
+    wrapper.className = [
+      "focus-target",
+      emphasisClass,
+      strengthClass,
+    ].filter(Boolean).join(" ");
+    wrapper.setAttribute("data-focus-target", target.target_id);
+
+    const mathNode = documentImpl.createElement("span");
+    renderSafeMath(
+      mathNode,
+      target.math_text,
+      target.display_mode,
+      renderImpl,
+    );
+    wrapper.append(mathNode);
+    return wrapper;
+  });
+
+  container.replaceChildren(...nodes);
+  return { focusWrapped: true };
 }
