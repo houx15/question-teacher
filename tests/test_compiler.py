@@ -1,7 +1,10 @@
+import re
+
 import pytest
 
 from app.compiler import LessonCompileError, LessonCompiler
-from app.schemas import LessonDraft
+from app.problem_focus import compile_problem_focus_targets
+from app.schemas import LessonDraft, ProblemInput
 from tests.test_generation import problem, valid_draft
 
 
@@ -38,18 +41,41 @@ def test_compiler_creates_ordered_beats_with_stable_navigation():
     ]
 
 
-def test_compiler_opens_by_writing_the_original_problem():
+def test_compiler_opening_is_voice_only_and_preserves_the_problem():
+    source_problem = problem()
     lesson = compile_lesson()
     opening = lesson.beats[0]
 
     assert opening.purpose == "进入问题"
     assert opening.narration == valid_draft()["opening"]
-    assert len(opening.board_actions) == 1
-    assert opening.board_actions[0].model_dump(exclude_none=True) == {
-        "type": "write",
-        "target": "original_problem",
-        "content": problem().problem_text,
-    }
+    assert len(opening.sync_cues) == 1
+    assert opening.sync_cues[0].spoken_text == valid_draft()["opening"]
+    assert opening.sync_cues[0].lead_actions == []
+    assert opening.sync_cues[0].start_actions == []
+    assert opening.sync_cues[0].end_actions == []
+    assert opening.board_actions == []
+    assert lesson.problem == source_problem
+
+
+@pytest.mark.parametrize("problem_length", [500, 501, 4096])
+def test_compiler_accepts_long_problem_text_without_board_duplication(
+    problem_length,
+):
+    source_problem = ProblemInput(
+        problem_text="题" * problem_length,
+        reference_answer="已提供参考答案",
+    )
+
+    lesson = LessonCompiler().compile(
+        source_problem,
+        LessonDraft.model_validate(valid_draft()),
+        {"review_status": "approved"},
+    )
+
+    assert len(lesson.problem.problem_text) == problem_length
+    assert lesson.problem == source_problem
+    assert lesson.beats[0].sync_cues[0].start_actions == []
+    assert lesson.beats[0].board_actions == []
 
 
 @pytest.mark.parametrize(
@@ -123,6 +149,326 @@ def test_compiler_preserves_manuscript_moments_in_order():
     ]
     assert manuscript_beats[0].interaction.interaction_id == "find-factor-pair"
     assert manuscript_beats[1].board_actions[0].type == "transform"
+
+
+def test_compiler_preserves_runtime_sync_cues_and_derives_legacy_fields():
+    draft_payload = valid_draft()
+    draft_payload["moments"][0]["sync_cues"] = [
+        {
+            "cue_id": "inspect-problem-cue",
+            "spoken_text": "先在原题中找到这个式子。",
+            "lead_actions": [
+                {
+                    "surface": "problem",
+                    "type": "focus",
+                    "target": "problem-math-001",
+                }
+            ],
+            "start_actions": [
+                {
+                    "surface": "board",
+                    "type": "write",
+                    "target": "factor-line",
+                    "content": "先找乘积与和",
+                }
+            ],
+            "end_actions": [
+                {
+                    "surface": "board",
+                    "type": "emphasize",
+                    "target": "factor-line",
+                    "emphasis_style": "highlight",
+                    "persistence": "trace",
+                }
+            ],
+        },
+        {
+            "cue_id": "transform-equation-cue",
+            "spoken_text": "再把原式改写成两个一次因式。",
+            "lead_actions": [
+                {
+                    "surface": "board",
+                    "type": "focus",
+                    "target": "factor-line",
+                }
+            ],
+            "start_actions": [
+                {
+                    "surface": "board",
+                    "type": "transform",
+                    "target": "factor-line",
+                    "content": r"\((x-2)(x-3)=0\)",
+                }
+            ],
+            "end_actions": [
+                {
+                    "surface": "problem",
+                    "type": "clear_focus",
+                    "target": "problem-math-001",
+                }
+            ],
+        },
+    ]
+    draft = LessonDraft.model_validate(draft_payload)
+    source_problem = problem().model_copy(
+        update={
+            "problem_text": (
+                r"用指定方法解方程：\(x^2-5x+6=0\)，"
+                r"并说明\[x=2\]是否成立"
+            )
+        }
+    )
+
+    lesson = LessonCompiler().compile(
+        source_problem,
+        draft,
+        {"review_status": "approved"},
+    )
+
+    assert [
+        (target.target_id, target.math_text, target.display_mode)
+        for target in lesson.problem_focus_targets
+    ] == [
+        ("problem-math-001", "x^2-5x+6=0", False),
+        ("problem-math-002", "x=2", True),
+    ]
+    assert lesson.problem_focus_targets == compile_problem_focus_targets(
+        source_problem.problem_text
+    )
+
+    runtime_beat = lesson.beats[2]
+    source_cues = draft.moments[0].sync_cues
+    assert [cue.cue_id for cue in runtime_beat.sync_cues] == [
+        "inspect-problem-cue",
+        "transform-equation-cue",
+    ]
+    assert [cue.spoken_text for cue in runtime_beat.sync_cues] == [
+        cue.spoken_text for cue in source_cues
+    ]
+    assert runtime_beat.narration == "".join(
+        cue.spoken_text for cue in source_cues
+    )
+    for source_cue, runtime_cue in zip(
+        source_cues,
+        runtime_beat.sync_cues,
+    ):
+        assert runtime_cue is not source_cue
+        assert runtime_cue.audio_url is None
+        for action_slot in (
+            "lead_actions",
+            "start_actions",
+            "end_actions",
+        ):
+            source_actions = getattr(source_cue, action_slot)
+            runtime_actions = getattr(runtime_cue, action_slot)
+            assert [
+                action.model_dump(exclude_none=True)
+                for action in runtime_actions
+            ] == [
+                action.model_dump(exclude_none=True)
+                for action in source_actions
+            ]
+            assert all(
+                runtime_action is not source_action
+                for source_action, runtime_action in zip(
+                    source_actions,
+                    runtime_actions,
+                )
+            )
+
+    assert [
+        action.model_dump(exclude_none=True)
+        for action in runtime_beat.board_actions
+    ] == [
+        {
+            "type": "write",
+            "target": "factor-line",
+            "content": "先找乘积与和",
+        },
+        {
+            "type": "transform",
+            "target": "factor-line",
+            "content": r"\((x-2)(x-3)=0\)",
+        },
+    ]
+
+
+def test_compiler_projects_only_supported_start_actions_to_legacy_board():
+    draft_payload = valid_draft()
+    draft_payload["moments"][0]["sync_cues"] = [
+        {
+            "cue_id": "legacy-start-projection-cue",
+            "spoken_text": "按顺序展示这一步的板书变化。",
+            "lead_actions": [
+                {
+                    "surface": "board",
+                    "type": "focus",
+                    "target": "projection-line",
+                }
+            ],
+            "start_actions": [
+                {
+                    "surface": "board",
+                    "type": "write",
+                    "target": "projection-line",
+                    "content": "先写出原式",
+                },
+                {
+                    "surface": "board",
+                    "type": "annotate",
+                    "target": "projection-line",
+                    "annotation": "underline",
+                },
+                {
+                    "surface": "board",
+                    "type": "transform",
+                    "target": "projection-line",
+                    "content": r"\((x-2)(x-3)=0\)",
+                },
+                {
+                    "surface": "board",
+                    "type": "fade",
+                    "target": "projection-line",
+                },
+                {
+                    "surface": "board",
+                    "type": "focus",
+                    "target": "projection-line",
+                },
+                {
+                    "surface": "board",
+                    "type": "emphasize",
+                    "target": "projection-line",
+                    "emphasis_style": "highlight",
+                },
+                {
+                    "surface": "board",
+                    "type": "reveal",
+                    "target": "projection-line",
+                },
+                {
+                    "surface": "board",
+                    "type": "clear_focus",
+                    "target": "projection-line",
+                },
+            ],
+            "end_actions": [
+                {
+                    "surface": "board",
+                    "type": "fade",
+                    "target": "projection-line",
+                },
+                {
+                    "surface": "board",
+                    "type": "clear_focus",
+                    "target": "projection-line",
+                },
+            ],
+        },
+        {
+            "cue_id": "problem-action-stays-runtime-only-cue",
+            "spoken_text": "原题上的定位只在同步动作中执行。",
+            "start_actions": [
+                {
+                    "surface": "problem",
+                    "type": "focus",
+                    "target": "problem-math-001",
+                }
+            ],
+        },
+    ]
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft_payload),
+        {"review_status": "approved"},
+    )
+
+    runtime_beat = lesson.beats[2]
+    assert [
+        action.type
+        for cue in runtime_beat.sync_cues
+        for action in (
+            *cue.lead_actions,
+            *cue.start_actions,
+            *cue.end_actions,
+        )
+    ] == [
+        "focus",
+        "write",
+        "annotate",
+        "transform",
+        "fade",
+        "focus",
+        "emphasize",
+        "reveal",
+        "clear_focus",
+        "fade",
+        "clear_focus",
+        "focus",
+    ]
+    assert [
+        action.model_dump(exclude_none=True)
+        for action in runtime_beat.board_actions
+    ] == [
+        {
+            "type": "write",
+            "target": "projection-line",
+            "content": "先写出原式",
+        },
+        {
+            "type": "transform",
+            "target": "projection-line",
+            "content": r"\((x-2)(x-3)=0\)",
+        },
+        {"type": "focus", "target": "projection-line"},
+        {"type": "reveal", "target": "projection-line"},
+    ]
+
+
+def test_compiler_adds_one_stable_path_safe_cue_to_each_fixed_beat():
+    first = compile_lesson()
+    second = compile_lesson()
+    fixed_positions = (0, 1, -2, -1)
+    expected_ids = [
+        "runtime-opening-cue",
+        "runtime-method-introduction-cue",
+        "runtime-summary-cue",
+        "runtime-transfer-intro-cue",
+    ]
+
+    for lesson in (first, second):
+        assert [
+            len(lesson.beats[position].sync_cues)
+            for position in fixed_positions
+        ] == [1, 1, 1, 1]
+        assert [
+            lesson.beats[position].sync_cues[0].cue_id
+            for position in fixed_positions
+        ] == expected_ids
+        cue_ids = [
+            cue.cue_id
+            for beat in lesson.beats
+            for cue in beat.sync_cues
+        ]
+        assert len(cue_ids) == len(set(cue_ids))
+        assert all(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", cue_id)
+            for cue_id in cue_ids
+        )
+
+
+def test_compiler_rejects_director_cue_collision_with_reserved_runtime_id():
+    draft = valid_draft()
+    draft["moments"][0]["sync_cues"][0]["cue_id"] = (
+        "runtime-opening-cue"
+    )
+
+    with pytest.raises(LessonCompileError, match="同步提示 ID"):
+        LessonCompiler().compile(
+            problem(),
+            LessonDraft.model_validate(draft),
+            {"review_status": "approved"},
+        )
 
 
 def test_compiler_appends_summary_then_transfer_interaction():

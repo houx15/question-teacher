@@ -1071,17 +1071,6 @@ class ReviewDecision(SchemaModel):
         return self
 
 
-class RuntimeBeat(SchemaModel):
-    beat_id: NonEmptyString
-    purpose: NonEmptyString
-    narration: NonEmptyString
-    board_actions: List[BoardAction]
-    layer: LessonLayer
-    interaction: Optional[Interaction] = None
-    audio_url: Optional[NonEmptyString] = None
-    next_beat_id: Optional[NonEmptyString] = None
-
-
 class RuntimeSyncCue(SchemaModel):
     cue_id: NonEmptyString
     spoken_text: NonEmptyString
@@ -1091,15 +1080,41 @@ class RuntimeSyncCue(SchemaModel):
     audio_url: Optional[NonEmptyString] = None
 
 
+class RuntimeBeat(SchemaModel):
+    beat_id: NonEmptyString
+    purpose: NonEmptyString
+    narration: NonEmptyString
+    board_actions: List[BoardAction]
+    layer: LessonLayer
+    sync_cues: List[RuntimeSyncCue] = Field(default_factory=list)
+    interaction: Optional[Interaction] = None
+    audio_url: Optional[NonEmptyString] = None
+    next_beat_id: Optional[NonEmptyString] = None
+
+
 class RuntimeLesson(SchemaModel):
     lesson_id: NonEmptyString
     problem: ProblemInput
     title: NonEmptyString
     learning_goal: NonEmptyString
     beats: List[RuntimeBeat] = Field(min_length=1)
+    problem_focus_targets: List[ProblemFocusTarget] = Field(
+        default_factory=list
+    )
     summary: NonEmptyString
     transfer_item: TransferItem
     validation_report: Dict[str, object]
+
+    @model_validator(mode="after")
+    def require_unique_runtime_cue_ids(self) -> "RuntimeLesson":
+        cue_ids = [
+            cue.cue_id
+            for beat in self.beats
+            for cue in beat.sync_cues
+        ]
+        if len(cue_ids) != len(set(cue_ids)):
+            raise ValueError("runtime cue ids must be unique")
+        return self
 
 
 class GenerationJob(SchemaModel):

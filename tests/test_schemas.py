@@ -1362,11 +1362,84 @@ def test_runtime_beat_and_interaction_accept_audio_urls():
     )
 
     assert beat.audio_url == "/audio/narration/check-roots.mp3"
+    assert beat.sync_cues == []
     assert interaction.hint_audio_urls == [
         "/audio/hints/check-one.mp3",
         "/audio/hints/check-two.mp3",
     ]
     assert interaction.correct_audio_url == "/audio/feedback/correct.mp3"
+
+
+def test_legacy_runtime_lesson_defaults_new_runtime_collections_to_empty():
+    lesson = RuntimeLesson(
+        lesson_id="lesson-legacy-runtime",
+        problem=ProblemInput(
+            problem_text="解方程 x + 1 = 0",
+            reference_answer="x = -1",
+        ),
+        title="移项解方程",
+        learning_goal="能用等式性质完成移项。",
+        beats=[
+            RuntimeBeat(
+                beat_id="beat-legacy",
+                purpose="保持旧课程兼容",
+                narration="等式两边同时减一。",
+                board_actions=[],
+                layer="base",
+                audio_url="/audio/lesson-legacy-runtime/beat-legacy.mp3",
+            )
+        ],
+        summary="等式两边做相同运算。",
+        transfer_item=TransferItem(
+            problem_text="解方程 x + 2 = 0",
+            expected_answer="x = -2",
+            method_signal="等式两边同时减二。",
+        ),
+        validation_report={},
+    )
+
+    assert lesson.beats[0].sync_cues == []
+    assert lesson.beats[0].audio_url.endswith("beat-legacy.mp3")
+    assert lesson.problem_focus_targets == []
+
+
+def test_runtime_lesson_rejects_duplicate_cue_ids_across_beats():
+    def runtime_beat(beat_id, spoken_text):
+        return RuntimeBeat(
+            beat_id=beat_id,
+            purpose="讲解一步",
+            narration=spoken_text,
+            board_actions=[],
+            layer="base",
+            sync_cues=[
+                {
+                    "cue_id": "duplicate-runtime-cue",
+                    "spoken_text": spoken_text,
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError, match="runtime cue ids"):
+        RuntimeLesson(
+            lesson_id="lesson-duplicate-runtime-cues",
+            problem=ProblemInput(
+                problem_text="解方程 x + 1 = 0",
+                reference_answer="x = -1",
+            ),
+            title="移项解方程",
+            learning_goal="能用等式性质完成移项。",
+            beats=[
+                runtime_beat("beat-one", "先观察等号两边。"),
+                runtime_beat("beat-two", "再进行相同运算。"),
+            ],
+            summary="等式两边做相同运算。",
+            transfer_item=TransferItem(
+                problem_text="解方程 x + 2 = 0",
+                expected_answer="x = -2",
+                method_signal="等式两边同时减二。",
+            ),
+            validation_report={},
+        )
 
 
 def test_optional_interaction_feedback_is_normalized_when_provided():

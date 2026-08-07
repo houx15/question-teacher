@@ -2,17 +2,83 @@ import re
 from typing import Callable, Dict, List, Optional
 from uuid import uuid4
 
+from app.problem_focus import compile_problem_focus_targets
 from app.schemas import (
     BoardAction,
     Interaction,
     InteractionOption,
     LessonDraft,
+    LessonLayer,
+    NarrativeSyncCue,
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
+    RuntimeSyncCue,
+    SyncVisualAction,
 )
 
 NEAR_TRANSFER_INTERACTION_ID = "near-transfer"
+_FIXED_CUE_IDS = {
+    "opening": "runtime-opening-cue",
+    "method_introduction": "runtime-method-introduction-cue",
+    "summary": "runtime-summary-cue",
+    "transfer_intro": "runtime-transfer-intro-cue",
+}
+_LEGACY_BOARD_ACTION_TYPES = {
+    "write",
+    "transform",
+    "focus",
+    "reveal",
+}
+
+
+def _copy_runtime_cue(cue: NarrativeSyncCue) -> RuntimeSyncCue:
+    return RuntimeSyncCue.model_validate(cue.model_dump())
+
+
+def _legacy_board_actions(
+    sync_cues: List[RuntimeSyncCue],
+) -> List[BoardAction]:
+    """Project the exact legacy board subset; runtime cues stay authoritative."""
+    legacy_actions = []
+    for cue in sync_cues:
+        for action in cue.start_actions:
+            if (
+                action.surface != "board"
+                or action.type not in _LEGACY_BOARD_ACTION_TYPES
+            ):
+                # Problem actions and lifecycle-only visual effects have no
+                # place in the legacy beat-start board projection.
+                continue
+            legacy_actions.append(
+                BoardAction(
+                    type=action.type,
+                    target=action.target,
+                    content=action.content,
+                    source=action.source,
+                    relation_target=action.relation_target,
+                    annotation=action.annotation,
+                )
+            )
+    return legacy_actions
+
+
+def _runtime_beat(
+    *,
+    purpose: str,
+    layer: LessonLayer,
+    sync_cues: List[RuntimeSyncCue],
+    interaction: Optional[Interaction] = None,
+) -> RuntimeBeat:
+    return RuntimeBeat(
+        beat_id="pending",
+        purpose=purpose,
+        narration="".join(cue.spoken_text for cue in sync_cues),
+        board_actions=_legacy_board_actions(sync_cues),
+        layer=layer,
+        sync_cues=sync_cues,
+        interaction=interaction,
+    )
 
 
 class LessonCompileError(RuntimeError):
@@ -38,19 +104,30 @@ class LessonCompiler:
         lesson_id: Optional[str] = None,
     ) -> RuntimeLesson:
         resolved_lesson_id = self._resolve_lesson_id(lesson_id)
+        problem_focus_targets = compile_problem_focus_targets(
+            problem.problem_text
+        )
+        authored_cue_ids = {
+            cue.cue_id
+            for moment in draft.moments
+            for cue in moment.sync_cues
+        }
+        if authored_cue_ids.intersection(_FIXED_CUE_IDS.values()):
+            raise LessonCompileError(
+                "同步提示 ID 与编译器保留 ID 冲突。"
+            )
+
+        opening_cues = [
+            RuntimeSyncCue(
+                cue_id=_FIXED_CUE_IDS["opening"],
+                spoken_text=draft.opening,
+            )
+        ]
         beats: List[RuntimeBeat] = [
-            RuntimeBeat(
-                beat_id="pending",
+            _runtime_beat(
                 purpose="进入问题",
-                narration=draft.opening,
-                board_actions=[
-                    BoardAction(
-                        type="write",
-                        target="original_problem",
-                        content=problem.problem_text,
-                    )
-                ],
                 layer="base",
+                sync_cues=opening_cues,
             )
         ]
 
@@ -58,36 +135,49 @@ class LessonCompiler:
         method_narration = method_introduction.spoken_narration
         if len(method_narration) > 90:
             raise LessonCompileError("方法介绍的口语讲稿过长。")
-        beats.append(
-            RuntimeBeat(
-                beat_id="pending",
-                purpose="先认识方法",
-                narration=method_narration,
-                board_actions=[
-                    BoardAction(
+        method_cues = [
+            RuntimeSyncCue(
+                cue_id=_FIXED_CUE_IDS["method_introduction"],
+                spoken_text=method_narration,
+                start_actions=[
+                    SyncVisualAction(
+                        surface="board",
                         type="write",
                         target="method_name",
                         content=method_introduction.method_name,
                     ),
-                    BoardAction(type="focus", target="method_name"),
-                    BoardAction(
+                    SyncVisualAction(
+                        surface="board",
+                        type="focus",
+                        target="method_name",
+                    ),
+                    SyncVisualAction(
+                        surface="board",
                         type="write",
                         target="method_target_form",
                         content=method_introduction.target_form,
                     ),
                 ],
+            )
+        ]
+        beats.append(
+            _runtime_beat(
+                purpose="先认识方法",
                 layer="micro_explanation",
+                sync_cues=method_cues,
             )
         )
 
         for moment in draft.moments:
+            sync_cues = [
+                _copy_runtime_cue(cue)
+                for cue in moment.sync_cues
+            ]
             beats.append(
-                RuntimeBeat(
-                    beat_id="pending",
+                _runtime_beat(
                     purpose=moment.purpose,
-                    narration=moment.narration,
-                    board_actions=moment.board_actions,
                     layer=moment.layer,
+                    sync_cues=sync_cues,
                     interaction=moment.interaction,
                 )
             )
@@ -129,24 +219,34 @@ class LessonCompiler:
 
         beats.extend(
             [
-                RuntimeBeat(
-                    beat_id="pending",
+                _runtime_beat(
                     purpose="压缩方法",
-                    narration=draft.summary,
-                    board_actions=[
-                        BoardAction(
-                            type="write",
-                            target="method_summary",
-                            content=draft.summary,
+                    sync_cues=[
+                        RuntimeSyncCue(
+                            cue_id=_FIXED_CUE_IDS["summary"],
+                            spoken_text=draft.summary,
+                            start_actions=[
+                                SyncVisualAction(
+                                    surface="board",
+                                    type="write",
+                                    target="method_summary",
+                                    content=draft.summary,
+                                )
+                            ],
                         )
                     ],
                     layer="base",
                 ),
-                RuntimeBeat(
-                    beat_id="pending",
+                _runtime_beat(
                     purpose="完成近迁移",
-                    narration="现在换一道表面不同、结构相同的题。",
-                    board_actions=[],
+                    sync_cues=[
+                        RuntimeSyncCue(
+                            cue_id=_FIXED_CUE_IDS["transfer_intro"],
+                            spoken_text=(
+                                "现在换一道表面不同、结构相同的题。"
+                            ),
+                        )
+                    ],
                     layer="interaction",
                     interaction=transfer_interaction,
                 ),
@@ -167,6 +267,10 @@ class LessonCompiler:
                     narration=beat.narration,
                     board_actions=beat.board_actions,
                     layer=beat.layer,
+                    sync_cues=[
+                        cue.model_copy(deep=True)
+                        for cue in beat.sync_cues
+                    ],
                     interaction=beat.interaction,
                     audio_url=beat.audio_url,
                     next_beat_id=next_beat_id,
@@ -179,6 +283,7 @@ class LessonCompiler:
             title=draft.title,
             learning_goal=draft.learning_goal,
             beats=numbered_beats,
+            problem_focus_targets=problem_focus_targets,
             summary=draft.summary,
             transfer_item=draft.transfer_item,
             validation_report=dict(validation_report),

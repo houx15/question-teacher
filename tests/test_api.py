@@ -326,6 +326,14 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
             },
             "title": "公开课程",
             "learning_goal": "理解完全平方结构。",
+            "problem_focus_targets": [
+                {
+                    "target_id": "problem-math-001",
+                    "math_text": "x^2-6x+9=0",
+                    "display_mode": False,
+                    "ordinal": 1,
+                }
+            ],
             "beats": [
                 {
                     "beat_id": "beat-expression",
@@ -334,6 +342,23 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
                     "board_actions": [],
                     "layer": "interaction",
                     "audio_url": "/audio/lesson-public/beat-expression.mp3",
+                    "sync_cues": [
+                        {
+                            "cue_id": "identify-square-cue",
+                            "spoken_text": "请先观察一次项和常数项。",
+                            "start_actions": [
+                                {
+                                    "surface": "problem",
+                                    "type": "focus",
+                                    "target": "problem-math-001",
+                                }
+                            ],
+                            "audio_url": (
+                                "/audio/lesson-public/"
+                                "identify-square-cue.mp3"
+                            ),
+                        }
+                    ],
                     "interaction": {
                         "interaction_id": "expression-check",
                         "kind": "expression",
@@ -413,6 +438,38 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
     assert "validation-secret" not in serialized
     assert "private-review" not in serialized
     assert payload["problem"]["problem_text"] == "解方程 x^2-6x+9=0"
+    assert payload["problem_focus_targets"] == [
+        {
+            "target_id": "problem-math-001",
+            "math_text": "x^2-6x+9=0",
+            "display_mode": False,
+            "ordinal": 1,
+        }
+    ]
+    assert payload["beats"][0]["sync_cues"] == [
+        {
+            "cue_id": "identify-square-cue",
+            "spoken_text": "请先观察一次项和常数项。",
+            "lead_actions": [],
+            "start_actions": [
+                {
+                    "surface": "problem",
+                    "type": "focus",
+                    "target": "problem-math-001",
+                    "content": None,
+                    "source": None,
+                    "relation_target": None,
+                    "annotation": None,
+                    "emphasis_style": None,
+                    "persistence": None,
+                }
+            ],
+            "end_actions": [],
+            "audio_url": (
+                "/audio/lesson-public/identify-square-cue.mp3"
+            ),
+        }
+    ]
     assert payload["beats"][0]["audio_url"].endswith(
         "beat-expression.mp3"
     )
