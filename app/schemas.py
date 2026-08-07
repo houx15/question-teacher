@@ -1,3 +1,4 @@
+import re
 from typing import Annotated, Dict, List, Literal, Optional
 
 from pydantic import (
@@ -5,6 +6,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -559,6 +561,15 @@ class NarrativeSyncCue(SchemaModel):
         max_length=6,
     )
 
+    @field_validator("spoken_text")
+    @classmethod
+    def reject_math_markup_in_spoken_text(cls, value: str) -> str:
+        if _contains_math_markup(value):
+            raise ValueError(
+                "spoken_text must be natural speech without math markup"
+            )
+        return value
+
 
 class InteractionOption(SchemaModel):
     option_id: NonEmptyString
@@ -615,24 +626,165 @@ class Interaction(SchemaModel):
         return self
 
 
+_LEGACY_LESSON_CUE_ID = "legacy-lesson-moment-cue"
+_LEGACY_ACTION_COMPATIBILITY_ERROR = (
+    "legacy action is not losslessly representable as SyncVisualAction"
+)
+_LEGACY_NARRATION_COMPATIBILITY_ERROR = (
+    "legacy narration is not compatible with TTS spoken_text"
+)
+_LOSSLESS_LEGACY_ACTION_TYPES = {
+    "write",
+    "transform",
+    "focus",
+    "reveal",
+    "fade",
+    "annotate",
+}
+_LOSSLESS_LEGACY_ANNOTATIONS = {
+    "underline",
+    "arrow",
+    "bracket",
+    "label",
+}
+
+
+def _contains_math_markup(value: str) -> bool:
+    return "$" in value or bool(
+        re.search(r"\\(?:[()[\]]|[A-Za-z]+)", value)
+    )
+
+
+def _legacy_action_to_sync(
+    action: BoardAction,
+) -> SyncVisualAction:
+    """Convert only legacy actions with a lossless SyncVisualAction form."""
+    if action.type not in _LOSSLESS_LEGACY_ACTION_TYPES or (
+        action.type == "annotate"
+        and action.annotation not in _LOSSLESS_LEGACY_ANNOTATIONS
+    ):
+        raise ValueError(_LEGACY_ACTION_COMPATIBILITY_ERROR)
+
+    payload = action.model_dump()
+    payload["surface"] = "board"
+    try:
+        return SyncVisualAction.model_validate(payload)
+    except ValidationError as error:
+        raise ValueError(
+            _LEGACY_ACTION_COMPATIBILITY_ERROR
+        ) from error
+
+
+def _sync_action_to_legacy(
+    action: SyncVisualAction,
+) -> Optional[BoardAction]:
+    """Project only the exact common subset; sync_cues remain authoritative."""
+    if action.surface != "board":
+        return None
+    if action.type not in _LOSSLESS_LEGACY_ACTION_TYPES:
+        return None
+    return BoardAction(
+        type=action.type,
+        target=action.target,
+        content=action.content,
+        source=action.source,
+        relation_target=action.relation_target,
+        annotation=action.annotation,
+    )
+
+
+def _flatten_legacy_board_actions(
+    sync_cues: List[NarrativeSyncCue],
+) -> List[BoardAction]:
+    legacy_actions = []
+    for cue in sync_cues:
+        for action in (
+            *cue.lead_actions,
+            *cue.start_actions,
+            *cue.end_actions,
+        ):
+            legacy_action = _sync_action_to_legacy(action)
+            if legacy_action is not None:
+                legacy_actions.append(legacy_action)
+    return legacy_actions
+
+
+def _canonicalize_legacy_moment_payload(
+    value: dict,
+    cue_id: str,
+) -> dict:
+    canonical = dict(value)
+    spoken_text = canonical.pop("narration")
+    if (
+        isinstance(spoken_text, str)
+        and _contains_math_markup(spoken_text)
+    ):
+        raise ValueError(_LEGACY_NARRATION_COMPATIBILITY_ERROR)
+    legacy_actions = canonical.pop("board_actions", [])
+    start_actions = []
+    for legacy_action in legacy_actions:
+        action = (
+            legacy_action
+            if isinstance(legacy_action, BoardAction)
+            else BoardAction.model_validate(legacy_action)
+        )
+        start_actions.append(_legacy_action_to_sync(action))
+    canonical["sync_cues"] = [
+        {
+            "cue_id": cue_id,
+            "spoken_text": spoken_text,
+            "start_actions": start_actions,
+        }
+    ]
+    return canonical
+
+
 class LessonMoment(SchemaModel):
     purpose: NonEmptyString
-    narration: MomentNarration
-    board_actions: List[BoardAction] = Field(default_factory=list)
+    sync_cues: List[NarrativeSyncCue] = Field(
+        min_length=1,
+        max_length=5,
+    )
     layer: LessonLayer = "base"
     interaction: Optional[Interaction] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize_legacy_moment(cls, value):
+        if not isinstance(value, dict) or "sync_cues" in value:
+            return value
+        if "narration" not in value:
+            return value
+
+        # Standalone construction has no lesson ordinal; the temporary cue id
+        # remains authoritative once this model has been parsed.
+        return _canonicalize_legacy_moment_payload(
+            value,
+            _LEGACY_LESSON_CUE_ID,
+        )
+
+    @property
+    def narration(self) -> str:
+        return "".join(cue.spoken_text for cue in self.sync_cues)
+
+    @property
+    def board_actions(self) -> List[BoardAction]:
+        return _flatten_legacy_board_actions(self.sync_cues)
 
 
 class NarrativeMoment(SchemaModel):
     moment_id: GeneratedId
     purpose: NarrativePurpose
-    narration: MomentNarration
-    board_actions: List[NarrativeBoardAction] = Field(
-        default_factory=list,
-        max_length=12,
+    sync_cues: List[NarrativeSyncCue] = Field(
+        min_length=1,
+        max_length=5,
     )
     layer: NarrativeLayer = "base"
     interaction_intent: Optional[InteractionIntentText] = None
+
+    @property
+    def spoken_narration(self) -> str:
+        return "".join(cue.spoken_text for cue in self.sync_cues)
 
 
 class TransferOption(SchemaModel):
@@ -720,6 +872,13 @@ class NarrativeDraft(SchemaModel):
         moment_ids = [moment.moment_id for moment in self.moments]
         if len(moment_ids) != len(set(moment_ids)):
             raise ValueError("narrative moment ids must be unique")
+        cue_ids = [
+            cue.cue_id
+            for moment in self.moments
+            for cue in moment.sync_cues
+        ]
+        if len(cue_ids) != len(set(cue_ids)):
+            raise ValueError("narrative cue ids must be unique")
         intent_count = sum(
             moment.interaction_intent is not None
             for moment in self.moments
@@ -823,8 +982,45 @@ class LessonDraft(SchemaModel):
     summary: NonEmptyString
     transfer_item: TransferItem
 
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize_legacy_cue_ids(cls, value):
+        if not isinstance(value, dict):
+            return value
+        raw_moments = value.get("moments")
+        if not isinstance(raw_moments, list):
+            return value
+
+        canonical = dict(value)
+        canonical_moments = []
+        for ordinal, raw_moment in enumerate(raw_moments, start=1):
+            # Legacy provenance exists only in this raw mapping shape. Parsed
+            # LessonMoment objects and mappings with sync_cues are authoritative.
+            if (
+                isinstance(raw_moment, dict)
+                and "narration" in raw_moment
+                and "sync_cues" not in raw_moment
+            ):
+                canonical_moments.append(
+                    _canonicalize_legacy_moment_payload(
+                        raw_moment,
+                        f"{_LEGACY_LESSON_CUE_ID}-{ordinal:03d}",
+                    )
+                )
+            else:
+                canonical_moments.append(raw_moment)
+        canonical["moments"] = canonical_moments
+        return canonical
+
     @model_validator(mode="after")
     def require_route_evidence(self) -> "LessonDraft":
+        cue_ids = [
+            cue.cue_id
+            for moment in self.moments
+            for cue in moment.sync_cues
+        ]
+        if len(cue_ids) != len(set(cue_ids)):
+            raise ValueError("lesson cue ids must be unique")
         mode = self.teaching_route.get("verification_mode")
         if mode == "symbolic_verified" and not self.math_steps:
             raise ValueError("symbolic lessons require math_steps")

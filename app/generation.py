@@ -3,7 +3,16 @@ import inspect
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 from pydantic import ValidationError
 
@@ -44,16 +53,20 @@ from app.schemas import (
     MaterialsDraft,
     MathRouteDraft,
     NarrativeDraft,
+    NarrativeMoment,
+    ProblemFocusTarget,
     ProblemInput,
     ReferenceGroundingBrief,
     ReferenceMaterialAudit,
     ReviewDecision,
     RuntimeLesson,
+    SyncVisualAction,
 )
 from app.problem_capability import (
     ProblemCapabilityProbe,
     ProblemIntakeStatus,
 )
+from app.problem_focus import compile_problem_focus_targets
 from app.teaching_route import (
     FrozenTeachingRoute,
     TeachingRouteEvidenceError,
@@ -68,6 +81,8 @@ StageCallback = Callable[
     [str],
     Union[None, Awaitable[None]],
 ]
+MomentWithSyncCues = Union[NarrativeMoment, LessonMoment]
+ActionKey = Tuple[str, str]
 
 REQUIRED_METHODS = {
     "factor": {
@@ -94,6 +109,17 @@ RESOLVED_METHODS = {
 
 _INLINE_MATH_SEGMENT = re.compile(r"\\\((.*?)\\\)")
 _BLOCK_MATH_SEGMENT = re.compile(r"\\\[(.*?)\\\]")
+
+
+def _cue_actions(moment: MomentWithSyncCues):
+    for cue in moment.sync_cues:
+        yield from cue.lead_actions
+        yield from cue.start_actions
+        yield from cue.end_actions
+
+
+def _moment_spoken_text(moment: MomentWithSyncCues) -> str:
+    return "".join(cue.spoken_text for cue in moment.sync_cues)
 
 
 def _normalize_choice_option_label(label: str) -> str:
@@ -176,6 +202,25 @@ class LessonInputError(LessonQualityError):
     def __init__(self, public_message: str) -> None:
         super().__init__(public_message)
         self.public_message = public_message
+
+
+def _validate_current_cue_cleanup(
+    action: SyncVisualAction,
+    focused_targets: Set[ActionKey],
+    emphasized_targets: Set[ActionKey],
+) -> None:
+    action_key = (action.surface, action.target)
+    if action.type == "fade" and action_key not in emphasized_targets:
+        raise LessonQualityError(
+            "结束动作没有匹配当前 cue 的强调活动状态。"
+        )
+    if (
+        action.type == "clear_focus"
+        and action_key not in focused_targets
+    ):
+        raise LessonQualityError(
+            "结束动作没有匹配当前 cue 的聚焦活动状态。"
+        )
 
 
 class _DraftSchemaValidationError(LessonQualityError):
@@ -414,6 +459,9 @@ class LessonGenerationService:
             if problem_report is not None
             else None
         )
+        problem_focus_targets = compile_problem_focus_targets(
+            problem.problem_text
+        )
         await self._emit(on_stage, "正在设计完整讲解")
         narrative = await self._create_validated_narrative(
             problem,
@@ -422,6 +470,7 @@ class LessonGenerationService:
             equation_degree,
             verified_route,
             teaching_route,
+            problem_focus_targets,
         )
         await self._emit(on_stage, "正在准备互动素材")
         draft = await self._create_validated_materials(
@@ -432,6 +481,7 @@ class LessonGenerationService:
             equation_degree,
             verified_route,
             teaching_route,
+            problem_focus_targets,
         )
         revision_count = 0
 
@@ -442,6 +492,7 @@ class LessonGenerationService:
                 draft,
                 verified_route,
                 teaching_route,
+                problem_focus_targets,
             )
             self._assert_route_fingerprint(draft, teaching_route)
             await self._emit(on_stage, "正在进行整篇审稿")
@@ -450,7 +501,7 @@ class LessonGenerationService:
                 draft,
                 reference_audit,
                 teaching_route,
-                solution_strings,
+                problem_focus_targets,
             )
             if review.status == "approved":
                 if (
@@ -473,6 +524,7 @@ class LessonGenerationService:
                 review,
                 reference_audit,
                 teaching_route,
+                problem_focus_targets,
             )
             await self._emit(on_stage, "正在准备互动素材")
             draft = await self._create_validated_materials(
@@ -483,6 +535,7 @@ class LessonGenerationService:
                 equation_degree,
                 verified_route,
                 teaching_route,
+                problem_focus_targets,
             )
             revision_count += 1
 
@@ -670,6 +723,9 @@ class LessonGenerationService:
         original_equation_degree: Optional[int] = None,
         verified_route: Optional[_VerifiedMathRoute] = None,
         teaching_route: Optional[FrozenTeachingRoute] = None,
+        problem_focus_targets: Optional[
+            Sequence[ProblemFocusTarget]
+        ] = None,
     ) -> NarrativeDraft:
         payload = await self._complete_json(
             DIRECTOR_SYSTEM,
@@ -704,6 +760,7 @@ class LessonGenerationService:
                     if teaching_route is not None
                     else None
                 ),
+                problem_focus_targets=problem_focus_targets,
             ),
         )
         try:
@@ -721,6 +778,7 @@ class LessonGenerationService:
         original_equation_degree: Optional[int],
         verified_route: Optional[_VerifiedMathRoute],
         teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: Sequence[ProblemFocusTarget],
     ) -> NarrativeDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
@@ -733,6 +791,7 @@ class LessonGenerationService:
                     original_equation_degree,
                     verified_route,
                     teaching_route,
+                    problem_focus_targets,
                 )
             except _DraftSchemaValidationError as error:
                 if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
@@ -745,6 +804,7 @@ class LessonGenerationService:
                     narrative,
                     verified_route,
                     teaching_route,
+                    problem_focus_targets,
                 )
                 return narrative
             except LessonQualityError as error:
@@ -809,6 +869,7 @@ class LessonGenerationService:
         original_equation_degree: Optional[int],
         verified_route: Optional[_VerifiedMathRoute],
         teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: Sequence[ProblemFocusTarget],
     ) -> LessonDraft:
         self._validate_narrative_size(narrative)
         previous_validation_error = None
@@ -840,6 +901,7 @@ class LessonGenerationService:
                     draft,
                     verified_route,
                     teaching_route,
+                    problem_focus_targets,
                 )
                 return draft
             except _MaterialsValidationError as error:
@@ -897,10 +959,9 @@ class LessonGenerationService:
         moments = [
             LessonMoment(
                 purpose=moment.purpose,
-                narration=moment.narration,
-                board_actions=[
-                    action.model_copy(deep=True)
-                    for action in moment.board_actions
+                sync_cues=[
+                    cue.model_copy(deep=True)
+                    for cue in moment.sync_cues
                 ],
                 layer=moment.layer,
                 interaction=(
@@ -935,7 +996,7 @@ class LessonGenerationService:
         draft: LessonDraft,
         reference_audit: Optional[ReferenceMaterialAudit],
         teaching_route: FrozenTeachingRoute,
-        solution_strings: Any,
+        problem_focus_targets: Sequence[ProblemFocusTarget],
     ) -> ReviewDecision:
         payload = await self._complete_json(
             REVIEWER_SYSTEM,
@@ -945,6 +1006,7 @@ class LessonGenerationService:
                 reference_audit,
                 teaching_route=teaching_route.to_prompt_payload(),
                 teaching_route_fingerprint=teaching_route.fingerprint,
+                problem_focus_targets=problem_focus_targets,
             ),
         )
         try:
@@ -959,6 +1021,7 @@ class LessonGenerationService:
         review: ReviewDecision,
         reference_audit: Optional[ReferenceMaterialAudit],
         teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: Sequence[ProblemFocusTarget],
     ) -> NarrativeDraft:
         previous_validation_error = None
         for attempt in range(self.MAX_DRAFT_ATTEMPTS):
@@ -972,6 +1035,7 @@ class LessonGenerationService:
                     previous_validation_error,
                     teaching_route=teaching_route.to_prompt_payload(),
                     teaching_route_fingerprint=teaching_route.fingerprint,
+                    problem_focus_targets=problem_focus_targets,
                 ),
             )
             try:
@@ -991,6 +1055,7 @@ class LessonGenerationService:
                     revised,
                     None,
                     teaching_route,
+                    problem_focus_targets,
                 )
                 return revised
             except LessonQualityError as error:
@@ -1097,9 +1162,19 @@ class LessonGenerationService:
         narrative: NarrativeDraft,
         verified_route: Optional[_VerifiedMathRoute] = None,
         teaching_route: Optional[FrozenTeachingRoute] = None,
+        problem_focus_targets: Optional[
+            Sequence[ProblemFocusTarget]
+        ] = None,
     ) -> None:
         self._validate_narrative_size(narrative)
-        self._validate_board_action_references(narrative.moments)
+        self._validate_board_action_references(
+            narrative.moments,
+            (
+                compile_problem_focus_targets(problem.problem_text)
+                if problem_focus_targets is None
+                else problem_focus_targets
+            ),
+        )
         expected_method_name = (
             teaching_route.method_name
             if teaching_route is not None
@@ -1140,43 +1215,95 @@ class LessonGenerationService:
             )
 
     @staticmethod
-    def _validate_board_action_references(moments: Any) -> None:
-        base_targets = {"original_problem"}
-        reference_types = {
-            "focus",
-            "annotate",
-            "compare",
-            "mask",
-            "reveal",
-            "fade",
+    def _validate_board_action_references(
+        moments: Sequence[MomentWithSyncCues],
+        problem_focus_targets: Sequence[ProblemFocusTarget] = (),
+    ) -> None:
+        problem_target_ids = {
+            target.target_id
+            for target in problem_focus_targets
+        }
+        base_targets = set()
+        allowed_phase_types = {
+            "lead_actions": {"focus", "emphasize"},
+            "start_actions": {
+                "write",
+                "transform",
+                "focus",
+                "emphasize",
+                "annotate",
+                "reveal",
+            },
+            "end_actions": {"clear_focus", "fade"},
         }
         for moment in moments:
             active_targets = set(base_targets)
-            for action in moment.board_actions:
-                if action.type in {"write", "transform"}:
-                    active_targets.add(action.target)
-                    continue
-                if action.type == "clear":
-                    if action.target:
-                        active_targets.discard(action.target)
-                    else:
-                        active_targets.clear()
-                    continue
-                if action.type not in reference_types:
-                    continue
-                required_targets = [action.target]
-                if action.type == "compare" or (
-                    action.type == "annotate"
-                    and action.annotation == "arrow"
-                ):
-                    required_targets.append(action.relation_target)
-                if any(
-                    target not in active_targets
-                    for target in required_targets
-                ):
-                    raise LessonQualityError(
-                        "板书动作引用了尚未写出的对象。"
-                    )
+            for cue in moment.sync_cues:
+                cue_focused_targets = set()
+                cue_emphasized_targets = set()
+                action_phases = (
+                    ("lead_actions", cue.lead_actions),
+                    ("start_actions", cue.start_actions),
+                    ("end_actions", cue.end_actions),
+                )
+                for phase, actions in action_phases:
+                    for action in actions:
+                        if action.type not in allowed_phase_types[phase]:
+                            raise LessonQualityError(
+                                f"{phase} 包含不允许的动作类型。"
+                            )
+                        action_key = (action.surface, action.target)
+                        if action.surface == "problem":
+                            if action.target not in problem_target_ids:
+                                raise LessonQualityError(
+                                    "视觉动作引用了未知的题面目标。"
+                                )
+                            if phase == "end_actions":
+                                _validate_current_cue_cleanup(
+                                    action,
+                                    cue_focused_targets,
+                                    cue_emphasized_targets,
+                                )
+                            if action.type == "focus":
+                                cue_focused_targets.add(action_key)
+                            elif action.type == "emphasize":
+                                cue_emphasized_targets.add(action_key)
+                            continue
+                        if action.type in {"write", "transform"}:
+                            if (
+                                action.source is not None
+                                and action.source not in active_targets
+                            ):
+                                raise LessonQualityError(
+                                    "板书变形引用了尚未创建的来源对象。"
+                                )
+                            active_targets.add(action.target)
+                            continue
+                        required_targets = [action.target]
+                        if (
+                            action.type == "annotate"
+                            and action.annotation == "arrow"
+                        ):
+                            required_targets.append(
+                                action.relation_target
+                            )
+                        if any(
+                            target not in active_targets
+                            for target in required_targets
+                        ):
+                            raise LessonQualityError(
+                                "板书动作引用了尚未创建的对象。"
+                            )
+                        if phase == "end_actions":
+                            _validate_current_cue_cleanup(
+                                action,
+                                cue_focused_targets,
+                                cue_emphasized_targets,
+                            )
+                        if action.type == "focus":
+                            cue_focused_targets.add(action_key)
+                        elif action.type == "emphasize":
+                            cue_emphasized_targets.add(action_key)
             if moment.layer == "base":
                 base_targets = active_targets
 
@@ -1194,8 +1321,18 @@ class LessonGenerationService:
         draft: LessonDraft,
         verified_route: Optional[_VerifiedMathRoute] = None,
         teaching_route: Optional[FrozenTeachingRoute] = None,
+        problem_focus_targets: Optional[
+            Sequence[ProblemFocusTarget]
+        ] = None,
     ) -> None:
-        self._validate_board_action_references(draft.moments)
+        self._validate_board_action_references(
+            draft.moments,
+            (
+                compile_problem_focus_targets(problem.problem_text)
+                if problem_focus_targets is None
+                else problem_focus_targets
+            ),
+        )
         required_method = REQUIRED_METHODS.get(problem.required_method)
         expected_method_name = (
             teaching_route.method_name
@@ -1378,12 +1515,14 @@ class LessonGenerationService:
         payload = teaching_route.to_prompt_payload()
         board_evidence = []
         for moment in narrative.moments:
-            board_evidence.extend(
-                self._normalize_grounded_text(action.content)
-                for action in moment.board_actions
-                if action.type in {"write", "transform"}
-                and action.content is not None
-            )
+            for cue in moment.sync_cues:
+                board_evidence.extend(
+                    self._normalize_grounded_text(action.content)
+                    for action in cue.start_actions
+                    if action.surface == "board"
+                    and action.type in {"write", "transform"}
+                    and action.content is not None
+                )
         expected_evidence = [
             self._normalize_grounded_text(step["statement_after"])
             for step in payload["steps"]
@@ -1408,10 +1547,10 @@ class LessonGenerationService:
     ) -> None:
         visible_parts = []
         for moment in moments:
-            visible_parts.append(moment.narration)
+            visible_parts.append(_moment_spoken_text(moment))
             visible_parts.extend(
                 action.content
-                for action in moment.board_actions
+                for action in _cue_actions(moment)
                 if action.content is not None
             )
             interaction = moment.interaction

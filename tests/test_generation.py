@@ -45,13 +45,19 @@ def test_valid_draft_uses_choice_for_the_main_math_interaction():
 
 def test_narrative_quality_gate_rejects_focus_on_missing_board_target():
     narrative_payload = valid_narrative().model_dump()
-    narrative_payload["moments"][0]["board_actions"] = [
-        {"type": "focus", "target": "step1_eq_coeff_-6"}
+    narrative_payload["moments"][0]["sync_cues"][0][
+        "start_actions"
+    ] = [
+        {
+            "surface": "board",
+            "type": "focus",
+            "target": "step1_eq_coeff_-6",
+        }
     ]
     narrative = NarrativeDraft.model_validate(narrative_payload)
     service = LessonGenerationService(FakeClient([]), MathEngine())
 
-    with pytest.raises(LessonQualityError, match="板书动作引用了尚未写出的对象"):
+    with pytest.raises(LessonQualityError, match="板书动作引用了尚未创建"):
         service._validate_narrative(problem(), narrative)
 
 
@@ -65,20 +71,29 @@ def test_narrative_quality_gate_accepts_focus_after_write_in_same_moment():
 def test_narrative_quality_gate_rejects_target_from_finished_temporary_layer():
     narrative_payload = valid_narrative().model_dump()
     narrative_payload["moments"][0]["layer"] = "micro_explanation"
-    narrative_payload["moments"][0]["board_actions"] = [
+    narrative_payload["moments"][0]["sync_cues"][0][
+        "start_actions"
+    ] = [
         {
+            "surface": "board",
             "type": "write",
             "target": "temporary_detail",
             "content": "临时解释",
         }
     ]
-    narrative_payload["moments"][1]["board_actions"] = [
-        {"type": "focus", "target": "temporary_detail"}
+    narrative_payload["moments"][1]["sync_cues"][0][
+        "start_actions"
+    ] = [
+        {
+            "surface": "board",
+            "type": "focus",
+            "target": "temporary_detail",
+        }
     ]
     narrative = NarrativeDraft.model_validate(narrative_payload)
     service = LessonGenerationService(FakeClient([]), MathEngine())
 
-    with pytest.raises(LessonQualityError, match="板书动作引用了尚未写出的对象"):
+    with pytest.raises(LessonQualityError, match="板书动作引用了尚未创建"):
         service._validate_narrative(problem(), narrative)
 
 
@@ -107,31 +122,52 @@ def valid_draft():
         "moments": [
             {
                 "purpose": "寻找因数关系",
-                "narration": "先自己找一找：哪两个数满足乘积与和的条件？",
-                "board_actions": [
+                "sync_cues": [
                     {
-                        "type": "write",
-                        "target": "equation",
-                        "content": r"\(x^2-5x+6=0\)",
-                    },
-                    {
-                        "type": "write",
-                        "target": "constant_and_linear_terms",
-                        "content": "常数项 6，一次项系数 -5",
-                    },
-                    {"type": "focus", "target": "constant_and_linear_terms"}
+                        "cue_id": "find-factor-pair-cue",
+                        "spoken_text": (
+                            "先自己找一找：哪两个数满足乘积与和的条件？"
+                        ),
+                        "start_actions": [
+                            {
+                                "surface": "board",
+                                "type": "write",
+                                "target": "equation",
+                                "content": r"\(x^2-5x+6=0\)",
+                            },
+                            {
+                                "surface": "board",
+                                "type": "write",
+                                "target": "constant_and_linear_terms",
+                                "content": "常数项 6，一次项系数 -5",
+                            },
+                            {
+                                "surface": "board",
+                                "type": "focus",
+                                "target": "constant_and_linear_terms",
+                            },
+                        ],
+                    }
                 ],
                 "layer": "interaction",
                 "interaction": valid_diagnostic_choice(),
             },
             {
                 "purpose": "写出因式分解",
-                "narration": "用刚才找到的两个数，把二次式写成两个一次因式。",
-                "board_actions": [
+                "sync_cues": [
                     {
-                        "type": "transform",
-                        "target": "equation",
-                        "content": r"\((x-2)(x-3)=0\)",
+                        "cue_id": "write-factorization-cue",
+                        "spoken_text": (
+                            "用刚才找到的两个数，把二次式写成两个一次因式。"
+                        ),
+                        "start_actions": [
+                            {
+                                "surface": "board",
+                                "type": "transform",
+                                "target": "equation",
+                                "content": r"\((x-2)(x-3)=0\)",
+                            }
+                        ],
                     }
                 ],
             },
@@ -1150,6 +1186,11 @@ def test_draft_rejects_duplicate_moment_interaction_ids():
     draft = valid_draft()
     duplicate_moment = copy.deepcopy(draft["moments"][0])
     duplicate_moment["purpose"] = "再次诊断相同关系"
+    for index, cue in enumerate(
+        duplicate_moment["sync_cues"],
+        start=1,
+    ):
+        cue["cue_id"] = f"duplicate-interaction-cue-{index}"
     draft["moments"].append(duplicate_moment)
     client = FakeClient([draft, copy.deepcopy(draft)])
     service = LessonGenerationService(client, MathEngine())
@@ -1708,12 +1749,14 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "完整" in DIRECTOR_SYSTEM
     assert "一个主要认知动作" in DIRECTOR_SYSTEM
     assert "最多 90 个字符" in DIRECTOR_SYSTEM
-    assert "不得包含 interaction" in DIRECTOR_SYSTEM
+    assert "不得包含独立 narration、board_actions 或 interaction 字段" in (
+        DIRECTOR_SYSTEM
+    )
     assert "互动前不泄露答案" in MATERIALS_SYSTEM
     assert "一个 operand" in MATH_ROUTE_SYSTEM
     assert "write" in DIRECTOR_SYSTEM and "transform" in DIRECTOR_SYSTEM
-    assert "只有一个" in DIRECTOR_SYSTEM
-    assert "circle" in DIRECTOR_SYSTEM
+    assert "视觉动作可以为空" in DIRECTOR_SYSTEM
+    assert "highlight、underline、red" in DIRECTOR_SYSTEM
     assert "局部语义对象" in DIRECTOR_SYSTEM
     assert "禁止 ±" in MATH_ROUTE_SYSTEM
     assert "右侧为正数" in MATH_ROUTE_SYSTEM
@@ -1735,7 +1778,7 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "整节课" in REVIEWER_SYSTEM
     assert "参考解析审阅" in REVIEWER_SYSTEM
     assert "无信息增益" in REVIEWER_SYSTEM
-    assert "整式圈注" in REVIEWER_SYSTEM
+    assert "整式强调" in REVIEWER_SYSTEM
     assert "方法介绍" in REVIEWER_SYSTEM
     assert "自动判分互动不是 choice" in REVIEWER_SYSTEM
     assert "完整 NarrativeDraft JSON" in REVISION_SYSTEM
@@ -1746,9 +1789,9 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "target_form 最多 80 个字符" in REVISION_SYSTEM
     assert "why_it_helps 最多 32 个字符" in REVISION_SYSTEM
     assert "不得返回互动" in REVISION_SYSTEM
-    assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in DIRECTOR_SYSTEM
-    assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVIEWER_SYSTEM
-    assert "narration 必须是自然口语中文，禁止包含 LaTeX 命令" in REVISION_SYSTEM
+    assert "spoken_text 必须是自然口语中文" in DIRECTOR_SYSTEM
+    assert "spoken_text 必须是自然口语中文" in REVIEWER_SYSTEM
+    assert "spoken_text 必须是自然口语中文" in REVISION_SYSTEM
     assert "每个选项必须提供针对该选择推理的具体 feedback" in MATERIALS_SYSTEM
     assert "任一 choice 选项缺少针对所选推理的具体诊断 feedback" in REVIEWER_SYSTEM
     assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM
@@ -1758,3 +1801,51 @@ def test_prompt_contracts_state_teaching_and_output_constraints():
     assert "可见 label" in MATERIALS_SYSTEM
     assert "choice 的可见 label 重复" in REVIEWER_SYSTEM
     assert "Materials Agent 会重新生成全部" in REVISION_SYSTEM
+
+
+def test_sync_visual_prompt_contracts_only_advertise_schema_enums():
+    visual_contracts = (
+        DIRECTOR_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+    )
+    for contract in (
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+    ):
+        assert "circle" not in contract
+        assert "box" not in contract
+    for contract in visual_contracts:
+        assert (
+            "emphasis_style 只能是 highlight、underline、red"
+            in contract
+        )
+        assert (
+            "annotation 只能是 underline、arrow、bracket、label"
+            in contract
+        )
+
+
+def test_sync_visual_prompt_contracts_define_action_phase_rules():
+    for contract in (
+        DIRECTOR_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+    ):
+        assert (
+            "lead_actions 只能包含 focus、emphasize" in contract
+        )
+        assert (
+            "start_actions 只能包含 write、transform、focus、"
+            "emphasize、annotate、reveal" in contract
+        )
+        assert (
+            "end_actions 只能包含 clear_focus、fade" in contract
+        )
+        assert (
+            "end_actions 只能清理当前 cue 的 lead_actions 或 "
+            "start_actions 已激活的同一 target"
+            in contract
+        )

@@ -3,6 +3,7 @@ import copy
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.claim_checker import ClaimChecker, ClaimCheckerUnavailableError
 from app.generation import (
@@ -24,11 +25,17 @@ from app.prompts import (
     director_prompt,
     materials_prompt,
     reference_grounding_prompt,
+    reviewer_prompt,
 )
 from app.schemas import (
+    BoardAction,
+    LessonDraft,
+    LessonMoment,
     MaterialsDraft,
     MathRouteDraft,
     NarrativeDraft,
+    NarrativeMoment,
+    ProblemFocusTarget,
     ReferenceGroundingBrief,
 )
 from app.teaching_route import (
@@ -60,6 +67,1253 @@ def narrative_payload():
         if moment.get("layer") == "interaction":
             moment["layer"] = "base"
     return payload
+
+
+def cue_narrative_payload(cues):
+    return {
+        "title": "把二次式拆成两个一次因式",
+        "learning_goal": "理解因式分解如何把二次方程变成一次方程。",
+        "opening": "先观察原式的结构。",
+        "method_rationale": "乘积为零时，至少有一个因式为零。",
+        "method_introduction": {
+            "method_name": "因式分解法",
+            "student_definition": "把二次式写成两个一次因式的乘积。",
+            "target_form": r"\((x-a)(x-b)=0\)",
+            "why_it_helps": "可以分别求出两个根。",
+        },
+        "moments": [
+            {
+                "moment_id": "cue-moment-001",
+                "purpose": "按语义短句同步讲解与板书",
+                "sync_cues": cues,
+                "layer": "base",
+                "interaction_intent": "检查学生是否理解当前变形。",
+            }
+        ],
+        "summary": "按顺序完成因式分解。",
+    }
+
+
+def sync_cue_payload(cue_id, spoken_text, **action_phases):
+    return {
+        "cue_id": cue_id,
+        "spoken_text": spoken_text,
+        **action_phases,
+    }
+
+
+def migrate_legacy_moments_to_sync_cues(payload):
+    for moment in payload["moments"]:
+        if "sync_cues" in moment:
+            continue
+        start_actions = [
+            {"surface": "board", **action}
+            for action in moment.pop("board_actions", [])
+        ]
+        moment["sync_cues"] = [
+            sync_cue_payload(
+                f"{moment['moment_id']}-cue-001",
+                moment.pop("narration"),
+                start_actions=start_actions,
+            )
+        ]
+    return payload
+
+
+def first_cue(moment):
+    return moment["sync_cues"][0]
+
+
+_LEGACY_COMPATIBILITY_ERROR = (
+    "legacy action is not losslessly representable as SyncVisualAction"
+)
+
+
+@pytest.mark.parametrize(
+    "action_payload",
+    (
+        {
+            "type": "write",
+            "target": "written-line",
+            "content": r"\(x=1\)",
+        },
+        {
+            "type": "transform",
+            "target": "transformed-line",
+            "content": r"\(x=2\)",
+            "source": "written-line",
+        },
+        {"type": "focus", "target": "written-line"},
+        {"type": "reveal", "target": "written-line"},
+        {"type": "fade", "target": "written-line"},
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "underline",
+        },
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "arrow",
+            "relation_target": "transformed-line",
+        },
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "bracket",
+        },
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "label",
+            "content": "关键一步",
+        },
+    ),
+)
+def test_legacy_lesson_moment_round_trips_lossless_board_actions(
+    action_payload,
+):
+    original = BoardAction.model_validate(action_payload)
+
+    moment = LessonMoment(
+        purpose="兼容旧讲解片段",
+        narration="观察这一步。",
+        board_actions=[original],
+    )
+
+    assert [action.model_dump() for action in moment.board_actions] == [
+        original.model_dump()
+    ]
+
+
+@pytest.mark.parametrize(
+    "action_payload",
+    (
+        {
+            "type": "compare",
+            "target": "left-line",
+            "relation_target": "right-line",
+        },
+        {"type": "mask", "target": "written-line"},
+        {"type": "pause"},
+        {"type": "clear", "target": "written-line"},
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "circle",
+        },
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "box",
+        },
+    ),
+)
+def test_legacy_lesson_moment_rejects_unrepresentable_action_types(
+    action_payload,
+):
+    with pytest.raises(ValueError, match=_LEGACY_COMPATIBILITY_ERROR):
+        LessonMoment(
+            purpose="兼容旧讲解片段",
+            narration="观察这一步。",
+            board_actions=[BoardAction.model_validate(action_payload)],
+        )
+
+
+@pytest.mark.parametrize(
+    "action_payload",
+    (
+        {
+            "type": "write",
+            "target": "written-line",
+            "content": r"\(x=1\)",
+            "source": "unexpected-source",
+        },
+        {
+            "type": "focus",
+            "target": "written-line",
+            "content": "不能静默丢弃",
+        },
+        {
+            "type": "annotate",
+            "target": "written-line",
+            "annotation": "underline",
+            "content": "不能静默丢弃",
+        },
+    ),
+)
+def test_legacy_lesson_moment_rejects_payload_that_would_be_lost(
+    action_payload,
+):
+    with pytest.raises(ValueError, match=_LEGACY_COMPATIBILITY_ERROR):
+        LessonMoment(
+            purpose="兼容旧讲解片段",
+            narration="观察这一步。",
+            board_actions=[BoardAction.model_validate(action_payload)],
+        )
+
+
+@pytest.mark.parametrize(
+    "narration",
+    (
+        "答案是$x=1$。",
+        r"代入\(x=1\)。",
+        r"结果是\frac{1}{2}。",
+    ),
+)
+def test_legacy_lesson_moment_rejects_math_markup_in_narration(
+    narration,
+):
+    with pytest.raises(
+        ValueError,
+        match="legacy narration is not compatible with TTS spoken_text",
+    ):
+        LessonMoment(
+            purpose="兼容旧讲解片段",
+            narration=narration,
+        )
+
+
+def test_lesson_draft_assigns_unique_deterministic_legacy_cue_ids():
+    payload = valid_draft()
+    payload["moments"] = [
+        {
+            "purpose": "第一步",
+            "narration": "先观察第一步。",
+            "board_actions": [
+                {
+                    "type": "write",
+                    "target": "first-line",
+                    "content": r"\(x=1\)",
+                }
+            ],
+        },
+        {
+            "purpose": "第二步",
+            "narration": "再观察第二步。",
+            "board_actions": [
+                {
+                    "type": "write",
+                    "target": "second-line",
+                    "content": r"\(x=2\)",
+                }
+            ],
+        },
+    ]
+
+    draft = LessonDraft.model_validate(payload)
+
+    assert [
+        moment.sync_cues[0].cue_id for moment in draft.moments
+    ] == [
+        "legacy-lesson-moment-cue-001",
+        "legacy-lesson-moment-cue-002",
+    ]
+    assert [moment.purpose for moment in draft.moments] == [
+        "第一步",
+        "第二步",
+    ]
+
+
+def test_lesson_draft_preserves_authoritative_reserved_cue_id_object():
+    authoritative = LessonMoment(
+        purpose="权威同步片段",
+        sync_cues=[
+            sync_cue_payload(
+                "legacy-lesson-moment-cue",
+                "保留明确给出的同步标识。",
+            )
+        ],
+    )
+    before = authoritative.model_dump()
+    payload = valid_draft()
+    payload["moments"] = [authoritative]
+
+    draft = LessonDraft.model_validate(payload)
+
+    assert draft.moments[0].model_dump() == before
+    assert authoritative.model_dump() == before
+
+
+def test_lesson_draft_preserves_authoritative_reserved_cue_id_mapping():
+    authoritative = {
+        "purpose": "权威同步片段",
+        "sync_cues": [
+            sync_cue_payload(
+                "legacy-lesson-moment-cue",
+                "保留明确给出的同步标识。",
+            )
+        ],
+    }
+    before = copy.deepcopy(authoritative)
+    payload = valid_draft()
+    payload["moments"] = [authoritative]
+
+    draft = LessonDraft.model_validate(payload)
+
+    assert draft.moments[0].model_dump() == (
+        LessonMoment.model_validate(authoritative).model_dump()
+    )
+    assert authoritative == before
+
+
+def test_lesson_draft_rejects_duplicate_preconstructed_legacy_cues():
+    first = LessonMoment(
+        purpose="第一段旧片段",
+        narration="先观察第一段。",
+    )
+    second = LessonMoment(
+        purpose="第二段旧片段",
+        narration="再观察第二段。",
+    )
+    first_before = first.model_dump()
+    second_before = second.model_dump()
+    payload = valid_draft()
+    payload["moments"] = [first, second]
+
+    with pytest.raises(
+        ValidationError,
+        match="lesson cue ids must be unique",
+    ):
+        LessonDraft.model_validate(payload)
+
+    assert first.model_dump() == first_before
+    assert second.model_dump() == second_before
+
+
+def test_lesson_draft_rejects_duplicate_new_cue_ids():
+    payload = valid_draft()
+    payload["moments"][1]["sync_cues"][0]["cue_id"] = (
+        payload["moments"][0]["sync_cues"][0]["cue_id"]
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="lesson cue ids must be unique",
+    ):
+        LessonDraft.model_validate(payload)
+
+
+def test_lesson_draft_rejects_mixed_legacy_reserved_cue_collision():
+    payload = valid_draft()
+    payload["moments"] = [
+        {
+            "purpose": "旧片段",
+            "narration": "先观察旧片段。",
+        },
+        {
+            "purpose": "新片段",
+            "sync_cues": [
+                sync_cue_payload(
+                    "legacy-lesson-moment-cue-001",
+                    "再观察新片段。",
+                )
+            ],
+        },
+    ]
+    before = copy.deepcopy(payload["moments"])
+
+    with pytest.raises(
+        ValidationError,
+        match="lesson cue ids must be unique",
+    ):
+        LessonDraft.model_validate(payload)
+
+    assert payload["moments"] == before
+
+
+def test_narrative_moment_accepts_ordered_sync_cues_as_source_of_truth():
+    moment = NarrativeMoment.model_validate(
+        {
+            "moment_id": "moment-substitute-root",
+            "purpose": "说明根的条件并完成代入",
+            "sync_cues": [
+                sync_cue_payload(
+                    "read-root",
+                    "因为二n是方程的根。",
+                    lead_actions=[
+                        {
+                            "surface": "problem",
+                            "type": "emphasize",
+                            "target": "problem-math-001",
+                            "emphasis_style": "highlight",
+                            "persistence": "trace",
+                        }
+                    ],
+                ),
+                sync_cue_payload(
+                    "write-substitution",
+                    "所以把x等于二n代入原方程。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "substitution",
+                            "content": r"\(x=2n\)",
+                        }
+                    ],
+                ),
+            ],
+            "layer": "base",
+            "interaction_intent": None,
+        }
+    )
+
+    assert moment.spoken_narration == (
+        "因为二n是方程的根。所以把x等于二n代入原方程。"
+    )
+    assert len(moment.sync_cues) == 2
+
+
+def test_narrative_draft_rejects_duplicate_cue_ids_across_moments():
+    payload = narrative_payload()
+    assert (
+        payload["moments"][0]["moment_id"]
+        != payload["moments"][1]["moment_id"]
+    )
+    payload["moments"][1]["sync_cues"][0]["cue_id"] = (
+        payload["moments"][0]["sync_cues"][0]["cue_id"]
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="narrative cue ids must be unique",
+    ):
+        NarrativeDraft.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "spoken_text",
+    (
+        r"二分之一写作\frac{1}{2}。",
+        r"代入\(x=2n\)。",
+        "答案是$x=2n$。",
+    ),
+)
+def test_narrative_sync_cue_rejects_math_markup_in_spoken_text(
+    spoken_text,
+):
+    with pytest.raises(ValidationError):
+        NarrativeMoment.model_validate(
+            {
+                "moment_id": "moment-spoken-markup",
+                "purpose": "保持口播自然",
+                "sync_cues": [
+                    sync_cue_payload("spoken-markup", spoken_text)
+                ],
+                "interaction_intent": None,
+            }
+        )
+
+
+def test_cue_target_rejects_unknown_problem_target():
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "unknown-problem-target",
+                    "观察题目中的这个式子。",
+                    start_actions=[
+                        {
+                            "surface": "problem",
+                            "type": "focus",
+                            "target": "problem-math-999",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="题面目标"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "action",
+    (
+        {"type": "focus"},
+        {"type": "emphasize", "emphasis_style": "underline"},
+    ),
+)
+def test_sync_cue_rejects_board_reference_before_target_creation(action):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "premature-reference",
+                    "观察这一步。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "target": "missing-board-target",
+                            **action,
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="尚未创建"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+def test_sync_cue_allows_board_focus_and_emphasis_after_creation():
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "create-board-target",
+                    "先写出因式分解结果。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "factored-equation",
+                            "content": r"\((x-2)(x-3)=0\)",
+                        }
+                    ],
+                ),
+                sync_cue_payload(
+                    "focus-board-target",
+                    "再观察这两个因式。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "focus",
+                            "target": "factored-equation",
+                        },
+                        {
+                            "surface": "board",
+                            "type": "emphasize",
+                            "target": "factored-equation",
+                            "emphasis_style": "underline",
+                        },
+                    ],
+                ),
+            ]
+        )
+    )
+
+    LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._validate_narrative(
+        problem(),
+        narrative,
+        problem_focus_targets=[],
+    )
+
+
+@pytest.mark.parametrize(
+    "lead_action",
+    (
+        {
+            "surface": "board",
+            "type": "write",
+            "target": "lead-write",
+            "content": r"\(x=2\)",
+        },
+        {
+            "surface": "board",
+            "type": "transform",
+            "target": "lead-transform",
+            "source": "existing-board-target",
+            "content": r"\(x=2\)",
+        },
+        {
+            "surface": "board",
+            "type": "annotate",
+            "target": "existing-board-target",
+            "annotation": "underline",
+        },
+    ),
+)
+def test_sync_cue_rejects_non_emphasis_lead_actions(lead_action):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "create-board-target",
+                    "先写出已有对象。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "existing-board-target",
+                            "content": r"\(x=1\)",
+                        }
+                    ],
+                ),
+                sync_cue_payload(
+                    "invalid-lead-action",
+                    "再看下一步。",
+                    lead_actions=[lead_action],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="lead_actions"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+def test_sync_cue_lead_action_requires_preexisting_board_target():
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "missing-lead-target",
+                    "先看这个对象。",
+                    lead_actions=[
+                        {
+                            "surface": "board",
+                            "type": "focus",
+                            "target": "not-created-before-cue",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="尚未创建"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("setup_action", "start_action"),
+    (
+        (
+            {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "existing-board-target",
+                "emphasis_style": "highlight",
+            },
+            {
+                "surface": "board",
+                "type": "fade",
+                "target": "existing-board-target",
+            },
+        ),
+        (
+            {
+                "surface": "board",
+                "type": "focus",
+                "target": "existing-board-target",
+            },
+            {
+                "surface": "board",
+                "type": "clear_focus",
+                "target": "existing-board-target",
+            },
+        ),
+    ),
+)
+def test_sync_cue_rejects_cleanup_in_start_actions(
+    setup_action,
+    start_action,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "prepare-board-target",
+                    "先准备已有对象。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "existing-board-target",
+                            "content": r"\(x=1\)",
+                        },
+                        setup_action,
+                    ],
+                ),
+                sync_cue_payload(
+                    "invalid-start-cleanup",
+                    "继续观察。",
+                    start_actions=[start_action],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="start_actions"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "end_action",
+    (
+        {
+            "surface": "board",
+            "type": "write",
+            "target": "end-write",
+            "content": r"\(x=2\)",
+        },
+        {
+            "surface": "board",
+            "type": "focus",
+            "target": "existing-board-target",
+        },
+        {
+            "surface": "board",
+            "type": "emphasize",
+            "target": "existing-board-target",
+            "emphasis_style": "red",
+        },
+        {
+            "surface": "board",
+            "type": "reveal",
+            "target": "existing-board-target",
+        },
+    ),
+)
+def test_sync_cue_rejects_non_cleanup_end_actions(end_action):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "prepare-end-target",
+                    "先准备已有对象。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "existing-board-target",
+                            "content": r"\(x=1\)",
+                        }
+                    ],
+                ),
+                sync_cue_payload(
+                    "invalid-end-action-type",
+                    "结束当前短句。",
+                    end_actions=[end_action],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="end_actions"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("setup_action", "end_action"),
+    (
+        (
+            {
+                "surface": "board",
+                "type": "focus",
+                "target": "existing-board-target",
+            },
+            {
+                "surface": "board",
+                "type": "clear_focus",
+                "target": "existing-board-target",
+            },
+        ),
+        (
+            {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "existing-board-target",
+                "emphasis_style": "underline",
+            },
+            {
+                "surface": "board",
+                "type": "fade",
+                "target": "existing-board-target",
+            },
+        ),
+    ),
+)
+def test_sync_cue_end_cleanup_rejects_state_from_earlier_cue(
+    setup_action,
+    end_action,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "earlier-cue-state",
+                    "先关注已有对象。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "existing-board-target",
+                            "content": r"\(x=1\)",
+                        },
+                        setup_action,
+                    ],
+                ),
+                sync_cue_payload(
+                    "later-cue-cleanup",
+                    "下一句尝试清理。",
+                    end_actions=[end_action],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="当前 cue"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("setup_action", "end_action"),
+    (
+        (
+            {
+                "surface": "problem",
+                "type": "focus",
+                "target": "problem-math-001",
+            },
+            {
+                "surface": "problem",
+                "type": "clear_focus",
+                "target": "problem-math-001",
+            },
+        ),
+        (
+            {
+                "surface": "problem",
+                "type": "emphasize",
+                "target": "problem-math-001",
+                "emphasis_style": "underline",
+            },
+            {
+                "surface": "problem",
+                "type": "fade",
+                "target": "problem-math-001",
+            },
+        ),
+    ),
+)
+def test_problem_end_cleanup_rejects_state_from_earlier_cue(
+    setup_action,
+    end_action,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "earlier-problem-state",
+                    "先关注题面对象。",
+                    start_actions=[setup_action],
+                ),
+                sync_cue_payload(
+                    "later-problem-cleanup",
+                    "下一句尝试清理。",
+                    end_actions=[end_action],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="当前 cue"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[
+                ProblemFocusTarget(
+                    target_id="problem-math-001",
+                    math_text="x^2-5x+6=0",
+                    ordinal=1,
+                )
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    ("phase", "setup_action", "end_action"),
+    (
+        (
+            "lead_actions",
+            {
+                "surface": "board",
+                "type": "focus",
+                "target": "existing-board-target",
+            },
+            {
+                "surface": "board",
+                "type": "clear_focus",
+                "target": "existing-board-target",
+            },
+        ),
+        (
+            "start_actions",
+            {
+                "surface": "board",
+                "type": "focus",
+                "target": "existing-board-target",
+            },
+            {
+                "surface": "board",
+                "type": "clear_focus",
+                "target": "existing-board-target",
+            },
+        ),
+        (
+            "lead_actions",
+            {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "existing-board-target",
+                "emphasis_style": "highlight",
+            },
+            {
+                "surface": "board",
+                "type": "fade",
+                "target": "existing-board-target",
+            },
+        ),
+        (
+            "start_actions",
+            {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "existing-board-target",
+                "emphasis_style": "highlight",
+            },
+            {
+                "surface": "board",
+                "type": "fade",
+                "target": "existing-board-target",
+            },
+        ),
+    ),
+)
+def test_sync_cue_end_cleanup_accepts_state_from_current_cue(
+    phase,
+    setup_action,
+    end_action,
+):
+    current_cue = sync_cue_payload(
+        "current-cue-cleanup",
+        "当前短句先强调再清理。",
+        end_actions=[end_action],
+    )
+    current_cue[phase] = [setup_action]
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "prepare-current-cue-target",
+                    "先写出已有对象。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "existing-board-target",
+                            "content": r"\(x=1\)",
+                        }
+                    ],
+                ),
+                current_cue,
+            ]
+        )
+    )
+
+    LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._validate_narrative(
+        problem(),
+        narrative,
+        problem_focus_targets=[],
+    )
+
+
+@pytest.mark.parametrize(
+    ("phase", "setup_action", "end_action"),
+    (
+        (
+            "lead_actions",
+            {
+                "surface": "problem",
+                "type": "focus",
+                "target": "problem-math-001",
+            },
+            {
+                "surface": "problem",
+                "type": "clear_focus",
+                "target": "problem-math-001",
+            },
+        ),
+        (
+            "start_actions",
+            {
+                "surface": "problem",
+                "type": "emphasize",
+                "target": "problem-math-001",
+                "emphasis_style": "red",
+            },
+            {
+                "surface": "problem",
+                "type": "fade",
+                "target": "problem-math-001",
+            },
+        ),
+    ),
+)
+def test_problem_end_cleanup_accepts_state_from_current_cue(
+    phase,
+    setup_action,
+    end_action,
+):
+    current_cue = sync_cue_payload(
+        "current-problem-cleanup",
+        "当前短句先强调再清理。",
+        end_actions=[end_action],
+    )
+    current_cue[phase] = [setup_action]
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload([current_cue])
+    )
+
+    LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._validate_narrative(
+        problem(),
+        narrative,
+        problem_focus_targets=[
+            ProblemFocusTarget(
+                target_id="problem-math-001",
+                math_text="x^2-5x+6=0",
+                ordinal=1,
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "end_action",
+    (
+        {"type": "fade"},
+        {"type": "clear_focus"},
+    ),
+)
+def test_sync_cue_end_action_requires_matching_active_state(end_action):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "invalid-end-action",
+                    "写出这一行。",
+                    start_actions=[
+                        {
+                            "surface": "board",
+                            "type": "write",
+                            "target": "board-line-001",
+                            "content": r"\(x=1\)",
+                        }
+                    ],
+                    end_actions=[
+                        {
+                            "surface": "board",
+                            "target": "board-line-001",
+                            **end_action,
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="活动状态"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "end_action",
+    (
+        {"type": "fade"},
+        {"type": "clear_focus"},
+    ),
+)
+def test_sync_cue_problem_end_action_requires_matching_active_state(
+    end_action,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "invalid-problem-end-action",
+                    "观察题面中的式子。",
+                    end_actions=[
+                        {
+                            "surface": "problem",
+                            "target": "problem-math-001",
+                            **end_action,
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError, match="活动状态"):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=[
+                ProblemFocusTarget(
+                    target_id="problem-math-001",
+                    math_text="x^2-5x+6=0",
+                    ordinal=1,
+                )
+            ],
+        )
+
+
+def test_cue_route_requires_frozen_equation_in_start_action():
+    narrative_payload = cue_narrative_payload(
+        [
+            sync_cue_payload(
+                "route-in-wrong-phase",
+                "整理后得到二分之一。",
+                lead_actions=[
+                    {
+                        "surface": "board",
+                        "type": "write",
+                        "target": "route-result-lead",
+                        "content": r"\(m-n=\frac{1}{2}\)",
+                    }
+                ],
+                start_actions=[
+                    {
+                        "surface": "board",
+                        "type": "write",
+                        "target": "route-result-start",
+                        "content": "这里只是占位说明",
+                    }
+                ],
+            )
+        ]
+    )
+    narrative_payload["method_introduction"]["method_name"] = "代入法"
+    narrative = NarrativeDraft.model_validate(narrative_payload)
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        {
+            "task_summary": "代入已知根并整理目标",
+            "target": "m-n",
+            "assumptions": ["n不为零"],
+            "reference_conclusion": "m-n=1/2",
+            "method_name": "代入法",
+            "reasoning_steps": [
+                {
+                    "step_id": "reach-conclusion",
+                    "statement_before": "2n-2m+1=0",
+                    "operation_explanation": "移项并除以二",
+                    "statement_after": "m-n=1/2",
+                }
+            ],
+            "check_requests": [],
+            "audit_notes": [],
+        },
+        "1/2",
+    )
+
+    with pytest.raises(
+        LessonQualityError,
+        match="结构化板书覆盖冻结路线",
+    ):
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative_route(
+            narrative,
+            freeze_grounded_route(brief, []),
+        )
+
+
+def test_narrative_sync_cue_allows_voice_only_without_synthetic_actions():
+    moment = NarrativeMoment.model_validate(
+        {
+            "moment_id": "moment-voice-only",
+            "purpose": "口头总结",
+            "sync_cues": [
+                sync_cue_payload(
+                    "voice-only",
+                    "这一步只需要口头提醒。",
+                )
+            ],
+            "interaction_intent": None,
+        }
+    )
+
+    assert moment.spoken_narration == "这一步只需要口头提醒。"
+    assert moment.sync_cues[0].lead_actions == []
+    assert moment.sync_cues[0].start_actions == []
+    assert moment.sync_cues[0].end_actions == []
 
 
 def materials_payload():
@@ -173,7 +1427,7 @@ def grounding_payload(
 
 
 def grounded_narrative_payload():
-    return {
+    payload = {
         "title": "把已知根代回原方程",
         "learning_goal": "会用已知根满足原方程这一条件求参数关系。",
         "opening": "题目给出的2n是一个根，所以代回原方程后等式成立。",
@@ -249,6 +1503,7 @@ def grounded_narrative_payload():
         ],
         "summary": "已知某个式子是根，就把它代回原方程，再使用题目条件整理目标。",
     }
+    return migrate_legacy_moments_to_sync_cues(payload)
 
 
 def grounded_materials_payload():
@@ -458,8 +1713,140 @@ def test_director_contract_is_strictly_narrative_only():
     assert "interaction_intent" in schema["$defs"]["NarrativeMoment"][
         "properties"
     ]
-    assert "不得包含 interaction 字段" in DIRECTOR_SYSTEM
+    assert "不得包含独立 narration、board_actions 或 interaction 字段" in (
+        DIRECTOR_SYSTEM
+    )
     assert "不得输出 transfer_item" in DIRECTOR_SYSTEM
+
+
+def test_director_sync_cue_target_context_is_safe_projection():
+    payload = json.loads(
+        director_prompt(
+            problem(),
+            ["2", "3"],
+            problem_focus_targets=[
+                ProblemFocusTarget(
+                    target_id="problem-math-001",
+                    math_text="x^2-5x+6=0",
+                    display_mode=False,
+                    ordinal=1,
+                )
+            ],
+        )
+    )
+
+    assert payload["problem_focus_targets"] == [
+        {
+            "target_id": "problem-math-001",
+            "math_text": "x^2-5x+6=0",
+            "display_mode": False,
+        }
+    ]
+    assert "ordinal" not in payload["problem_focus_targets"][0]
+
+
+def test_reviewer_sync_cue_target_context_is_safe_projection():
+    payload = json.loads(
+        reviewer_prompt(
+            problem(),
+            LessonDraft.model_validate(valid_draft()),
+            problem_focus_targets=[
+                ProblemFocusTarget(
+                    target_id="problem-math-001",
+                    math_text="x^2-5x+6=0",
+                    display_mode=False,
+                    ordinal=1,
+                )
+            ],
+        )
+    )
+
+    assert payload["problem_focus_targets"] == [
+        {
+            "target_id": "problem-math-001",
+            "math_text": "x^2-5x+6=0",
+            "display_mode": False,
+        }
+    ]
+    assert "ordinal" not in payload["problem_focus_targets"][0]
+    assert "offset" not in json.dumps(
+        payload["problem_focus_targets"],
+        ensure_ascii=False,
+    )
+    assert problem().reference_answer not in json.dumps(
+        payload["problem_focus_targets"],
+        ensure_ascii=False,
+    )
+
+
+def test_sync_cue_agent_contracts_make_cues_authoritative_and_safe():
+    for system_prompt in (
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+    ):
+        assert "sync_cues" in system_prompt
+        assert "spoken_text" in system_prompt
+
+    combined = "\n".join(
+        (DIRECTOR_SYSTEM, REVIEWER_SYSTEM, REVISION_SYSTEM)
+    )
+    assert "START actions" in combined
+    assert "problem target IDs" in combined
+    assert "CSS" in combined
+    assert "character offsets" in combined
+    assert "视觉动作可以为空" in combined
+
+
+def test_sync_cue_problem_targets_are_compiled_once_and_reused(
+    monkeypatch,
+):
+    target = ProblemFocusTarget(
+        target_id="problem-math-001",
+        math_text="x^2-5x+6=0",
+        display_mode=False,
+        ordinal=1,
+    )
+    compile_calls = []
+
+    def fake_compile_problem_focus_targets(source):
+        compile_calls.append(source)
+        return [target]
+
+    monkeypatch.setattr(
+        "app.generation.compile_problem_focus_targets",
+        fake_compile_problem_focus_targets,
+    )
+    client = FakeClient([valid_draft(), approved_review()])
+
+    asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert compile_calls == [problem().problem_text]
+    director_payload = json.loads(client.all_calls[0][1])
+    assert director_payload["problem_focus_targets"] == [
+        {
+            "target_id": "problem-math-001",
+            "math_text": "x^2-5x+6=0",
+            "display_mode": False,
+        }
+    ]
+    reviewer_payload = json.loads(
+        next(
+            user_prompt
+            for system_prompt, user_prompt in client.all_calls
+            if system_prompt == REVIEWER_SYSTEM
+        )
+    )
+    assert reviewer_payload["problem_focus_targets"] == [
+        {
+            "target_id": "problem-math-001",
+            "math_text": "x^2-5x+6=0",
+            "display_mode": False,
+        }
+    ]
 
 
 def test_materials_contract_is_small_and_receives_validated_narrative():
@@ -504,7 +1891,8 @@ def test_narrative_schema_bounds_tts_fields_lists_and_board_actions():
     schema = NarrativeDraft.model_json_schema()
     properties = schema["properties"]
     moment = schema["$defs"]["NarrativeMoment"]["properties"]
-    board_action = schema["$defs"]["NarrativeBoardAction"]["properties"]
+    cue = schema["$defs"]["NarrativeSyncCue"]["properties"]
+    visual_action = schema["$defs"]["SyncVisualAction"]["properties"]
     route_schema = MathRouteDraft.model_json_schema()
     math_step = route_schema["$defs"]["NarrativeMathStep"]["properties"]
 
@@ -515,10 +1903,15 @@ def test_narrative_schema_bounds_tts_fields_lists_and_board_actions():
     assert "math_steps" not in properties
     assert route_schema["properties"]["math_steps"]["maxItems"] == 16
     assert moment["purpose"]["maxLength"] == 120
-    assert moment["board_actions"]["maxItems"] == 12
+    assert moment["sync_cues"]["minItems"] == 1
+    assert moment["sync_cues"]["maxItems"] == 5
+    assert cue["spoken_text"]["maxLength"] == 90
+    assert cue["lead_actions"]["maxItems"] == 6
+    assert cue["start_actions"]["maxItems"] == 8
+    assert cue["end_actions"]["maxItems"] == 6
     assert math_step["state_before"]["maxItems"] == 4
     assert math_step["state_after"]["maxItems"] == 4
-    assert board_action["content"]["anyOf"][0]["maxLength"] == 500
+    assert visual_action["content"]["anyOf"][0]["maxLength"] == 500
 
 
 def oversized_narrative_payload():
@@ -533,13 +1926,20 @@ def oversized_narrative_payload():
             if index == 0
             else None
         )
-        moment["board_actions"] = [
-            {
-                "type": "write",
-                "target": f"target-{action_index}",
-                "content": "x" * 500,
-            }
-            for action_index in range(12)
+        moment["sync_cues"] = [
+            sync_cue_payload(
+                f"large-cue-{index}",
+                "继续推导。",
+                start_actions=[
+                    {
+                        "surface": "board",
+                        "type": "write",
+                        "target": f"target-{index}-{action_index}",
+                        "content": "x" * 500,
+                    }
+                    for action_index in range(8)
+                ],
+            )
         ]
         moments.append(moment)
     payload["moments"] = moments
@@ -588,7 +1988,10 @@ def test_compose_deep_copies_nested_narrative_board_actions():
     draft.moments[0].board_actions[0].target = "mutated-target"
 
     assert narrative.model_dump() == before
-    assert narrative.moments[0].board_actions[0].target != "mutated-target"
+    assert (
+        narrative.moments[0].sync_cues[0].start_actions[0].target
+        != "mutated-target"
+    )
 
 
 def test_service_composes_materials_before_reviewer_and_reviewer_sees_whole_draft():
@@ -1012,7 +2415,7 @@ def test_checker_exception_softly_degrades_each_grounding_check():
 
 def test_grounded_director_must_cover_route_steps_in_order():
     invalid = grounded_narrative_payload()
-    invalid["moments"][1]["board_actions"][0]["content"] = (
+    first_cue(invalid["moments"][1])["start_actions"][0]["content"] = (
         "这里省略关键式子"
     )
     client = FakeClient(
@@ -1065,19 +2468,21 @@ def test_grounded_route_accepts_equivalent_unicode_and_latex_board_notation():
         narrative["moments"][2],
         narrative["moments"][3],
     ]
-    narrative["moments"][0]["board_actions"][0]["content"] = (
+    first_cue(narrative["moments"][0])["start_actions"][0]["content"] = (
         r"\(4n^2 - 4mn + 2n = 0\)"
     )
-    narrative["moments"][1]["board_actions"][0]["content"] = (
+    first_cue(narrative["moments"][1])["start_actions"][0]["content"] = (
         r"\(4n - 4m + 2 = 0\)"
     )
-    narrative["moments"][2]["board_actions"] = [
+    first_cue(narrative["moments"][2])["start_actions"] = [
         {
+            "surface": "board",
             "type": "transform",
             "target": "conclusion",
             "content": r"\(m - n = \frac{1}{2}\)",
         },
         {
+            "surface": "board",
             "type": "write",
             "target": "reference-conclusion",
             "content": r"\(\frac{1}{2}\)",
@@ -1290,7 +2695,7 @@ def symbolic_route_with_steps(math_steps):
 
 def test_symbolic_director_must_cover_route_step():
     narrative = narrative_payload()
-    narrative["moments"][1]["board_actions"][0]["content"] = (
+    first_cue(narrative["moments"][1])["start_actions"][0]["content"] = (
         "这里省略已验证的因式分解结果"
     )
     verified, route = symbolic_route_with_steps(valid_draft()["math_steps"])
@@ -1329,9 +2734,10 @@ def test_symbolic_director_must_cover_route_steps_in_order():
         valid_draft()["math_steps"][0],
     ]
     narrative = narrative_payload()
-    narrative["moments"][1]["board_actions"].insert(
+    first_cue(narrative["moments"][1])["start_actions"].insert(
         0,
         {
+            "surface": "board",
             "type": "write",
             "target": "subtracted-state",
             "content": "x^2-5x=-6",
@@ -1354,7 +2760,9 @@ def test_symbolic_director_must_cover_route_steps_in_order():
 
 def test_pre_interaction_explicit_correct_answer_announcement_is_rejected():
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = "正确答案就是负二和负三。"
+    first_cue(narrative["moments"][0])["spoken_text"] = (
+        "正确答案就是负二和负三。"
+    )
     materials = materials_payload()
     materials["interactions"][0]["interaction"]["options"][0][
         "label"
@@ -1371,7 +2779,7 @@ def test_pre_interaction_explicit_correct_answer_announcement_is_rejected():
 
 def test_pre_interaction_correct_option_id_is_rejected():
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = (
+    first_cue(narrative["moments"][0])["spoken_text"] = (
         "这一题应选negative-two-negative-three。"
     )
     materials = materials_payload()
@@ -1400,7 +2808,7 @@ def test_pre_interaction_explicit_short_option_syntax_is_rejected(
     announcement,
 ):
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = announcement
+    first_cue(narrative["moments"][0])["spoken_text"] = announcement
     materials = materials_payload()
     interaction = materials["interactions"][0]["interaction"]
     interaction["expected_answer"] = "A"
@@ -1419,7 +2827,7 @@ def test_pre_interaction_explicit_short_option_syntax_is_rejected(
 
 def test_pre_interaction_bare_letter_without_option_syntax_is_allowed():
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = (
+    first_cue(narrative["moments"][0])["spoken_text"] = (
         "先记录字母A代表的量，再选择正确答案。"
     )
     materials = materials_payload()
@@ -1451,7 +2859,7 @@ def test_pre_interaction_short_option_id_in_math_expression_is_allowed(
     narration,
 ):
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = narration
+    first_cue(narrative["moments"][0])["spoken_text"] = narration
     materials = materials_payload()
     interaction = materials["interactions"][0]["interaction"]
     interaction["expected_answer"] = "A"
@@ -1471,7 +2879,7 @@ def test_pre_interaction_short_option_id_in_math_expression_is_allowed(
 
 def test_pre_interaction_explicit_short_numeric_option_is_rejected():
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = "答案是2。"
+    first_cue(narrative["moments"][0])["spoken_text"] = "答案是2。"
     materials = materials_payload()
     interaction = materials["interactions"][0]["interaction"]
     interaction["expected_answer"] = "2"
@@ -1490,9 +2898,7 @@ def test_pre_interaction_explicit_short_numeric_option_is_rejected():
 
 def test_pre_interaction_math_delimiters_do_not_hide_answer_announcement():
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = (
-        r"答案为 \( -2 \) 和 \( -3 \)。"
-    )
+    first_cue(narrative["moments"][0])["spoken_text"] = "答案为-2和-3。"
     materials = materials_payload()
     client = FakeClient([narrative, materials, copy.deepcopy(materials)])
 
@@ -1504,8 +2910,9 @@ def test_pre_interaction_math_delimiters_do_not_hide_answer_announcement():
 
 def test_pre_interaction_formula_reuse_without_answer_claim_is_allowed():
     narrative = narrative_payload()
-    narrative["moments"][0]["board_actions"].append(
+    first_cue(narrative["moments"][0])["start_actions"].append(
         {
+            "surface": "board",
             "type": "write",
             "target": "candidate-factor-pair",
             "content": r"\(-2\) 和 \(-3\)",
@@ -1524,8 +2931,10 @@ def test_pre_interaction_formula_reuse_without_answer_claim_is_allowed():
 
 def test_symbolic_route_cannot_be_covered_by_narration_only():
     narrative = narrative_payload()
-    narrative["moments"][1]["narration"] = "这里口头提到(x-2)(x-3)=0。"
-    narrative["moments"][1]["board_actions"][0]["content"] = (
+    first_cue(narrative["moments"][1])["spoken_text"] = (
+        "这里口头提到(x-2)(x-3)=0。"
+    )
+    first_cue(narrative["moments"][1])["start_actions"][0]["content"] = (
         "板书没有写出路线事实"
     )
     verified, route = symbolic_route_with_steps(valid_draft()["math_steps"])
@@ -1541,7 +2950,7 @@ def test_symbolic_route_cannot_be_covered_by_narration_only():
 
 def test_symbolic_route_rejects_negative_example_substring_as_evidence():
     narrative = narrative_payload()
-    narrative["moments"][1]["board_actions"][0]["content"] = (
+    first_cue(narrative["moments"][1])["start_actions"][0]["content"] = (
         "错误示例不要写成(x-2)(x-3)=0"
     )
     verified, route = symbolic_route_with_steps(valid_draft()["math_steps"])
@@ -1575,7 +2984,9 @@ def test_interaction_prompt_cannot_announce_correct_label():
 
 def test_pre_interaction_label_then_answer_cue_is_rejected():
     narrative = narrative_payload()
-    narrative["moments"][0]["narration"] = "负二和负三就是正确答案。"
+    first_cue(narrative["moments"][0])["spoken_text"] = (
+        "负二和负三就是正确答案。"
+    )
     materials = materials_payload()
     materials["interactions"][0]["interaction"]["options"][0][
         "label"

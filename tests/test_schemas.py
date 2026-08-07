@@ -1245,8 +1245,7 @@ def test_lesson_moment_combines_micro_explanation_actions_and_interaction():
             BoardAction(
                 type="annotate",
                 target="factor_pair",
-                annotation="circle",
-                content="-2, -3",
+                annotation="underline",
             ),
         ],
         interaction=Interaction(
@@ -1263,9 +1262,28 @@ def test_lesson_moment_combines_micro_explanation_actions_and_interaction():
         "focus",
         "annotate",
     ]
-    assert moment.board_actions[1].annotation == "circle"
+    assert moment.board_actions[1].annotation == "underline"
     assert moment.interaction is not None
     assert moment.interaction.kind == "expression"
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "legacy action is not losslessly representable as "
+            "SyncVisualAction"
+        ),
+    ):
+        LessonMoment(
+            purpose="拒绝有损旧标注",
+            narration="观察这一步。",
+            board_actions=[
+                BoardAction(
+                    type="annotate",
+                    target="factor_pair",
+                    annotation="circle",
+                )
+            ],
+        )
 
 
 def test_lesson_moment_rejects_narration_longer_than_90_characters():

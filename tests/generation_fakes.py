@@ -31,24 +31,36 @@ def cover_symbolic_narrative_route(response, user_prompt):
     ]
     steps.append(route["final_conclusion"])
     available = sum(
-        12 - len(moment.get("board_actions", []))
+        8 - len(cue.get("start_actions", []))
         for moment in covered["moments"]
+        for cue in moment.get("sync_cues", [])
     )
     if available < len(steps):
         return covered
 
     moment_index = 0
+    cue_index = 0
     for index, content in enumerate(steps, start=1):
         while len(
-            covered["moments"][moment_index].get("board_actions", [])
-        ) >= 12:
-            moment_index += 1
-        board_actions = covered["moments"][moment_index].setdefault(
-            "board_actions",
+            covered["moments"][moment_index]["sync_cues"][
+                cue_index
+            ].get("start_actions", [])
+        ) >= 8:
+            cue_index += 1
+            if cue_index >= len(
+                covered["moments"][moment_index]["sync_cues"]
+            ):
+                moment_index += 1
+                cue_index = 0
+        start_actions = covered["moments"][moment_index][
+            "sync_cues"
+        ][cue_index].setdefault(
+            "start_actions",
             [],
         )
-        board_actions.append(
+        start_actions.append(
             {
+                "surface": "board",
                 "type": "write",
                 "target": f"fake-symbolic-route-step-{index}",
                 "content": content,
@@ -205,6 +217,7 @@ class FakeClient:
                 "moment_id",
                 f"moment-{index}",
             )
+            self._migrate_legacy_moment(moment)
             interaction = moment.pop("interaction", None)
             if interaction is not None:
                 moment["interaction_intent"] = (
@@ -225,6 +238,36 @@ class FakeClient:
                 "transfer_item": transfer_item,
             }
         return narrative
+
+    @staticmethod
+    def _migrate_legacy_moment(moment):
+        if "sync_cues" in moment:
+            return
+        narration = moment.pop("narration")
+        legacy_actions = moment.pop("board_actions", [])
+        start_actions = []
+        for action in legacy_actions:
+            migrated = copy.deepcopy(action)
+            migrated["surface"] = "board"
+            if migrated["type"] == "clear" and migrated.get("target"):
+                migrated["type"] = "clear_focus"
+            if migrated["type"] in {
+                "write",
+                "transform",
+                "focus",
+                "annotate",
+                "fade",
+                "reveal",
+                "clear_focus",
+            }:
+                start_actions.append(migrated)
+        moment["sync_cues"] = [
+            {
+                "cue_id": f"{moment['moment_id']}-cue-001",
+                "spoken_text": narration,
+                "start_actions": start_actions,
+            }
+        ]
 
     @staticmethod
     def _extract_materials(response):
