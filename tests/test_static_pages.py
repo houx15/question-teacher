@@ -1555,7 +1555,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260807-2"' in html
+    assert 'src="/static/lesson.js?v=20260807-3"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -1586,7 +1586,7 @@ def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
     source = page_client().get("/static/lesson.js").text
 
     assert '} from "./runtime-core.mjs?v=20260807-2";' in source
-    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-2";' in source
+    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-3";' in source
     assert "applySyncVisualAction" in source
     assert "let cuePlayer = null;" in source
     assert "cuePlayer = new CuePlayer({" in source

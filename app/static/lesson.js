@@ -13,7 +13,7 @@ import {
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs?v=20260807-2";
-import { CuePlayer } from "./cue-player.mjs?v=20260807-2";
+import { CuePlayer } from "./cue-player.mjs?v=20260807-3";
 import {
   mathTextToPlainText,
   renderMathText,
