@@ -10,7 +10,7 @@ import {
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs";
-import { mathTextToPlainText, renderMathText } from "./math-text.mjs";
+import { mathTextToPlainText, renderMathText } from "./math-text.mjs?v=20260807-1";
 
 
 const dom = {

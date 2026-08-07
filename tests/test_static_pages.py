@@ -895,7 +895,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js"' in html
+    assert 'src="/static/lesson.js?v=20260807-1"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -904,7 +904,8 @@ def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
     source = page_client().get("/static/lesson.js").text
 
     assert (
-        'import { mathTextToPlainText, renderMathText } from "./math-text.mjs";'
+        'import { mathTextToPlainText, renderMathText } from '
+        '"./math-text.mjs?v=20260807-1";'
         in source
     )
     assert "renderMathText(dom.title, lesson.title)" in source
@@ -934,7 +935,8 @@ def test_choice_buttons_use_nonempty_plain_text_accessible_names():
     source = page_client().get("/static/lesson.js").text
 
     assert (
-        'import { mathTextToPlainText, renderMathText } from "./math-text.mjs";'
+        'import { mathTextToPlainText, renderMathText } from '
+        '"./math-text.mjs?v=20260807-1";'
         in source
     )
     assert "for (const [optionIndex, option] of" in source

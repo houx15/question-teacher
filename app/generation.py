@@ -1492,12 +1492,6 @@ class LessonGenerationService:
         teaching_route: FrozenTeachingRoute,
         draft: LessonDraft,
     ) -> None:
-        evidence = self._normalize_grounded_text(" ".join(review.evidence))
-        conclusion = self._normalize_grounded_text(
-            teaching_route.final_conclusion
-        )
-        if not evidence or conclusion not in evidence:
-            raise LessonQualityError("审稿证据没有定位参考结论。")
         transfer_review = review.grounded_transfer_review
         transfer_item = draft.transfer_item
         if transfer_review is None:

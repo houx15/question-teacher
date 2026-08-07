@@ -1262,6 +1262,19 @@ def test_grounded_approved_review_rejects_generic_conclusion_only_evidence():
         )
 
 
+def test_grounded_approved_review_accepts_empty_general_evidence_when_transfer_evidence_is_complete():
+    review = grounded_approved_review()
+    review["evidence"] = []
+
+    lesson, _ = asyncio.run(
+        generate_grounded_lesson(
+            review_responses=[review],
+        )
+    )
+
+    assert lesson.validation_report["review_status"] == "approved"
+
+
 def symbolic_route_with_steps(math_steps):
     verified = _VerifiedMathRoute.freeze(
         MathRouteDraft.model_validate({"math_steps": math_steps}),

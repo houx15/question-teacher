@@ -33,30 +33,45 @@ function mathSegment(value, displayMode) {
 
 
 function explicitMathSegments(value) {
-  const delimiterToken = /\\([()[\]])/g;
+  const delimiterToken = /\\([()[\]])|\$\$|\$/g;
   const tokens = [];
   let active = null;
   let match;
 
   while ((match = delimiterToken.exec(value)) !== null) {
-    const token = match[1];
-    if (token === "(" || token === "[") {
-      if (active) return null;
-      active = { token, index: match.index, contentStart: delimiterToken.lastIndex };
+    const rawToken = match[0];
+    if (rawToken.startsWith("$")) {
+      let precedingBackslashes = 0;
+      for (
+        let index = match.index - 1;
+        index >= 0 && value[index] === "\\";
+        index -= 1
+      ) {
+        precedingBackslashes += 1;
+      }
+      if (precedingBackslashes % 2 === 1) continue;
+    }
+
+    const token = match[1] ?? rawToken;
+    if (active) {
+      if (token !== active.closingToken) return null;
+      tokens.push({
+        start: active.index,
+        end: delimiterToken.lastIndex,
+        value: value.slice(active.contentStart, match.index),
+        displayMode: active.displayMode,
+      });
+      active = null;
       continue;
     }
 
-    if (!active || (active.token === "(" ? token !== ")" : token !== "]")) {
-      return null;
-    }
-
-    tokens.push({
-      start: active.index,
-      end: delimiterToken.lastIndex,
-      value: value.slice(active.contentStart, match.index),
-      displayMode: active.token === "[",
-    });
-    active = null;
+    if (token === ")" || token === "]") return null;
+    active = {
+      closingToken: token === "(" ? ")" : token === "[" ? "]" : token,
+      index: match.index,
+      contentStart: delimiterToken.lastIndex,
+      displayMode: token === "[" || token === "$$",
+    };
   }
 
   if (active) return null;

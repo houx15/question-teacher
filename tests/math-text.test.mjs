@@ -75,6 +75,37 @@ test("explicit inline and display delimiters preserve surrounding text", () => {
 });
 
 
+test("dollar delimiters render common pasted LaTeX question text", () => {
+  assert.deepEqual(
+    mathSegments(
+      String.raw`若$2n$ ($n\ne 0$)是方程$x^2-2mx+2n=0$的根`,
+    ),
+    [
+      { type: "text", value: "若" },
+      { type: "math", value: "2n", displayMode: false },
+      { type: "text", value: " (" },
+      { type: "math", value: String.raw`n\ne 0`, displayMode: false },
+      { type: "text", value: ")是方程" },
+      {
+        type: "math",
+        value: "x^2-2mx+2n=0",
+        displayMode: false,
+      },
+      { type: "text", value: "的根" },
+    ],
+  );
+  assert.deepEqual(mathSegments(String.raw`结果是$$\frac{1}{2}$$。`), [
+    { type: "text", value: "结果是" },
+    {
+      type: "math",
+      value: String.raw`\frac{1}{2}`,
+      displayMode: true,
+    },
+    { type: "text", value: "。" },
+  ]);
+});
+
+
 test("legacy equation after Chinese instruction becomes an inline math segment", () => {
   assert.deepEqual(mathSegments("解方程 x^2-6x+5=0"), [
     { type: "text", value: "解方程 " },
@@ -149,6 +180,12 @@ test("malformed explicit delimiters remain safe plain text", () => {
   ]);
   assert.deepEqual(mathSegments("这里有未闭合的\\[x^2 + 1，原文保留"), [
     { type: "text", value: "这里有未闭合的\\[x^2 + 1，原文保留" },
+  ]);
+  assert.deepEqual(mathSegments("价格$100，原文保留"), [
+    { type: "text", value: "价格$100，原文保留" },
+  ]);
+  assert.deepEqual(mathSegments(String.raw`价格\$100 和 \$200`), [
+    { type: "text", value: String.raw`价格\$100 和 \$200` },
   ]);
 });
 
