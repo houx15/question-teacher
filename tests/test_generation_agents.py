@@ -33,6 +33,7 @@ from app.schemas import (
 )
 from app.teaching_route import (
     TeachingRouteEvidenceError,
+    freeze_grounded_route,
     freeze_symbolic_route,
 )
 from tests.generation_fakes import FakeClient
@@ -955,17 +956,18 @@ def test_supported_quadratic_keeps_symbolic_agent_order():
     assert REFERENCE_GROUNDING_SYSTEM not in client.system_prompts
 
 
-def test_failed_linked_check_blocks_with_safe_input_error():
-    with pytest.raises(
-        LessonInputError,
-        match="参考材料中的推导存在明确矛盾",
-    ):
-        asyncio.run(
-            generate_grounded_lesson(
-                passed_checks=[],
-                failed_linked_checks=["back-check"],
-            )
+def test_model_proposed_failed_linked_check_softly_degrades():
+    lesson, _ = asyncio.run(
+        generate_grounded_lesson(
+            passed_checks=[],
+            failed_linked_checks=["back-check"],
         )
+    )
+
+    assert lesson.validation_report["verification_mode"] == (
+        "reference_grounded"
+    )
+    assert lesson.validation_report["consistency_status"] == "warning"
 
 
 def test_unsupported_check_softly_degrades():
@@ -1030,6 +1032,72 @@ def test_grounded_director_must_cover_route_steps_in_order():
                 grounded_problem("一段参考解析")
             )
         )
+
+
+def test_grounded_route_accepts_equivalent_unicode_and_latex_board_notation():
+    grounding = grounding_payload()
+    grounding["target"] = "求m-n的值"
+    grounding["reference_conclusion"] = "1/2"
+    grounding["reasoning_steps"] = [
+        {
+            "step_id": "substitute-root",
+            "statement_before": "2n是原方程的根",
+            "operation_explanation": "把x=2n代入原方程",
+            "statement_after": "4n² - 4mn + 2n = 0",
+        },
+        {
+            "step_id": "use-nonzero",
+            "statement_before": "4n² - 4mn + 2n = 0，且n≠0",
+            "operation_explanation": "等式两边同时除以n",
+            "statement_after": "4n - 4m + 2 = 0",
+        },
+        {
+            "step_id": "reach-conclusion",
+            "statement_before": "4n - 4m + 2 = 0",
+            "operation_explanation": "移项整理",
+            "statement_after": "m - n = 1/2",
+        },
+    ]
+
+    narrative = grounded_narrative_payload()
+    narrative["moments"] = [
+        narrative["moments"][0],
+        narrative["moments"][2],
+        narrative["moments"][3],
+    ]
+    narrative["moments"][0]["board_actions"][0]["content"] = (
+        r"\(4n^2 - 4mn + 2n = 0\)"
+    )
+    narrative["moments"][1]["board_actions"][0]["content"] = (
+        r"\(4n - 4m + 2 = 0\)"
+    )
+    narrative["moments"][2]["board_actions"] = [
+        {
+            "type": "transform",
+            "target": "conclusion",
+            "content": r"\(m - n = \frac{1}{2}\)",
+        },
+        {
+            "type": "write",
+            "target": "reference-conclusion",
+            "content": r"\(\frac{1}{2}\)",
+        },
+    ]
+
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        grounding,
+        "1/2",
+    )
+    route = freeze_grounded_route(brief, [])
+    narrative_draft = NarrativeDraft.model_validate(narrative)
+
+    LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._validate_narrative_route(
+        narrative_draft,
+        route,
+    )
 
 
 def test_revision_keeps_grounded_route_fingerprint():

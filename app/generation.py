@@ -56,7 +56,6 @@ from app.problem_capability import (
 )
 from app.teaching_route import (
     FrozenTeachingRoute,
-    TeachingRouteContradiction,
     TeachingRouteEvidenceError,
     TeachingRouteIntegrityError,
     TeachingRouteMode,
@@ -562,8 +561,6 @@ class LessonGenerationService:
             results.append(result)
         try:
             return freeze_grounded_route(brief, results)
-        except TeachingRouteContradiction as error:
-            raise LessonInputError(str(error)) from None
         except TeachingRouteEvidenceError:
             raise LessonQualityError("参考教学路线证据无效。") from None
 
@@ -1543,11 +1540,53 @@ class LessonGenerationService:
 
     @staticmethod
     def _normalize_grounded_text(value: str) -> str:
+        normalized = value.translate(
+            str.maketrans(
+                {
+                    "×": "*",
+                    "÷": "/",
+                    "−": "-",
+                    "－": "-",
+                    "–": "-",
+                    "—": "-",
+                    "＋": "+",
+                }
+            )
+        )
+        normalized = re.sub(
+            r"\\(?:left|right|,|;|!|quad|qquad)",
+            "",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\\(?:dfrac|tfrac|frac)"
+            r"\{([A-Za-z0-9.+\-]+)\}"
+            r"\{([A-Za-z0-9.+\-]+)\}",
+            r"\1/\2",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\\(?:dfrac|tfrac|frac)"
+            r"([A-Za-z0-9])([A-Za-z0-9])",
+            r"\1/\2",
+            normalized,
+        )
+        superscript_digits = str.maketrans(
+            "⁰¹²³⁴⁵⁶⁷⁸⁹",
+            "0123456789",
+        )
+        normalized = re.sub(
+            r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+",
+            lambda match: "^" + match.group().translate(
+                superscript_digits
+            ),
+            normalized,
+        )
         return re.sub(
             r"[\s$\\()\[\]{}，。；：,;:]",
             "",
-            value,
-        ).replace("\\frac", "")
+            normalized,
+        )
 
     @staticmethod
     def _resolved_method_display_name(

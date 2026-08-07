@@ -27,10 +27,6 @@ class TeachingRouteConsistency(str, Enum):
     WARNING = "warning"
 
 
-class TeachingRouteContradiction(ValueError):
-    """A reproducible conclusion-linked contradiction in reference material."""
-
-
 class TeachingRouteEvidenceError(ValueError):
     """Check evidence is incomplete or bound to another request."""
 
@@ -117,15 +113,6 @@ def freeze_grounded_route(
         grounding_brief.check_requests,
         check_results,
     )
-    if any(
-        evidence["status"] == ClaimStatus.FAILED.value
-        and evidence["conclusion_linked"]
-        for evidence in check_evidence
-    ):
-        raise TeachingRouteContradiction(
-            "参考材料中的推导存在明确矛盾。"
-        )
-
     has_passed_conclusion_check = any(
         evidence["status"] == ClaimStatus.PASSED.value
         and evidence["conclusion_linked"]
@@ -139,11 +126,11 @@ def freeze_grounded_route(
     consistency = (
         TeachingRouteConsistency.WARNING
         if any(
-            evidence["status"] == ClaimStatus.UNSUPPORTED.value
-            or (
-                evidence["status"] == ClaimStatus.FAILED.value
-                and not evidence["conclusion_linked"]
-            )
+            evidence["status"]
+            in {
+                ClaimStatus.UNSUPPORTED.value,
+                ClaimStatus.FAILED.value,
+            }
             for evidence in check_evidence
         )
         else TeachingRouteConsistency.CONSISTENT

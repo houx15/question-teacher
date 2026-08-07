@@ -9,7 +9,6 @@ from app.generation import LessonQualityError, _VerifiedMathRoute
 from app.schemas import MathRouteDraft, ReferenceGroundingBrief
 from app.teaching_route import (
     TeachingRouteConsistency,
-    TeachingRouteContradiction,
     TeachingRouteEvidenceError,
     TeachingRouteMode,
     freeze_grounded_route,
@@ -169,13 +168,12 @@ def test_passed_unlinked_check_does_not_upgrade_grounded_mode():
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
 
 
-def test_failed_conclusion_linked_check_is_contradiction():
+def test_model_proposed_failed_linked_check_creates_warning():
     brief, result = checked_brief(ClaimStatus.FAILED)
-    with pytest.raises(
-        TeachingRouteContradiction,
-        match="参考材料中的推导存在明确矛盾",
-    ):
-        freeze_grounded_route(brief, [result])
+    route = freeze_grounded_route(brief, [result])
+
+    assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    assert route.consistency == TeachingRouteConsistency.WARNING
 
 
 @pytest.mark.parametrize(

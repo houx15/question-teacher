@@ -806,11 +806,12 @@ def test_readme_documents_reference_grounded_scope_and_parameter_example():
 
     for boundary in (
         "参考材料依据",
-        "不是自动批改系统",
-        "严格符号校验",
-        "结构化模型审阅",
-        "可复现的数学矛盾",
-        "仅保留在服务端",
+            "不是自动批改系统",
+            "严格符号校验",
+            "结构化模型审阅",
+            "严格符号路径重现了数学矛盾",
+            "局部检查 `failed`",
+            "仅保留在服务端",
     ):
         assert boundary in readme
 
