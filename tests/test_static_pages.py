@@ -1561,6 +1561,13 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     assert 'class="sidebar"' not in html
 
 
+def test_versioned_lesson_module_remains_cacheable():
+    response = page_client().get("/static/lesson.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") != "no-cache"
+
+
 def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
     source = page_client().get("/static/lesson.js").text
 
