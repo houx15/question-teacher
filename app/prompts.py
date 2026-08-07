@@ -1,6 +1,7 @@
 import json
 from typing import List, Optional, Sequence
 
+from app.problem_focus import required_lead_emphasis
 from app.schemas import (
     LessonDraft,
     MAX_NARRATIVE_SERIALIZED_BYTES,
@@ -337,8 +338,13 @@ teaching_route，创作一条完整、连贯、学生能听懂的
    已存在的 target；start_actions 只能包含 write、transform、focus、emphasize、annotate、reveal，
    并按列表顺序创建或引用 target；end_actions 只能包含 clear_focus、fade。
    end_actions 只能清理当前 cue 的 lead_actions 或 start_actions 已激活的同一 target；
-7. 视觉动作可以为空，只有确实增加教学价值时才添加。禁止 `[[red:...]]` 等任意高亮
-   标记、HTML、CSS、selectors、character offsets、颜色值、坐标、字号或动画参数；
+7. 视觉动作可以为空，只有确实增加教学价值时才添加。若输入中的
+   required_lead_emphasis_target 非 null，它是唯一必做的题面强调：必须在某个 cue 的
+   lead_actions 中添加 surface=problem、type=emphasize 且 target 精确等于该值，
+   同一个 cue 的 spoken_text 必须提及 required_lead_emphasis_spoken_token，使强调发生在
+   该 cue 的口播开始前；start_actions、focus、其他 target 或其他 cue 都不能替代。
+   除此之外视觉动作仍可为空。禁止 `[[red:...]]` 等任意高亮标记、HTML、CSS、
+   selectors、character offsets、颜色值、坐标、字号或动画参数；
 8. 重点动作必须指向对理解有帮助的局部语义对象。需要强调内部的系数、符号、
    运算或条件时，先将该局部写成独立 target。emphasis_style 只能是 highlight、underline、red；
    annotation 只能是 underline、arrow、bracket、label。
@@ -482,6 +488,10 @@ student_definition 最多 36 个字符，target_form 最多 80 个字符，
 why_it_helps 最多 32 个字符；不能省略 why_it_helps，也不能从句中截断来凑长度。
 sync_cues 是讲述与动作的唯一权威来源；visual action 可以为空。动作公式和 summary
 使用 `\\( ... \\)` 或 `\\[ ... \\]`，spoken_text 必须是自然口语中文且禁止 LaTeX。
+若输入中的 required_lead_emphasis_target 非 null，必须在某个 cue 的 lead_actions 中
+添加 surface=problem、type=emphasize 且 target 精确等于该值，使强调发生在该 cue 的
+口播开始前；同一个 cue 的 spoken_text 必须提及 required_lead_emphasis_spoken_token。
+start_actions、focus、其他 target 或其他 cue 都不能替代。若为 null，题面强调可选。
 problem actions 只引用给定 problem target IDs；board target 只在 start_actions 中按列表顺序
 由 write/transform 创建。禁止 HTML、CSS、selectors、character offsets、任意高亮标记和颜色值。
 emphasis_style 只能是 highlight、underline、red；
@@ -869,6 +879,26 @@ def _problem_focus_targets_context(
     ]
 
 
+def _required_lead_emphasis_context(
+    problem_focus_targets: Optional[Sequence[ProblemFocusTarget]],
+) -> dict:
+    requirement = required_lead_emphasis(
+        problem_focus_targets or ()
+    )
+    return {
+        "required_lead_emphasis_target": (
+            requirement.target_id
+            if requirement is not None
+            else None
+        ),
+        "required_lead_emphasis_spoken_token": (
+            requirement.spoken_token
+            if requirement is not None
+            else None
+        ),
+    }
+
+
 def director_prompt(
     problem: ProblemInput,
     solution_strings: List[str],
@@ -897,6 +927,9 @@ def director_prompt(
         {
             "problem": _safe_problem_context(problem),
             "problem_focus_targets": _problem_focus_targets_context(
+                problem_focus_targets
+            ),
+            **_required_lead_emphasis_context(
                 problem_focus_targets
             ),
             "teaching_route": route_context,
@@ -1103,6 +1136,9 @@ def revision_prompt(
         {
             "problem": _safe_problem_context(problem),
             "problem_focus_targets": _problem_focus_targets_context(
+                problem_focus_targets
+            ),
+            **_required_lead_emphasis_context(
                 problem_focus_targets
             ),
             "reference_material_audit": (

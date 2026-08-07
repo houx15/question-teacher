@@ -66,7 +66,10 @@ from app.problem_capability import (
     ProblemCapabilityProbe,
     ProblemIntakeStatus,
 )
-from app.problem_focus import compile_problem_focus_targets
+from app.problem_focus import (
+    compile_problem_focus_targets,
+    required_lead_emphasis,
+)
 from app.teaching_route import (
     FrozenTeachingRoute,
     TeachingRouteEvidenceError,
@@ -83,6 +86,32 @@ StageCallback = Callable[
 ]
 MomentWithSyncCues = Union[NarrativeMoment, LessonMoment]
 ActionKey = Tuple[str, str]
+MISSING_REQUIRED_LEAD_EMPHASIS_ERROR = (
+    "教学主线缺少题面关键对象的前置强调。"
+)
+_MATH_TOKEN_CONTINUATION_CHARACTER = (
+    "A-Za-z0-9_^¹²³\u2070-\u209f"
+)
+
+
+def _spoken_text_mentions_token(
+    spoken_text: str,
+    token: str,
+) -> bool:
+    normalized_text = re.sub(r"\s+", "", spoken_text).casefold()
+    normalized_token = re.sub(r"\s+", "", token).casefold()
+    return (
+        re.search(
+            (
+                rf"(?<![{_MATH_TOKEN_CONTINUATION_CHARACTER}])"
+                rf"{re.escape(normalized_token)}"
+                rf"(?![{_MATH_TOKEN_CONTINUATION_CHARACTER}])"
+            ),
+            normalized_text,
+        )
+        is not None
+    )
+
 
 REQUIRED_METHODS = {
     "factor": {
@@ -1167,14 +1196,38 @@ class LessonGenerationService:
         ] = None,
     ) -> None:
         self._validate_narrative_size(narrative)
+        resolved_problem_focus_targets = (
+            compile_problem_focus_targets(problem.problem_text)
+            if problem_focus_targets is None
+            else problem_focus_targets
+        )
         self._validate_board_action_references(
             narrative.moments,
-            (
-                compile_problem_focus_targets(problem.problem_text)
-                if problem_focus_targets is None
-                else problem_focus_targets
-            ),
+            resolved_problem_focus_targets,
         )
+        required_emphasis = required_lead_emphasis(
+            resolved_problem_focus_targets
+        )
+        if (
+            required_emphasis is not None
+            and not any(
+                _spoken_text_mentions_token(
+                    cue.spoken_text,
+                    required_emphasis.spoken_token,
+                )
+                and any(
+                    action.surface == "problem"
+                    and action.type == "emphasize"
+                    and action.target == required_emphasis.target_id
+                    for action in cue.lead_actions
+                )
+                for moment in narrative.moments
+                for cue in moment.sync_cues
+            )
+        ):
+            raise LessonQualityError(
+                MISSING_REQUIRED_LEAD_EMPHASIS_ERROR
+            )
         expected_method_name = (
             teaching_route.method_name
             if teaching_route is not None

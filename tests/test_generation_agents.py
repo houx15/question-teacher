@@ -26,6 +26,7 @@ from app.prompts import (
     materials_prompt,
     reference_grounding_prompt,
     reviewer_prompt,
+    revision_prompt,
 )
 from app.schemas import (
     BoardAction,
@@ -37,6 +38,7 @@ from app.schemas import (
     NarrativeMoment,
     ProblemFocusTarget,
     ReferenceGroundingBrief,
+    ReviewDecision,
 )
 from app.teaching_route import (
     TeachingRouteEvidenceError,
@@ -122,6 +124,39 @@ def migrate_legacy_moments_to_sync_cues(payload):
 
 def first_cue(moment):
     return moment["sync_cues"][0]
+
+
+def required_emphasis_targets():
+    return [
+        ProblemFocusTarget(
+            target_id="problem-math-001",
+            math_text="2n",
+            display_mode=False,
+            ordinal=1,
+        ),
+        ProblemFocusTarget(
+            target_id="problem-math-002",
+            math_text="x^2-2mx+2n=0",
+            display_mode=False,
+            ordinal=2,
+        ),
+    ]
+
+
+def add_required_lead_emphasis(payload):
+    cue = first_cue(payload["moments"][0])
+    cue["spoken_text"] = (
+        "先看题目给出的2n，再完成当前推理。"
+    )
+    cue["lead_actions"] = [
+        {
+            "surface": "problem",
+            "type": "emphasize",
+            "target": "problem-math-001",
+            "emphasis_style": "highlight",
+        }
+    ]
+    return payload
 
 
 _LEGACY_COMPATIBILITY_ERROR = (
@@ -534,6 +569,253 @@ def test_cue_target_rejects_unknown_problem_target():
             narrative,
             problem_focus_targets=[],
         )
+
+
+@pytest.mark.parametrize(
+    "action_phases",
+    (
+        {},
+        {
+            "lead_actions": [
+                {
+                    "surface": "problem",
+                    "type": "focus",
+                    "target": "problem-math-001",
+                }
+            ]
+        },
+        {
+            "start_actions": [
+                {
+                    "surface": "problem",
+                    "type": "emphasize",
+                    "target": "problem-math-001",
+                    "emphasis_style": "highlight",
+                }
+            ]
+        },
+        {
+            "lead_actions": [
+                {
+                    "surface": "problem",
+                    "type": "emphasize",
+                    "target": "problem-math-002",
+                    "emphasis_style": "highlight",
+                }
+            ]
+        },
+    ),
+    ids=(
+        "missing",
+        "lead-focus-only",
+        "start-emphasis",
+        "second-target-emphasis",
+    ),
+)
+def test_narrative_requires_exact_problem_emphasis_before_spoken_explanation(
+    action_phases,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "explain-required-problem-target",
+                    "先看题目给出的已知量。",
+                    **action_phases,
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=required_emphasis_targets(),
+        )
+
+    assert str(exc_info.value) == (
+        "教学主线缺少题面关键对象的前置强调。"
+    )
+
+
+@pytest.mark.parametrize(
+    "spoken_text",
+    (
+        "先看题目给出的2n是已知量。",
+        "先看题目给出的2n，再完成推理。",
+        "先看题目给出的 2 N。",
+    ),
+)
+def test_narrative_accepts_exact_problem_emphasis_in_lead_actions(
+    spoken_text,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "explain-required-problem-target",
+                    spoken_text,
+                    lead_actions=[
+                        {
+                            "surface": "problem",
+                            "type": "emphasize",
+                            "target": "problem-math-001",
+                            "emphasis_style": "highlight",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._validate_narrative(
+        problem(),
+        narrative,
+        problem_focus_targets=required_emphasis_targets(),
+    )
+
+
+def test_required_problem_emphasis_cannot_be_moved_to_unrelated_final_cue():
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "explain-required-token",
+                    "先看题目给出的2n。",
+                ),
+                sync_cue_payload(
+                    "unrelated-final-summary",
+                    "最后总结刚才的推理。",
+                    lead_actions=[
+                        {
+                            "surface": "problem",
+                            "type": "emphasize",
+                            "target": "problem-math-001",
+                            "emphasis_style": "highlight",
+                        }
+                    ],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=required_emphasis_targets(),
+        )
+
+    assert str(exc_info.value) == (
+        "教学主线缺少题面关键对象的前置强调。"
+    )
+
+
+@pytest.mark.parametrize(
+    "spoken_text",
+    (
+        "这里讨论的是12n，不是目标量。",
+        "这里讨论的是2n²，不是目标量。",
+        "这里讨论的是2n₁，不是目标量。",
+    ),
+)
+def test_required_problem_emphasis_rejects_token_continuation(
+    spoken_text,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "mention-different-token",
+                    spoken_text,
+                    lead_actions=[
+                        {
+                            "surface": "problem",
+                            "type": "emphasize",
+                            "target": "problem-math-001",
+                            "emphasis_style": "highlight",
+                        }
+                    ],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LessonQualityError) as exc_info:
+        LessonGenerationService(
+            FakeClient([]),
+            MathEngine(),
+        )._validate_narrative(
+            problem(),
+            narrative,
+            problem_focus_targets=required_emphasis_targets(),
+        )
+
+    assert str(exc_info.value) == (
+        "教学主线缺少题面关键对象的前置强调。"
+    )
+
+
+@pytest.mark.parametrize(
+    "problem_focus_targets",
+    (
+        [
+            ProblemFocusTarget(
+                target_id="problem-math-001",
+                math_text="x^2-5x+6=0",
+                display_mode=False,
+                ordinal=1,
+            )
+        ],
+        [
+            ProblemFocusTarget(
+                target_id="problem-math-001",
+                math_text="x^2-5x+6=0",
+                display_mode=True,
+                ordinal=1,
+            ),
+            ProblemFocusTarget(
+                target_id="problem-math-002",
+                math_text="x=2",
+                display_mode=False,
+                ordinal=2,
+            ),
+        ],
+    ),
+    ids=("single-target", "display-first"),
+)
+def test_narrative_keeps_non_useful_problem_emphasis_optional(
+    problem_focus_targets,
+):
+    narrative = NarrativeDraft.model_validate(
+        cue_narrative_payload(
+            [
+                sync_cue_payload(
+                    "explain-without-whole-formula-marking",
+                    "直接说明这道题的已知条件。",
+                )
+            ]
+        )
+    )
+
+    LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+    )._validate_narrative(
+        problem(),
+        narrative,
+        problem_focus_targets=problem_focus_targets,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1745,6 +2027,55 @@ def test_director_sync_cue_target_context_is_safe_projection():
     assert "ordinal" not in payload["problem_focus_targets"][0]
 
 
+def test_director_and_revision_prompts_include_only_derived_emphasis_target():
+    narrative = NarrativeDraft.model_validate(narrative_payload())
+    review = ReviewDecision.model_validate(revision_review())
+
+    def build_director(targets):
+        return director_prompt(
+            problem(),
+            ["2", "3"],
+            problem_focus_targets=targets,
+        )
+
+    def build_revision(targets):
+        return revision_prompt(
+            problem(),
+            narrative,
+            review,
+            problem_focus_targets=targets,
+        )
+
+    single_target = required_emphasis_targets()[:1]
+    for build_prompt in (build_director, build_revision):
+        required_payload = json.loads(
+            build_prompt(required_emphasis_targets())
+        )
+        optional_payload = json.loads(build_prompt(single_target))
+
+        assert required_payload[
+            "required_lead_emphasis_target"
+        ] == "problem-math-001"
+        assert required_payload[
+            "required_lead_emphasis_spoken_token"
+        ] == "2n"
+        assert optional_payload[
+            "required_lead_emphasis_target"
+        ] is None
+        assert optional_payload[
+            "required_lead_emphasis_spoken_token"
+        ] is None
+        requirement_projection = {
+            key: value
+            for key, value in required_payload.items()
+            if key.startswith("required_lead_emphasis_")
+        }
+        assert requirement_projection == {
+            "required_lead_emphasis_target": "problem-math-001",
+            "required_lead_emphasis_spoken_token": "2n",
+        }
+
+
 def test_reviewer_sync_cue_target_context_is_safe_projection():
     payload = json.loads(
         reviewer_prompt(
@@ -1797,6 +2128,13 @@ def test_sync_cue_agent_contracts_make_cues_authoritative_and_safe():
     assert "CSS" in combined
     assert "character offsets" in combined
     assert "视觉动作可以为空" in combined
+    for system_prompt in (DIRECTOR_SYSTEM, REVISION_SYSTEM):
+        assert "required_lead_emphasis_target" in system_prompt
+        assert "surface=problem、type=emphasize" in system_prompt
+        assert "lead_actions" in system_prompt
+        assert "口播开始前" in system_prompt
+        assert "同一个 cue" in system_prompt
+        assert "spoken_text" in system_prompt
 
 
 def test_sync_cue_problem_targets_are_compiled_once_and_reused(
@@ -1944,6 +2282,49 @@ def oversized_narrative_payload():
         moments.append(moment)
     payload["moments"] = moments
     return payload
+
+
+def test_missing_required_problem_emphasis_retries_director_with_safe_error(
+    monkeypatch,
+):
+    missing = narrative_payload()
+    missing["opening"] = "PRIVATE_INVALID_DRAFT_MARKER"
+    corrected = add_required_lead_emphasis(narrative_payload())
+    monkeypatch.setattr(
+        "app.generation.compile_problem_focus_targets",
+        lambda _source: required_emphasis_targets(),
+    )
+    client = FakeClient(
+        [
+            missing,
+            corrected,
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["review_status"] == "approved"
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    retry_payload = json.loads(client.all_calls[1][1])
+    assert retry_payload["previous_validation_error"] == (
+        "教学主线缺少题面关键对象的前置强调。"
+    )
+    assert retry_payload["required_lead_emphasis_target"] == (
+        "problem-math-001"
+    )
+    assert retry_payload[
+        "required_lead_emphasis_spoken_token"
+    ] == "2n"
+    assert "PRIVATE_INVALID_DRAFT_MARKER" not in client.all_calls[1][1]
 
 
 def test_aggregate_narrative_size_gate_retries_once_with_safe_error():
@@ -2275,6 +2656,58 @@ def test_oversized_revision_retries_before_regenerating_materials():
     assert retry_payload["previous_validation_error"] == (
         "教学主线整体内容过长。"
     )
+
+
+def test_revision_missing_required_problem_emphasis_retries_safely(
+    monkeypatch,
+):
+    initial = add_required_lead_emphasis(narrative_payload())
+    missing_revision = narrative_payload()
+    missing_revision["opening"] = "PRIVATE_INVALID_REVISION_MARKER"
+    corrected_revision = add_required_lead_emphasis(
+        narrative_payload()
+    )
+    monkeypatch.setattr(
+        "app.generation.compile_problem_focus_targets",
+        lambda _source: required_emphasis_targets(),
+    )
+    client = FakeClient(
+        [
+            initial,
+            materials_payload(),
+            revision_review(),
+            missing_revision,
+            corrected_revision,
+            materials_payload(),
+            approved_review(),
+        ]
+    )
+
+    lesson = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate(problem())
+    )
+
+    assert lesson.validation_report["revision_count"] == 1
+    assert [call[0] for call in client.all_calls] == [
+        DIRECTOR_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+        REVISION_SYSTEM,
+        REVISION_SYSTEM,
+        MATERIALS_SYSTEM,
+        REVIEWER_SYSTEM,
+    ]
+    retry_payload = json.loads(client.all_calls[4][1])
+    assert retry_payload["previous_validation_error"] == (
+        "教学主线缺少题面关键对象的前置强调。"
+    )
+    assert retry_payload["required_lead_emphasis_target"] == (
+        "problem-math-001"
+    )
+    assert retry_payload[
+        "required_lead_emphasis_spoken_token"
+    ] == "2n"
+    assert "PRIVATE_INVALID_REVISION_MARKER" not in client.all_calls[4][1]
 
 
 def test_raw_reference_solution_is_only_sent_to_reference_auditor():
