@@ -1,5 +1,6 @@
 import {
   LessonRuntime,
+  applySyncVisualAction,
   boardActionAnnouncement,
   classifyInteractionControl,
   cloneBoard,
@@ -12,6 +13,7 @@ import {
   resolveInteractionPresentation,
   scheduleBoardActions,
 } from "./runtime-core.mjs";
+import { CuePlayer } from "./cue-player.mjs?v=20260807-1";
 import {
   mathTextToPlainText,
   renderMathText,
@@ -70,6 +72,7 @@ let feedbackAudio = null;
 let feedbackAudioFinalizer = null;
 let activeEvaluationController = null;
 let timeline = null;
+let cuePlayer = null;
 let beatToken = 0;
 let submissionSequence = 0;
 let started = false;
@@ -382,6 +385,92 @@ function renderActiveBoards() {
 }
 
 
+function isCueBeat(beat) {
+  return Array.isArray(beat?.sync_cues) && beat.sync_cues.length > 0;
+}
+
+
+function captureBeatSnapshot() {
+  return {
+    baseBoard: cloneBoard(runtime.baseBoard),
+    problem: cloneBoard(visualState.problem),
+  };
+}
+
+
+function restoreBeatSnapshot(snapshot) {
+  if (!snapshot) return;
+  runtime.baseBoard = cloneBoard(snapshot.baseBoard);
+  visualState = {
+    ...visualState,
+    board: cloneBoard(snapshot.baseBoard),
+    problem: cloneBoard(snapshot.problem),
+  };
+  runtime.layerStack = [];
+  renderProblemFocus();
+  renderActiveBoards();
+}
+
+
+function applyCueActions(actions) {
+  let nextState = {
+    board: runtime.activeBoard,
+    problem: visualState.problem,
+  };
+  let announcement = "";
+  for (const action of actions) {
+    const reduced = applySyncVisualAction(nextState, action);
+    if (action?.surface === "problem") {
+      nextState = {
+        board: nextState.board,
+        problem: reduced.problem,
+      };
+    } else if (action?.surface === "board") {
+      nextState = {
+        board: reduced.board,
+        problem: nextState.problem,
+      };
+      announcement = boardActionAnnouncement(nextState.board, action);
+    }
+  }
+  if (runtime.layerStack.length > 0) {
+    runtime.layerStack[runtime.layerStack.length - 1].board = nextState.board;
+  } else {
+    runtime.baseBoard = nextState.board;
+  }
+  visualState = {
+    ...visualState,
+    board: nextState.board,
+    problem: nextState.problem,
+  };
+  renderProblemFocus();
+  renderActiveBoards();
+  if (announcement) dom.announcer.textContent = announcement;
+}
+
+
+cuePlayer = new CuePlayer({
+  applyActions: applyCueActions,
+  fallbackDuration: (cue) => fallbackDurationForNarration(
+    cue?.spoken_text || "",
+  ),
+  onCueText: (spokenText) => {
+    runtime.markAudioStarted();
+    dom.shell.classList.add("is-speaking");
+    renderMathText(dom.narration, spokenText);
+    updateControls();
+  },
+  onBeatComplete: () => finishBeat(beatToken),
+  onAudioUnavailable: () => {
+    dom.announcer.textContent = "语音暂不可用，将按讲解节奏继续。";
+  },
+  restoreSnapshot: (snapshot) => {
+    restoreBeatSnapshot(snapshot);
+    prepareBeatLayer(runtime.current());
+  },
+});
+
+
 function stopMedia() {
   submissionSequence += 1;
   interactionSubmitting = false;
@@ -389,6 +478,7 @@ function stopMedia() {
   activeEvaluationController = null;
   timeline?.clear();
   timeline = null;
+  cuePlayer?.stop();
   if (primaryAudio) {
     primaryAudio.pause();
     primaryAudio.removeAttribute("src");
@@ -450,7 +540,12 @@ function setPaused(nextPaused) {
   dom.pause.classList.toggle("is-paused", paused);
   dom.pauseLabel.textContent = paused ? "继续" : "暂停";
   dom.shell.classList.toggle("is-speaking", !paused);
-  if (paused) {
+  const beat = runtime.current();
+  if (isCueBeat(beat) && paused) {
+    cuePlayer.pause();
+  } else if (isCueBeat(beat)) {
+    cuePlayer.resume();
+  } else if (paused) {
     primaryAudio?.pause();
     timeline?.pause();
   } else {
@@ -472,7 +567,7 @@ function executeBoardAction(action, actionIndex, token) {
 }
 
 
-function scheduleActions(beat, durationMs, token) {
+function scheduleLegacyActions(beat, durationMs, token) {
   const fallback = fallbackDurationForNarration(beat.narration);
   const schedule = scheduleBoardActions(
     beat.board_actions || [],
@@ -488,13 +583,13 @@ function scheduleActions(beat, durationMs, token) {
 }
 
 
-function beginFallbackPlayback(beat, token) {
+function beginLegacyFallbackPlayback(beat, token) {
   const duration = fallbackDurationForNarration(beat.narration);
   timeline?.clear();
   timeline = new PausableTimeline();
   runtime.markAudioStarted();
   dom.shell.classList.add("is-speaking");
-  scheduleActions(beat, duration, token);
+  scheduleLegacyActions(beat, duration, token);
   timeline.schedule(() => finishBeat(token), duration);
   updateControls();
 }
@@ -521,9 +616,9 @@ function waitForMetadata(audio) {
 }
 
 
-async function beginBeatPlayback(beat, token) {
+async function beginLegacyBeatPlayback(beat, token) {
   if (!beat.audio_url) {
-    beginFallbackPlayback(beat, token);
+    beginLegacyFallbackPlayback(beat, token);
     return;
   }
 
@@ -537,14 +632,14 @@ async function beginBeatPlayback(beat, token) {
   try {
     await audio.play();
   } catch {
-    if (token === beatToken) beginFallbackPlayback(beat, token);
+    if (token === beatToken) beginLegacyFallbackPlayback(beat, token);
     return;
   }
 
   runtime.markAudioStarted();
   dom.shell.classList.add("is-speaking");
   timeline = new PausableTimeline();
-  scheduleActions(
+  scheduleLegacyActions(
     beat,
     Number.isFinite(durationSeconds) ? durationSeconds * 1000 : Number.NaN,
     token,
@@ -554,11 +649,16 @@ async function beginBeatPlayback(beat, token) {
     "error",
     () => {
       if (token !== beatToken) return;
-      beginFallbackPlayback(beat, token);
+      beginLegacyFallbackPlayback(beat, token);
     },
     { once: true },
   );
   updateControls();
+}
+
+
+function beginCueBeatPlayback(beat, snapshot) {
+  cuePlayer.playBeat(beat, { snapshot });
 }
 
 
@@ -592,14 +692,19 @@ function playCurrentBeat() {
   clearPointSelection();
 
   if (!beatSnapshots.has(beat.beat_id)) {
-    beatSnapshots.set(beat.beat_id, cloneBoard(runtime.baseBoard));
+    beatSnapshots.set(beat.beat_id, captureBeatSnapshot());
   }
+  const snapshot = beatSnapshots.get(beat.beat_id);
   prepareBeatLayer(beat);
   renderMathText(dom.purpose, beat.purpose);
-  renderMathText(dom.narration, beat.narration);
   dom.announcer.textContent = `第 ${runtime.currentIndex + 1} 段：${beat.purpose}`;
   updateControls();
-  beginBeatPlayback(beat, token);
+  if (Array.isArray(beat.sync_cues) && beat.sync_cues.length > 0) {
+    beginCueBeatPlayback(beat, snapshot);
+  } else {
+    renderMathText(dom.narration, beat.narration);
+    beginLegacyBeatPlayback(beat, token);
+  }
 }
 
 
@@ -621,7 +726,9 @@ function finishBeat(token) {
     return;
   }
   if (disposition === "auto_advance") {
-    timeline?.schedule(() => advanceBeat(), AUTO_ADVANCE_DELAY_MS);
+    timeline?.clear();
+    timeline = new PausableTimeline();
+    timeline.schedule(() => advanceBeat(), AUTO_ADVANCE_DELAY_MS);
   }
 }
 
@@ -659,7 +766,7 @@ function advanceBeat() {
 function restoreSnapshotForCurrentBeat() {
   const beat = runtime.current();
   const snapshot = beatSnapshots.get(beat.beat_id);
-  if (snapshot) runtime.baseBoard = cloneBoard(snapshot);
+  if (snapshot) restoreBeatSnapshot(snapshot);
   runtime.layerStack = [];
   renderActiveBoards();
 }
@@ -667,6 +774,21 @@ function restoreSnapshotForCurrentBeat() {
 
 function replayCurrentBeat() {
   if (!runtime || !started) return;
+  const beat = runtime.current();
+  if (isCueBeat(beat)) {
+    stopMedia();
+    runtime.audioState = "idle";
+    paused = false;
+    interactionVisible = false;
+    dom.pause.classList.remove("is-paused");
+    dom.pauseLabel.textContent = "暂停";
+    dom.interactionStage.hidden = true;
+    dom.interactionStage.classList.remove("is-point-select");
+    clearPointSelection();
+    cuePlayer.replay();
+    updateControls();
+    return;
+  }
   restoreSnapshotForCurrentBeat();
   runtime.audioState = "idle";
   playCurrentBeat();

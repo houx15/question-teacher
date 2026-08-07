@@ -922,6 +922,43 @@ def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
     assert "renderMathText(content, source)" in source
 
 
+def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
+    source = page_client().get("/static/lesson.js").text
+
+    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-1";' in source
+    assert "applySyncVisualAction" in source
+    assert "let cuePlayer = null;" in source
+    assert "cuePlayer = new CuePlayer({" in source
+    assert "Array.isArray(beat.sync_cues) && beat.sync_cues.length > 0" in source
+    assert "cuePlayer.playBeat(beat, { snapshot })" in source
+    assert "beginLegacyBeatPlayback(beat, token)" in source
+    assert "function scheduleLegacyActions(" in source
+    assert "scheduleBoardActions(" in source
+    assert "function applyCueActions(actions)" in source
+    assert "applySyncVisualAction(nextState, action)" in source
+    assert "renderProblemFocus();" in source
+    assert "renderActiveBoards();" in source
+    assert "baseBoard: cloneBoard(runtime.baseBoard)" in source
+    assert "problem: cloneBoard(visualState.problem)" in source
+    assert "onBeatComplete: () => finishBeat(beatToken)" in source
+    assert "onAudioUnavailable:" in source
+    assert "cuePlayer?.stop();" in source
+    assert "cuePlayer.pause();" in source
+    assert "cuePlayer.resume();" in source
+    cue_branch = source[
+        source.index("function beginCueBeatPlayback("):
+        source.index("function finishBeat(")
+    ]
+    assert "scheduleBoardActions(" not in cue_branch
+    assert "setTimeout(" not in cue_branch
+    assert "showInteraction(" not in cue_branch
+    finish_branch = source[
+        source.index("function finishBeat("):
+        source.index("function leaveTemporaryLayer(")
+    ]
+    assert "showInteraction(beat.interaction)" in finish_branch
+
+
 def test_choice_submission_passes_selected_option_without_exposing_answer_key():
     source = page_client().get("/static/lesson.js").text
 
