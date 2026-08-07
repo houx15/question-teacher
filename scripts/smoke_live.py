@@ -421,6 +421,9 @@ def _is_parameter_root_substitution(value: str) -> bool:
         "",
         _strip_outer_math_delimiters(value),
     ).replace("−", "-")
+    for spacing_command in (r"\,", r"\;", r"\!"):
+        compact = compact.replace(spacing_command, "")
+    compact = compact.replace("²", "^2").replace("^{2}", "^2")
     return compact == "4n^2-4mn+2n=0"
 
 

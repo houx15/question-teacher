@@ -313,6 +313,9 @@ def test_grounded_parameter_root_contract_requires_complete_cue_sync_evidence():
         r"$4n^2 - 4mn + 2n = 0$",
         r"\( 4n^2-4mn+2n=0 \)",
         r"\[4n^2 − 4mn + 2n = 0\]",
+        r"$4n^{2}-4mn+2n=0$",
+        "4n²−4mn+2n=0",
+        r"$4n^{2}\,-4mn\;+2n\!=0$",
     ),
 )
 def test_grounded_parameter_root_contract_accepts_safe_substitution_variants(
@@ -332,7 +335,14 @@ def test_grounded_parameter_root_contract_accepts_safe_substitution_variants(
         r"$14n^2-4mn+2n=0$",
         r"$4not^2-4mn+2n=0$",
         r"$4n^2-4mn+2n=1$",
+        r"$4n^2+4mn+2n=0$",
+        r"$5n^2-4mn+2n=0$",
+        r"$2n(2n-2m+1)=0$",
+        r"$4n^2-4mn+2n=0=0$",
         r"错误：$4n^2-4mn+2n=0$",
+        r"所以 $4n^2-4mn+2n=0$",
+        r"$4n^{\mathbf{2}}-4mn+2n=0$",
+        r"${4n^2-4mn+2n=0}$",
     ),
 )
 def test_grounded_parameter_root_contract_rejects_substring_equations(
