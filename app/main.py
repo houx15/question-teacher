@@ -106,7 +106,10 @@ def create_app(
         page = STATIC_ROOT / "index.html"
         if not page.is_file():
             raise HTTPException(status_code=404)
-        return FileResponse(page)
+        return FileResponse(
+            page,
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @application.get("/lesson/{lesson_id}", include_in_schema=False)
     async def lesson_page(lesson_id: str):

@@ -34,6 +34,40 @@
       </section>
 
       <section class="authoring-sheet" aria-label="创建讲解">
+        <aside id="saved-lesson-entry" class="saved-lesson-entry">
+          <div class="saved-lesson-heading">
+            <p class="archive-kicker">SAVED LESSON</p>
+            <h2>已有课程 ID？</h2>
+            <p>不用再次生成，输入保存的 ID 即可回到课堂。</p>
+          </div>
+          <form id="existing-lesson-form" novalidate>
+            <label class="sr-only" for="existing-lesson-id">课程 ID</label>
+            <div class="saved-lesson-control">
+              <input
+                id="existing-lesson-id"
+                name="lesson_id"
+                type="text"
+                maxlength="128"
+                pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                aria-describedby="existing-lesson-error"
+                placeholder="输入课程 ID"
+                required
+              >
+              <button type="submit">打开课程</button>
+            </div>
+            <p
+              id="existing-lesson-error"
+              class="saved-lesson-error"
+              role="alert"
+              aria-live="polite"
+              hidden
+            ></p>
+          </form>
+        </aside>
+
         <form id="lesson-form" novalidate>
           <div class="field-block field-problem">
             <label for="problem_text">
@@ -161,6 +195,45 @@
             返回修改题目
           </button>
         </section>
+
+        <section
+          id="generation-complete"
+          class="generation-complete"
+          aria-labelledby="completion-title"
+          tabindex="-1"
+          hidden
+        >
+          <div class="completion-seal" aria-hidden="true">存</div>
+          <p class="progress-eyebrow">LESSON READY</p>
+          <h2 id="completion-title">课程已保存</h2>
+          <p class="completion-lead">
+            这节讲解已经入库。请保存课程 ID，下次可直接打开，不必重新生成。
+          </p>
+          <label for="completed-lesson-id">课程 ID</label>
+          <div class="completed-id-row">
+            <input
+              id="completed-lesson-id"
+              type="text"
+              readonly
+              aria-describedby="copy-lesson-status"
+            >
+            <button id="copy-lesson-id" type="button">复制 ID</button>
+          </div>
+          <p
+            id="copy-lesson-status"
+            class="copy-lesson-status"
+            role="status"
+            aria-live="polite"
+          ></p>
+          <div class="completion-actions">
+            <a id="enter-completed-lesson" class="completion-primary" href="#">
+              进入课堂
+            </a>
+            <button id="create-another-lesson" class="text-button" type="button">
+              继续生成另一题
+            </button>
+          </div>
+        </section>
       </section>
 
       <footer class="entry-footer">
@@ -169,6 +242,6 @@
       </footer>
     </main>
 
-    <script type="module" src="/static/generate.js"></script>
+    <script type="module" src="/static/generate.js?v=20260810-1"></script>
   </body>
 </html>

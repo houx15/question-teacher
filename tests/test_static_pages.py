@@ -1493,6 +1493,7 @@ def test_generation_page_has_focused_authoring_form():
     response = page_client().get("/")
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
     html = response.text
     assert 'id="lesson-form"' in html
     assert 'name="problem_text"' in html
@@ -1507,9 +1508,45 @@ def test_generation_page_has_focused_authoring_form():
     assert 'id="model-status"' in html
     assert 'id="voice-status"' in html
     assert 'id="generation-progress"' in html
-    assert 'src="/static/generate.js"' in html
+    assert 'src="/static/generate.js?v=20260810-1"' in html
     assert "OPENAI_API_KEY" not in html
     assert "validation_report" not in html
+
+
+def test_generation_page_can_reopen_and_confirm_a_saved_lesson():
+    html = page_client().get("/").text
+
+    for element_id in (
+        "existing-lesson-form",
+        "existing-lesson-id",
+        "existing-lesson-error",
+        "generation-complete",
+        "completed-lesson-id",
+        "copy-lesson-id",
+        "copy-lesson-status",
+        "enter-completed-lesson",
+        "create-another-lesson",
+    ):
+        assert f'id="{element_id}"' in html
+
+    assert 'maxlength="128"' in html
+    assert 'pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"' in html
+    assert "课程已保存" in html
+
+
+def test_versioned_generation_module_remains_cacheable():
+    response = page_client().get("/static/generate.js?v=20260810-1")
+
+    assert response.status_code == 200
+    cache_directives = {
+        directive.partition("=")[0].strip().lower()
+        for directive in response.headers.get(
+            "cache-control",
+            "",
+        ).split(",")
+        if directive.strip()
+    }
+    assert cache_directives.isdisjoint({"no-cache", "no-store"})
 
 
 def test_generation_page_submits_optional_reference_solution():

@@ -1,5 +1,17 @@
+import { createSavedLessonActions } from "./generation-flow.mjs?v=20260810-1";
+
 const form = document.querySelector("#lesson-form");
+const savedLessonEntry = document.querySelector("#saved-lesson-entry");
+const existingLessonForm = document.querySelector("#existing-lesson-form");
+const existingLessonId = document.querySelector("#existing-lesson-id");
+const existingLessonError = document.querySelector("#existing-lesson-error");
 const progress = document.querySelector("#generation-progress");
+const completion = document.querySelector("#generation-complete");
+const completedLessonId = document.querySelector("#completed-lesson-id");
+const copyLessonButton = document.querySelector("#copy-lesson-id");
+const copyLessonStatus = document.querySelector("#copy-lesson-status");
+const enterCompletedLesson = document.querySelector("#enter-completed-lesson");
+const createAnotherButton = document.querySelector("#create-another-lesson");
 const progressTitle = document.querySelector("#progress-title");
 const progressDetail = document.querySelector("#progress-detail");
 const progressSteps = [...document.querySelectorAll("#progress-steps li")];
@@ -16,11 +28,12 @@ const STAGE_DETAILS = {
   "正在进行整篇审稿": "教研审稿正在检查整节课能否让学生跟上并思考。",
   "正在修订并编译课堂": "把审稿意见落实到完整讲解，并编排板书节奏。",
   "正在生成讲解语音": "最后为每个短讲解片段生成同步语音。",
-  "已完成": "课堂已经准备好，正在为你打开黑板。",
+  "已完成": "课堂已经准备好。",
 };
 
 let activeJob = null;
 let pollTimer = null;
+let lookupPending = false;
 
 
 function setServiceStatus(element, available, readyLabel, unavailableLabel) {
@@ -70,8 +83,17 @@ function setProgressStage(stage) {
 }
 
 
+function clearPolling() {
+  window.clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+
 function showProgress() {
+  clearPolling();
+  savedLessonEntry.hidden = true;
   form.hidden = true;
+  completion.hidden = true;
   progress.hidden = false;
   returnButton.hidden = true;
   formError.hidden = true;
@@ -80,10 +102,13 @@ function showProgress() {
 
 
 function restoreForm(message = "") {
-  clearTimeout(pollTimer);
+  clearPolling();
   activeJob = null;
   progress.hidden = true;
+  completion.hidden = true;
+  savedLessonEntry.hidden = false;
   form.hidden = false;
+  copyLessonStatus.textContent = "";
   formError.textContent = message;
   formError.hidden = !message;
   const submitButton = form.querySelector("button[type='submit']");
@@ -91,6 +116,54 @@ function restoreForm(message = "") {
   submitButton.querySelector("span").textContent = "开始生成讲解";
   if (message) formError.focus?.();
 }
+
+
+const savedLessonActions = createSavedLessonActions({
+  fetchImpl: (...args) => fetch(...args),
+  navigate: (path) => window.location.assign(path),
+  clipboard: window.navigator.clipboard || {
+    writeText: async () => {
+      throw new Error("clipboard unavailable");
+    },
+  },
+  view: {
+    showCompletion(lessonId, path) {
+      clearPolling();
+      activeJob = null;
+      progress.hidden = true;
+      form.hidden = true;
+      savedLessonEntry.hidden = true;
+      completion.hidden = false;
+      completedLessonId.value = lessonId;
+      enterCompletedLesson.href = path;
+      copyLessonStatus.textContent = "";
+      completion.focus?.();
+    },
+    setLookupPending(pending) {
+      lookupPending = pending;
+      const button = existingLessonForm.querySelector("button[type='submit']");
+      button.disabled = pending;
+      button.textContent = pending ? "正在查找" : "打开课程";
+      existingLessonForm.setAttribute("aria-busy", String(pending));
+    },
+    showLookupError(message) {
+      existingLessonError.textContent = message;
+      existingLessonError.hidden = !message;
+    },
+    showCopyStatus(message, success) {
+      copyLessonStatus.textContent = message;
+      copyLessonStatus.dataset.state = success ? "success" : "error";
+    },
+    restoreForm() {
+      restoreForm();
+      form.querySelector("textarea, input, select")?.focus();
+    },
+    selectCompletedLessonId() {
+      completedLessonId.focus();
+      completedLessonId.select();
+    },
+  },
+});
 
 
 async function safeJson(response) {
@@ -109,16 +182,11 @@ async function pollJob(jobId) {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
-    if (!response.ok) {
-      throw new Error("job unavailable");
-    }
+    if (!response.ok) throw new Error("job unavailable");
     const job = await response.json();
     setProgressStage(job.stage);
     if (job.status === "completed" && job.lesson_id) {
-      activeJob = null;
-      window.location.assign(
-        `/lesson/${encodeURIComponent(job.lesson_id)}`,
-      );
+      savedLessonActions.showCompletion(job.lesson_id);
       return;
     }
     if (job.status === "failed") {
@@ -143,6 +211,7 @@ form.addEventListener("submit", async (event) => {
   submitButton.disabled = true;
   submitButton.querySelector("span").textContent = "正在提交";
   formError.hidden = true;
+  completion.hidden = true;
 
   const data = new FormData(form);
   const method = String(data.get("required_method") || "").trim();
@@ -186,6 +255,18 @@ form.addEventListener("submit", async (event) => {
 });
 
 
+existingLessonForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (lookupPending) return;
+  await savedLessonActions.openExisting(existingLessonId.value);
+});
+
+copyLessonButton.addEventListener("click", () => {
+  savedLessonActions.copyLessonId(completedLessonId.value);
+});
+createAnotherButton.addEventListener("click", () => {
+  savedLessonActions.createAnother();
+});
 returnButton.addEventListener("click", () => restoreForm());
-window.addEventListener("beforeunload", () => clearTimeout(pollTimer));
+window.addEventListener("beforeunload", clearPolling);
 loadHealth();
