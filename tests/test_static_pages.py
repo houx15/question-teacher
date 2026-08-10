@@ -1469,6 +1469,42 @@ def test_readme_documents_reference_grounded_scope_and_parameter_example():
     assert "当前版本不可执行" not in readme
 
 
+def test_readme_documents_saved_lesson_id_lifecycle():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    for persistence_contract in (
+        "课程完成后",
+        "SQLite 持久化",
+        "`var/lessons.sqlite3`",
+        "`var/audio/{lesson_id}/`",
+        "生成任务仍只保存在内存",
+        "课程 ID 只会在持久化保存成功后",
+        "生成完成页",
+        "复制课程 ID",
+        "不会自动进入课堂",
+        "已有课程 ID",
+        "服务重启后",
+        "每次都会分配新的课程 ID",
+        "不按题目内容复用",
+        "账号、课程列表、删除和搜索",
+    ):
+        assert persistence_contract in readme
+
+
+def test_readme_documents_saved_lesson_backup_contract():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    for backup_contract in (
+        "删除数据库中的课程记录",
+        "删除对应的音频目录",
+        "停止服务",
+        "同时备份",
+        "SQLite sidecar",
+        "不要单独复制",
+    ):
+        assert backup_contract in readme
+
+
 def test_readme_documents_cue_sync_contract_and_evidence_boundaries():
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
 
