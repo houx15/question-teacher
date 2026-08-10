@@ -15,6 +15,7 @@ export function createSavedLessonActions({
   view,
 }) {
   let lookupSequence = 0;
+  let authoringLocked = false;
 
   function showCompletion(lessonId) {
     view.showCompletion(lessonId, lessonPath(lessonId));
@@ -25,7 +26,25 @@ export function createSavedLessonActions({
     view.setLookupPending(false);
   }
 
+  function lockForGeneration() {
+    if (authoringLocked) return;
+    cancelLookup();
+    authoringLocked = true;
+    view.setAuthoringLocked(true);
+  }
+
+  function unlockAuthoring() {
+    if (!authoringLocked) return;
+    authoringLocked = false;
+    view.setAuthoringLocked(false);
+  }
+
+  function isAuthoringLocked() {
+    return authoringLocked;
+  }
+
   async function openExisting(rawLessonId) {
+    if (authoringLocked) return;
     const requestSequence = ++lookupSequence;
     const lessonId = String(rawLessonId || "").trim();
     view.showLookupError("");
@@ -80,6 +99,7 @@ export function createSavedLessonActions({
 
   function createAnother() {
     cancelLookup();
+    unlockAuthoring();
     view.restoreForm();
   }
 
@@ -87,7 +107,10 @@ export function createSavedLessonActions({
     cancelLookup,
     copyLessonId,
     createAnother,
+    isAuthoringLocked,
+    lockForGeneration,
     openExisting,
     showCompletion,
+    unlockAuthoring,
   };
 }

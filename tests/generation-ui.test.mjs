@@ -23,6 +23,9 @@ function createHarness({ responses = [], copyError = null } = {}) {
     setLookupPending(pending) {
       views.push({ type: "lookup-pending", pending });
     },
+    setAuthoringLocked(locked) {
+      views.push({ type: "authoring-locked", locked });
+    },
     showLookupError(message) {
       views.push({ type: "lookup-error", message });
     },
@@ -212,6 +215,46 @@ test("starting a new generation cancels a pending saved lesson lookup", async ()
     [
       { type: "lookup-pending", pending: true },
       { type: "lookup-pending", pending: false },
+    ],
+  );
+});
+
+
+test("generation submission lock rejects lookups until authoring is restored", async () => {
+  const { createSavedLessonActions } = await loadGenerationUi();
+  let acceptGeneration;
+  const pendingGeneration = new Promise((resolve) => {
+    acceptGeneration = resolve;
+  });
+  const harness = createHarness({ responses: [{ ok: true, status: 200 }] });
+  const actions = createSavedLessonActions(harness);
+
+  actions.lockForGeneration();
+  const blockedLookup = actions.openExisting("old-lesson");
+  acceptGeneration({ job_id: "new-job" });
+  await pendingGeneration;
+  actions.showCompletion("new-lesson");
+  await blockedLookup;
+
+  assert.deepEqual(harness.fetchCalls, []);
+  assert.deepEqual(harness.navigations, []);
+  assert.deepEqual(
+    harness.views.filter((event) => event.type === "lookup-pending"),
+    [{ type: "lookup-pending", pending: false }],
+  );
+  assert.deepEqual(
+    harness.views.filter((event) => event.type === "authoring-locked"),
+    [{ type: "authoring-locked", locked: true }],
+  );
+
+  actions.createAnother();
+  await actions.openExisting("old-lesson");
+  assert.deepEqual(harness.navigations, ["/lesson/old-lesson"]);
+  assert.deepEqual(
+    harness.views.filter((event) => event.type === "authoring-locked"),
+    [
+      { type: "authoring-locked", locked: true },
+      { type: "authoring-locked", locked: false },
     ],
   );
 });

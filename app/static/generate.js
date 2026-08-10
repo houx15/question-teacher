@@ -34,6 +34,7 @@ const STAGE_DETAILS = {
 let activeJob = null;
 let pollTimer = null;
 let lookupPending = false;
+let authoringLocked = false;
 
 
 function setServiceStatus(element, available, readyLabel, unavailableLabel) {
@@ -102,6 +103,7 @@ function showProgress() {
 
 
 function restoreForm(message = "") {
+  savedLessonActions.unlockAuthoring();
   clearPolling();
   activeJob = null;
   progress.hidden = true;
@@ -142,9 +144,17 @@ const savedLessonActions = createSavedLessonActions({
     setLookupPending(pending) {
       lookupPending = pending;
       const button = existingLessonForm.querySelector("button[type='submit']");
-      button.disabled = pending;
+      button.disabled = pending || authoringLocked;
       button.textContent = pending ? "正在查找" : "打开课程";
       existingLessonForm.setAttribute("aria-busy", String(pending));
+    },
+    setAuthoringLocked(locked) {
+      authoringLocked = locked;
+      savedLessonEntry.hidden = locked;
+      existingLessonId.disabled = locked;
+      const button = existingLessonForm.querySelector("button[type='submit']");
+      button.disabled = locked || lookupPending;
+      existingLessonForm.setAttribute("aria-disabled", String(locked));
     },
     showLookupError(message) {
       existingLessonError.textContent = message;
@@ -206,7 +216,7 @@ async function pollJob(jobId) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!form.reportValidity()) return;
-  savedLessonActions.cancelLookup();
+  savedLessonActions.lockForGeneration();
 
   const submitButton = form.querySelector("button[type='submit']");
   submitButton.disabled = true;
@@ -258,7 +268,7 @@ form.addEventListener("submit", async (event) => {
 
 existingLessonForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (lookupPending) return;
+  if (lookupPending || savedLessonActions.isAuthoringLocked()) return;
   await savedLessonActions.openExisting(existingLessonId.value);
 });
 
