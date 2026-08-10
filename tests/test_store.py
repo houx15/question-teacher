@@ -97,15 +97,29 @@ def test_sqlite_store_restores_private_interaction_answer_after_restart(
 def test_sqlite_store_returns_none_for_missing_or_unsafe_lesson_ids(tmp_path):
     database_path = tmp_path / "lessons.sqlite3"
     store = MemoryStore(database_path)
-    unsafe_lesson = runtime_lesson().model_copy(
-        update={"lesson_id": "../lesson"}
-    )
-    store.save_lesson(unsafe_lesson)
 
     assert store.get_lesson("missing") is None
     assert store.get_lesson("../lesson") is None
     assert store.get_lesson("lesson/child") is None
     assert store.get_lesson(" lesson") is None
+
+
+@pytest.mark.parametrize("lesson_id", ["../lesson", "lesson/child", " lesson"])
+def test_sqlite_store_rejects_unsafe_lesson_id_before_writing(
+    tmp_path,
+    lesson_id,
+):
+    database_path = tmp_path / "nested" / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    unsafe_lesson = runtime_lesson().model_copy(
+        update={"lesson_id": lesson_id}
+    )
+
+    with pytest.raises(ValueError, match="^invalid lesson id$"):
+        store.save_lesson(unsafe_lesson)
+
+    assert not database_path.exists()
+    assert store._lessons == {}
 
 
 def test_sqlite_lookup_does_not_create_a_missing_database(tmp_path):
@@ -129,6 +143,27 @@ def test_sqlite_store_rejects_duplicate_lesson_id_without_overwriting(
 
     assert store.get_lesson(lesson.lesson_id) == lesson
     assert MemoryStore(database_path).get_lesson(lesson.lesson_id) == lesson
+
+
+def test_sqlite_store_does_not_translate_other_integrity_errors(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    lesson = runtime_lesson()
+    store.save_lesson(lesson)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_lesson_insert
+            BEFORE INSERT ON lessons
+            BEGIN
+                SELECT RAISE(ABORT, 'forced integrity failure');
+            END
+            """
+        )
+    other_lesson = lesson.model_copy(update={"lesson_id": "lesson-other"})
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced integrity failure"):
+        store.save_lesson(other_lesson)
 
 
 def test_sqlite_store_fails_closed_when_runtime_json_is_corrupt(tmp_path):

@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -17,7 +17,7 @@ _SAFE_LESSON_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 class MemoryStore:
     def __init__(
         self,
-        database_path: Optional[str | Path] = None,
+        database_path: Optional[Union[str, Path]] = None,
     ) -> None:
         self._jobs: Dict[str, GenerationJob] = {}
         self._lessons: Dict[str, RuntimeLesson] = {}
@@ -50,6 +50,9 @@ class MemoryStore:
             return self._jobs.get(job_id)
 
     def save_lesson(self, lesson: RuntimeLesson) -> None:
+        if _SAFE_LESSON_ID.fullmatch(lesson.lesson_id) is None:
+            raise ValueError("invalid lesson id")
+
         with self._lock:
             if self._database_path is not None:
                 self._save_lesson_to_database(lesson)
@@ -166,9 +169,8 @@ class MemoryStore:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                if (
-                    getattr(exc, "sqlite_errorcode", None)
-                    == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY
+                if str(exc) == (
+                    "UNIQUE constraint failed: lessons.lesson_id"
                 ):
                     raise ValueError("lesson id already exists") from exc
                 raise
