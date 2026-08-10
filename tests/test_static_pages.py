@@ -1535,18 +1535,30 @@ def test_generation_page_can_reopen_and_confirm_a_saved_lesson():
 
 
 def test_versioned_generation_module_remains_cacheable():
-    response = page_client().get("/static/generate.js?v=20260810-1")
+    client = page_client()
+    generate_response = client.get(
+        "/static/generate.js?v=20260810-1",
+    )
+    source = generate_response.text
+    assert (
+        'from "./generation-flow.mjs?v=20260810-1"'
+        in source
+    )
 
-    assert response.status_code == 200
-    cache_directives = {
-        directive.partition("=")[0].strip().lower()
-        for directive in response.headers.get(
-            "cache-control",
-            "",
-        ).split(",")
-        if directive.strip()
-    }
-    assert cache_directives.isdisjoint({"no-cache", "no-store"})
+    flow_response = client.get(
+        "/static/generation-flow.mjs?v=20260810-1",
+    )
+    for response in (generate_response, flow_response):
+        assert response.status_code == 200
+        cache_directives = {
+            directive.partition("=")[0].strip().lower()
+            for directive in response.headers.get(
+                "cache-control",
+                "",
+            ).split(",")
+            if directive.strip()
+        }
+        assert cache_directives.isdisjoint({"no-cache", "no-store"})
 
 
 def test_generation_page_submits_optional_reference_solution():

@@ -206,6 +206,7 @@ async function pollJob(jobId) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!form.reportValidity()) return;
+  savedLessonActions.cancelLookup();
 
   const submitButton = form.querySelector("button[type='submit']");
   submitButton.disabled = true;

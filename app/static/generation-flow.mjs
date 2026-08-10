@@ -20,6 +20,11 @@ export function createSavedLessonActions({
     view.showCompletion(lessonId, lessonPath(lessonId));
   }
 
+  function cancelLookup() {
+    lookupSequence += 1;
+    view.setLookupPending(false);
+  }
+
   async function openExisting(rawLessonId) {
     const requestSequence = ++lookupSequence;
     const lessonId = String(rawLessonId || "").trim();
@@ -74,11 +79,12 @@ export function createSavedLessonActions({
   }
 
   function createAnother() {
-    lookupSequence += 1;
+    cancelLookup();
     view.restoreForm();
   }
 
   return {
+    cancelLookup,
     copyLessonId,
     createAnother,
     openExisting,

@@ -192,6 +192,31 @@ test("stale lookup cannot navigate after a newer lookup", async () => {
 });
 
 
+test("starting a new generation cancels a pending saved lesson lookup", async () => {
+  const { createSavedLessonActions } = await loadGenerationUi();
+  let resolveLookup;
+  const pendingLookup = new Promise((resolve) => {
+    resolveLookup = resolve;
+  });
+  const harness = createHarness({ responses: [pendingLookup] });
+  const actions = createSavedLessonActions(harness);
+
+  const lookup = actions.openExisting("old-lesson");
+  actions.cancelLookup();
+  resolveLookup({ ok: true, status: 200 });
+  await lookup;
+
+  assert.deepEqual(harness.navigations, []);
+  assert.deepEqual(
+    harness.views.filter((event) => event.type === "lookup-pending"),
+    [
+      { type: "lookup-pending", pending: true },
+      { type: "lookup-pending", pending: false },
+    ],
+  );
+});
+
+
 test("copy gives confirmation and keeps a manual-copy fallback", async () => {
   const { createSavedLessonActions } = await loadGenerationUi();
   const successHarness = createHarness();
@@ -227,5 +252,8 @@ test("create another returns to the mutually exclusive authoring state", async (
 
   actions.createAnother();
 
-  assert.deepEqual(harness.views, [{ type: "restore-form" }]);
+  assert.deepEqual(harness.views, [
+    { type: "lookup-pending", pending: false },
+    { type: "restore-form" },
+  ]);
 });
