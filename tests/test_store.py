@@ -1,5 +1,7 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Barrier
 
 import pytest
 
@@ -206,6 +208,73 @@ def test_sqlite_store_fails_closed_when_runtime_json_is_corrupt(tmp_path):
         )
 
     assert MemoryStore(database_path).get_lesson(lesson.lesson_id) is None
+
+
+def test_sqlite_store_fails_closed_when_runtime_lesson_id_does_not_match(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    MemoryStore(database_path).save_lesson(lesson)
+    mismatched = lesson.model_copy(update={"lesson_id": "lesson-other"})
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE lessons SET runtime_json = ? WHERE lesson_id = ?",
+            (mismatched.model_dump_json(), lesson.lesson_id),
+        )
+    restarted = MemoryStore(database_path)
+
+    assert restarted.get_lesson(lesson.lesson_id) is None
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE lessons SET runtime_json = ? WHERE lesson_id = ?",
+            (lesson.model_dump_json(), lesson.lesson_id),
+        )
+    assert restarted.get_lesson(lesson.lesson_id) == lesson
+
+
+def test_sqlite_stores_atomically_reject_concurrent_duplicate_ids(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    lessons = [
+        runtime_lesson().model_copy(update={"summary": "writer one"}),
+        runtime_lesson().model_copy(update={"summary": "writer two"}),
+    ]
+    stores = [MemoryStore(database_path), MemoryStore(database_path)]
+    start = Barrier(2, timeout=2)
+
+    def save(store, lesson):
+        start.wait()
+        try:
+            store.save_lesson(lesson)
+        except ValueError as exc:
+            return "duplicate", str(exc)
+        return "saved", lesson.summary
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(save, store, lesson)
+            for store, lesson in zip(stores, lessons)
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert [status for status, _value in results].count("saved") == 1
+    assert [status for status, _value in results].count("duplicate") == 1
+    assert next(
+        value for status, value in results if status == "duplicate"
+    ) == "lesson id already exists"
+    saved_summary = next(
+        value for status, value in results if status == "saved"
+    )
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT runtime_json FROM lessons WHERE lesson_id = ?",
+            (lessons[0].lesson_id,),
+        ).fetchall()
+
+    assert len(rows) == 1
+    restored = RuntimeLesson.model_validate_json(rows[0][0])
+    assert restored.summary == saved_summary
 
 
 def test_sqlite_store_creates_parent_directories_and_expected_schema(tmp_path):

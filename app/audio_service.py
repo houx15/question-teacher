@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from app.lesson_ids import is_valid_lesson_id
 from app.schemas import RuntimeLesson, RuntimeSyncCue
 from app.tts_client import SpeechGenerationError
 
@@ -28,7 +29,10 @@ class LessonAudioService:
             )
 
     def _lesson_directory(self, lesson_id: str) -> Path:
-        self._validate_identifier(lesson_id)
+        if not is_valid_lesson_id(lesson_id):
+            raise SpeechGenerationError(
+                "Invalid audio asset identifier"
+            )
         root = self.audio_root.resolve()
         lesson_dir = root / lesson_id
         if lesson_dir.is_symlink():

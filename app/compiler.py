@@ -1,7 +1,7 @@
-import re
 from typing import Callable, Dict, List, Optional
 from uuid import uuid4
 
+from app.lesson_ids import is_valid_lesson_id
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import (
     BoardAction,
@@ -86,8 +86,6 @@ class LessonCompileError(RuntimeError):
 
 
 class LessonCompiler:
-    _SAFE_LESSON_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
-
     def __init__(
         self,
         lesson_id_factory: Optional[Callable[[], str]] = None,
@@ -298,9 +296,6 @@ class LessonCompiler:
                     "Unable to create a safe lesson id."
                 ) from None
 
-        if (
-            not isinstance(lesson_id, str)
-            or self._SAFE_LESSON_ID.fullmatch(lesson_id) is None
-        ):
+        if not is_valid_lesson_id(lesson_id):
             raise LessonCompileError("Unable to create a safe lesson id.")
         return lesson_id

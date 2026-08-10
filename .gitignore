@@ -7,4 +7,5 @@ var/audio/
 var/*.sqlite3
 var/*.sqlite3-wal
 var/*.sqlite3-shm
+var/*.sqlite3-journal
 node_modules/

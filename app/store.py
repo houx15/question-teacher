@@ -1,4 +1,3 @@
-import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,10 +7,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from app.lesson_ids import is_valid_lesson_id
 from app.schemas import GenerationJob, Interaction, RuntimeLesson
-
-
-_SAFE_LESSON_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 class MemoryStore:
@@ -50,7 +47,7 @@ class MemoryStore:
             return self._jobs.get(job_id)
 
     def save_lesson(self, lesson: RuntimeLesson) -> None:
-        if _SAFE_LESSON_ID.fullmatch(lesson.lesson_id) is None:
+        if not is_valid_lesson_id(lesson.lesson_id):
             raise ValueError("invalid lesson id")
 
         with self._lock:
@@ -59,7 +56,7 @@ class MemoryStore:
             self._lessons[lesson.lesson_id] = lesson
 
     def get_lesson(self, lesson_id: str) -> Optional[RuntimeLesson]:
-        if _SAFE_LESSON_ID.fullmatch(lesson_id) is None:
+        if not is_valid_lesson_id(lesson_id):
             return None
 
         with self._lock:
@@ -85,6 +82,8 @@ class MemoryStore:
             try:
                 lesson = RuntimeLesson.model_validate_json(row[0])
             except ValidationError:
+                return None
+            if lesson.lesson_id != lesson_id:
                 return None
             self._lessons[lesson_id] = lesson
             return lesson
