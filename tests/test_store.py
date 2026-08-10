@@ -166,6 +166,35 @@ def test_sqlite_store_does_not_translate_other_integrity_errors(tmp_path):
         store.save_lesson(other_lesson)
 
 
+def test_sqlite_store_does_not_trust_a_spoofed_duplicate_error_message(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    lesson = runtime_lesson()
+    store.save_lesson(lesson)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER spoof_duplicate_error
+            BEFORE INSERT ON lessons
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'UNIQUE constraint failed: lessons.lesson_id'
+                );
+            END
+            """
+        )
+    other_lesson = lesson.model_copy(update={"lesson_id": "lesson-other"})
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match=r"UNIQUE constraint failed: lessons\.lesson_id",
+    ):
+        store.save_lesson(other_lesson)
+
+
 def test_sqlite_store_fails_closed_when_runtime_json_is_corrupt(tmp_path):
     database_path = tmp_path / "lessons.sqlite3"
     lesson = runtime_lesson()

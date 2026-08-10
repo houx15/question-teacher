@@ -138,42 +138,44 @@ class MemoryStore:
                 )
                 """
             )
+            connection.commit()
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT 1 FROM lessons WHERE lesson_id = ?",
+                (lesson.lesson_id,),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError("lesson id already exists")
+
             required_method = getattr(
                 lesson.problem.required_method,
                 "value",
                 lesson.problem.required_method,
             )
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO lessons (
-                        lesson_id,
-                        problem_text,
-                        reference_answer,
-                        reference_solution_text,
-                        required_method,
-                        lesson_length,
-                        runtime_json,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        lesson.lesson_id,
-                        lesson.problem.problem_text,
-                        lesson.problem.reference_answer,
-                        lesson.problem.reference_solution_text,
-                        required_method,
-                        lesson.problem.lesson_length,
-                        lesson.model_dump_json(),
-                        datetime.now(timezone.utc).isoformat(),
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                if str(exc) == (
-                    "UNIQUE constraint failed: lessons.lesson_id"
-                ):
-                    raise ValueError("lesson id already exists") from exc
-                raise
+            connection.execute(
+                """
+                INSERT INTO lessons (
+                    lesson_id,
+                    problem_text,
+                    reference_answer,
+                    reference_solution_text,
+                    required_method,
+                    lesson_length,
+                    runtime_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lesson.lesson_id,
+                    lesson.problem.problem_text,
+                    lesson.problem.reference_answer,
+                    lesson.problem.reference_solution_text,
+                    required_method,
+                    lesson.problem.lesson_length,
+                    lesson.model_dump_json(),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
             connection.commit()
         except Exception:
             connection.rollback()
