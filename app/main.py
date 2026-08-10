@@ -20,6 +20,7 @@ APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT.parent
 STATIC_ROOT = APP_ROOT / "static"
 AUDIO_ROOT = PROJECT_ROOT / "var" / "audio"
+LESSON_DATABASE = PROJECT_ROOT / "var" / "lessons.sqlite3"
 
 
 def create_app(
@@ -30,9 +31,12 @@ def create_app(
     math_engine: Optional[MathEngine] = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
+    resolved_store = (
+        store if store is not None else MemoryStore(LESSON_DATABASE)
+    )
     services = ApiServices(
         settings=resolved_settings,
-        store=store or MemoryStore(),
+        store=resolved_store,
         math_engine=math_engine or MathEngine(),
         generator=generator,
         audio_service=audio_service,

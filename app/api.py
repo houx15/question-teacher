@@ -103,6 +103,7 @@ async def run_generation(
             lesson,
             on_stage=report_stage,
         )
+        # Expose the lesson ID only after its durable save succeeds.
         store.save_lesson(lesson)
         store.update_job(
             job_id,

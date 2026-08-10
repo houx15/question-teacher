@@ -14,7 +14,7 @@ from app.api import (
 from app.compiler import LessonCompiler
 from app.config import Settings
 from app.generation import LessonInputError
-from app.main import create_app
+from app.main import PROJECT_ROOT, create_app
 from app.schemas import (
     Interaction,
     InteractionOption,
@@ -37,9 +37,12 @@ def problem_input() -> ProblemInput:
     )
 
 
-def runtime_lesson(problem: ProblemInput) -> RuntimeLesson:
+def runtime_lesson(
+    problem: ProblemInput,
+    lesson_id: str = "lesson-1",
+) -> RuntimeLesson:
     return RuntimeLesson(
-        lesson_id="lesson-1",
+        lesson_id=lesson_id,
         problem=problem,
         title="测试课程",
         learning_goal="学会解方程",
@@ -122,6 +125,14 @@ class FakeAudioService:
         return lesson
 
 
+class SequentialIdGenerator(FakeGenerator):
+    async def generate(self, problem, on_stage=None):
+        lesson = await super().generate(problem, on_stage=on_stage)
+        return lesson.model_copy(
+            update={"lesson_id": f"lesson-{self.calls}"}
+        )
+
+
 class RecordingStore(MemoryStore):
     def __init__(self):
         super().__init__()
@@ -134,15 +145,33 @@ class RecordingStore(MemoryStore):
         return job
 
 
+class FailingLessonStore(RecordingStore):
+    def save_lesson(self, lesson):
+        del lesson
+        raise OSError("private database path")
+
+
 def build_client(**overrides):
     generator = overrides.pop("generator", FakeGenerator())
     audio_service = overrides.pop("audio_service", FakeAudioService())
+    overrides.setdefault("store", MemoryStore())
     app = create_app(
         generator=generator,
         audio_service=audio_service,
         **overrides,
     )
     return TestClient(app), generator, audio_service
+
+
+def test_create_app_defaults_to_persistent_lesson_database():
+    application = create_app(
+        generator=FakeGenerator(),
+        audio_service=FakeAudioService(),
+    )
+
+    assert application.state.store._database_path == (
+        PROJECT_ROOT / "var" / "lessons.sqlite3"
+    )
 
 
 def test_memory_store_revalidates_updates_without_partial_mutation():
@@ -276,6 +305,90 @@ def test_generation_failure_is_sanitized_and_has_no_lesson():
     assert "secret" not in str(job)
     assert "private" not in str(job)
     assert client.get("/api/lessons/lesson-1").status_code == 404
+
+
+def test_generation_does_not_return_id_when_persistence_fails():
+    store = FailingLessonStore()
+    client, _, _ = build_client(store=store)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+
+    assert response.status_code == 202
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+    assert job["status"] == "failed"
+    assert job["lesson_id"] is None
+    assert job["error"] == "课程生成失败，请稍后重试。"
+    assert "private database path" not in str(job)
+
+
+def test_new_app_instance_reads_persisted_lesson_and_interaction(
+    tmp_path,
+):
+    database = tmp_path / "lessons.sqlite3"
+    first_store = MemoryStore(database)
+    lesson, interaction = save_interaction_lesson(
+        first_store,
+        kind="choice",
+        expected="o1",
+        options=[
+            InteractionOption(option_id="o1", label="x=2"),
+            InteractionOption(option_id="o2", label="x=5"),
+        ],
+    )
+    second_client, _, _ = build_client(store=MemoryStore(database))
+
+    lesson_response = second_client.get(
+        f"/api/lessons/{lesson.lesson_id}"
+    )
+    evaluation = second_client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "o1",
+        },
+    )
+
+    assert lesson_response.status_code == 200
+    assert "reference_answer" not in lesson_response.json()["problem"]
+    assert evaluation.json()["classification"] == "correct"
+
+
+def test_same_problem_payload_generates_distinct_persisted_lessons(
+    tmp_path,
+):
+    database = tmp_path / "lessons.sqlite3"
+    generator = SequentialIdGenerator()
+    client, _, _ = build_client(
+        store=MemoryStore(database),
+        generator=generator,
+    )
+
+    first = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    second = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    first_job = client.get(
+        f"/api/jobs/{first.json()['job_id']}"
+    ).json()
+    second_job = client.get(
+        f"/api/jobs/{second.json()['job_id']}"
+    ).json()
+
+    assert first_job["status"] == "completed"
+    assert second_job["status"] == "completed"
+    assert first_job["lesson_id"] != second_job["lesson_id"]
+    assert generator.calls == 2
+    restarted_store = MemoryStore(database)
+    assert restarted_store.get_lesson(first_job["lesson_id"]) is not None
+    assert restarted_store.get_lesson(second_job["lesson_id"]) is not None
 
 
 def test_generation_failure_exposes_only_typed_safe_input_errors():
