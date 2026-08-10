@@ -4,4 +4,7 @@ __pycache__/
 .DS_Store
 *.pyc
 var/audio/
+var/*.sqlite3
+var/*.sqlite3-wal
+var/*.sqlite3-shm
 node_modules/
