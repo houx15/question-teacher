@@ -31,7 +31,44 @@ class _AdaptedCue:
     episode_id: str
     layer: LessonLayer
     cue: NarrativeSyncCue
+    interaction_bearing_episode: bool = False
     interaction: Optional[Interaction] = None
+
+
+@dataclass(frozen=True)
+class RuntimeCueProvenance:
+    """Immutable private link from an authored clause to its runtime cue."""
+
+    episode_id: str
+    clause_id: str
+    original_performance_cue_id: str
+    runtime_cue_id: str
+    spoken_text: str
+
+
+@dataclass(frozen=True)
+class PreparedDraftRun:
+    """Defensive draft plus request-private clause-to-cue provenance."""
+
+    _draft_json: str
+    cue_provenance: Tuple[RuntimeCueProvenance, ...]
+
+    @classmethod
+    def from_draft(
+        cls,
+        draft: LessonDraft,
+        cue_provenance: List[RuntimeCueProvenance],
+    ) -> "PreparedDraftRun":
+        if type(draft) is not LessonDraft:
+            raise TypeError("draft must be an exact LessonDraft")
+        return cls(
+            _draft_json=draft.model_dump_json(),
+            cue_provenance=tuple(cue_provenance),
+        )
+
+    @property
+    def draft(self) -> LessonDraft:
+        return LessonDraft.model_validate_json(self._draft_json)
 
 
 _COMPILER_RESERVED_CUE_IDS = {
@@ -157,11 +194,15 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         item.after_clause_id: _runtime_interaction(item)
         for item in prepared.interaction_plan.interactions
     }
+    interaction_episode_ids = {
+        item.episode_id for item in prepared.interaction_plan.interactions
+    }
     reserved_ids = {
         cue.cue_id for cue in prepared.performance_score.cues
     }
     allocated_ids = set()
     fixed_interactions = {}
+    cue_provenance = []
 
     def clause_section(clause_id: str) -> str:
         if clause_id in opening_ids:
@@ -218,6 +259,16 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
                 clause_ids,
                 cue_id,
             )
+            cue_provenance.extend(
+                RuntimeCueProvenance(
+                    episode_id=clauses[clause_id].episode_id,
+                    clause_id=clause_id,
+                    original_performance_cue_id=score_cue.cue_id,
+                    runtime_cue_id=cue_id,
+                    spoken_text=clauses[clause_id].spoken_text,
+                )
+                for clause_id in clause_ids
+            )
             interaction = interactions_after_clause.get(clause_ids[-1])
             if section == "body":
                 section_cues["body"].append(
@@ -225,6 +276,10 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
                         episode_id=first_clause.episode_id,
                         layer=layer_by_clause[clause_ids[0]],
                         cue=narrative_cue,
+                        interaction_bearing_episode=(
+                            first_clause.episode_id
+                            in interaction_episode_ids
+                        ),
                         interaction=interaction,
                     )
                 )
@@ -242,6 +297,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         section_cues["body"],
         section_cues["summary"],
         fixed_interactions,
+        cue_provenance,
     )
 
 
@@ -265,11 +321,7 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
             LessonMoment(
                 purpose=purpose,
                 sync_cues=[item.cue for item in group],
-                layer=(
-                    "interaction"
-                    if interaction is not None
-                    else group[0].layer
-                ),
+                layer=group[0].layer,
                 interaction=interaction,
             )
         )
@@ -277,7 +329,14 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
 
     for adapted in body:
         if group and (
-            adapted.layer != group[0].layer or len(group) == 5
+            adapted.layer != group[0].layer
+            or len(group) == 5
+            or adapted.interaction_bearing_episode
+            != group[0].interaction_bearing_episode
+            or (
+                adapted.interaction_bearing_episode
+                and adapted.episode_id != group[0].episode_id
+            )
         ):
             flush()
         group.append(adapted)
@@ -306,12 +365,12 @@ def _transfer_item(prepared: PreparedLesson) -> TransferItem:
     )
 
 
-def prepared_lesson_to_draft(
+def prepared_lesson_to_draft_with_provenance(
     problem: ProblemInput,
     prepared: PreparedLesson,
     teaching_route: FrozenTeachingRoute,
     verified_math_steps: Optional[List[MathStep]] = None,
-) -> LessonDraft:
+) -> PreparedDraftRun:
     if type(problem) is not ProblemInput:
         raise TypeError("problem must be an exact ProblemInput")
     if type(prepared) is not PreparedLesson:
@@ -333,12 +392,17 @@ def prepared_lesson_to_draft(
 
     problem_targets = compile_problem_focus_targets(problem.problem_text)
     validate_prepared_lesson(prepared, teaching_route, problem_targets)
-    opening, method, body, summary, fixed_interactions = _runtime_sections(
-        prepared
-    )
+    (
+        opening,
+        method,
+        body,
+        summary,
+        fixed_interactions,
+        cue_provenance,
+    ) = _runtime_sections(prepared)
     route_payload["teaching_route_fingerprint"] = teaching_route.fingerprint
     script = prepared.teaching_script
-    return LessonDraft(
+    draft = LessonDraft(
         title=script.title,
         learning_goal=script.learning_goal,
         opening="".join(cue.spoken_text for cue in opening),
@@ -355,3 +419,19 @@ def prepared_lesson_to_draft(
         summary="".join(cue.spoken_text for cue in summary),
         transfer_item=_transfer_item(prepared),
     )
+    return PreparedDraftRun.from_draft(draft, cue_provenance)
+
+
+def prepared_lesson_to_draft(
+    problem: ProblemInput,
+    prepared: PreparedLesson,
+    teaching_route: FrozenTeachingRoute,
+    verified_math_steps: Optional[List[MathStep]] = None,
+) -> LessonDraft:
+    """Compatibility adapter returning only the defensive runtime draft."""
+    return prepared_lesson_to_draft_with_provenance(
+        problem,
+        prepared,
+        teaching_route,
+        verified_math_steps,
+    ).draft

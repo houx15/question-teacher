@@ -1,7 +1,9 @@
 import importlib.util
+from dataclasses import FrozenInstanceError
 
 import pytest
 
+import app.prepared_lesson_adapter as prepared_adapter
 from app.compiler import LessonCompiler
 from app.preparation_models import PreparedLesson
 from app.prepared_lesson_adapter import prepared_lesson_to_draft
@@ -32,6 +34,63 @@ def source_problem():
 
 def approved_prepared():
     return PreparedLesson.model_validate(prepared_payload())
+
+
+def body_interaction_payload(with_overlay=False):
+    payload = prepared_payload()
+    clauses = payload["teaching_script"]["clauses"]
+    clause_index = next(
+        index
+        for index, clause in enumerate(clauses)
+        if clause["clause_id"] == "clause-3"
+    )
+    clauses.insert(
+        clause_index + 1,
+        {
+            **clauses[clause_index],
+            "clause_id": "clause-3-resume",
+            "spoken_text": "用刚才的判断继续处理这一步。",
+            "must_teach_refs": [],
+        },
+    )
+    cues = payload["performance_score"]["cues"]
+    cue_index = next(
+        index
+        for index, cue in enumerate(cues)
+        if cue["clause_ids"] == ["clause-3"]
+    )
+    cues.insert(
+        cue_index + 1,
+        {
+            "cue_id": "cue-clause-3-resume",
+            "clause_ids": ["clause-3-resume"],
+            "start_actions": [
+                {
+                    "clause_id": "clause-3-resume",
+                    "action": {
+                        "surface": "board",
+                        "type": "focus",
+                        "target": "board-3",
+                    },
+                }
+            ],
+        },
+    )
+    interaction = payload["interaction_plan"]["interactions"][0]
+    interaction.update(
+        episode_id="episode-3",
+        after_clause_id="clause-3",
+        resume_clause_id="clause-3-resume",
+    )
+    if with_overlay:
+        payload["performance_score"] = overlay_score_payload()
+        resume_cue = cues[cue_index + 1]
+        resume_cue["start_actions"] = []
+        payload["performance_score"]["cues"].insert(
+            cue_index + 1,
+            resume_cue,
+        )
+    return payload
 
 
 def symbolic_route_and_steps():
@@ -163,6 +222,44 @@ def test_runtime_interaction_occurs_after_boundary_and_before_resume_clause():
     assert after < interaction < resume
     assert interaction == after + 1
     assert resume == interaction + 1
+
+
+def test_body_interaction_episode_is_not_merged_with_preceding_free_episode():
+    prepared = PreparedLesson.model_validate(body_interaction_payload())
+
+    draft = prepared_lesson_to_draft(source_problem(), prepared, route())
+
+    interaction_index = next(
+        index
+        for index, moment in enumerate(draft.moments)
+        if moment.interaction is not None
+    )
+    interaction_moment = draft.moments[interaction_index]
+    assert [cue.cue_id for cue in interaction_moment.sync_cues] == [
+        "cue-clause-3"
+    ]
+    assert draft.moments[interaction_index - 1].sync_cues[-1].cue_id == (
+        "cue-clause-2-resume"
+    )
+    assert draft.moments[interaction_index + 1].sync_cues[0].cue_id == (
+        "cue-clause-3-resume"
+    )
+
+
+def test_overlay_interaction_preserves_authored_comparison_layer():
+    prepared = PreparedLesson.model_validate(
+        body_interaction_payload(with_overlay=True)
+    )
+
+    draft = prepared_lesson_to_draft(source_problem(), prepared, route())
+
+    interaction_moment = next(
+        moment for moment in draft.moments if moment.interaction is not None
+    )
+    assert interaction_moment.layer == "comparison"
+    assert [cue.cue_id for cue in interaction_moment.sync_cues] == [
+        "cue-clause-3"
+    ]
 
 
 def test_adapter_allows_zero_interactions_and_merges_adjacent_free_episodes():
@@ -347,6 +444,56 @@ def test_adapter_splits_a_contiguous_cue_crossing_runtime_sections():
     )
 
 
+def test_cross_section_split_provenance_maps_every_runtime_cue_exactly():
+    payload = prepared_payload()
+    original_cue_id = payload["performance_score"]["cues"][0]["cue_id"]
+    _merge_score_cues(payload, 0, 1)
+    prepared = PreparedLesson.model_validate(payload)
+
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    lesson = LessonCompiler(lesson_id_factory=lambda: "section-provenance").compile(
+        source_problem(), run.draft, {"review_status": "approved"}
+    )
+
+    runtime_cues = {
+        cue.cue_id: cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+        if cue.cue_id != "runtime-transfer-intro-cue"
+    }
+    assert {item.runtime_cue_id for item in run.cue_provenance} == set(
+        runtime_cues
+    )
+    split = [
+        item
+        for item in run.cue_provenance
+        if item.original_performance_cue_id == original_cue_id
+    ]
+    assert [item.clause_id for item in split] == ["clause-1", "clause-2"]
+    assert split[0].runtime_cue_id == original_cue_id
+    assert split[1].runtime_cue_id.startswith("prepared-cue-")
+    assert all(
+        runtime_cues[item.runtime_cue_id].spoken_text == item.spoken_text
+        for item in split
+    )
+
+
+def test_prepared_draft_run_is_defensive_and_provenance_is_immutable():
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), approved_prepared(), route()
+    )
+
+    changed = run.draft
+    changed.title = "被调用方修改"
+
+    assert run.draft.title != changed.title
+    assert isinstance(run.cue_provenance, tuple)
+    with pytest.raises(FrozenInstanceError):
+        run.cue_provenance[0].runtime_cue_id = "changed"
+
+
 def test_adapter_splits_a_contiguous_cue_crossing_adjacent_episodes():
     payload = prepared_payload()
     _merge_score_cues(payload, 2, 3)
@@ -365,6 +512,42 @@ def test_adapter_splits_a_contiguous_cue_crossing_adjacent_episodes():
             *prepared.teaching_script.method_introduction_clause_ids,
             *prepared.teaching_script.closing_summary_clause_ids,
         }
+    )
+
+
+def test_cross_episode_split_provenance_keeps_original_and_generated_ids():
+    payload = prepared_payload()
+    original_cue_id = payload["performance_score"]["cues"][2]["cue_id"]
+    _merge_score_cues(payload, 2, 3)
+    prepared = PreparedLesson.model_validate(payload)
+
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    lesson = LessonCompiler(lesson_id_factory=lambda: "episode-provenance").compile(
+        source_problem(), run.draft, {"review_status": "approved"}
+    )
+    runtime_cues = {
+        cue.cue_id: cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+        if cue.cue_id != "runtime-transfer-intro-cue"
+    }
+    split = [
+        item
+        for item in run.cue_provenance
+        if item.original_performance_cue_id == original_cue_id
+    ]
+
+    assert [item.episode_id for item in split] == ["episode-2", "episode-3"]
+    assert split[0].runtime_cue_id == original_cue_id
+    assert split[1].runtime_cue_id.startswith("prepared-cue-")
+    assert {item.runtime_cue_id for item in run.cue_provenance} == set(
+        runtime_cues
+    )
+    assert all(
+        runtime_cues[item.runtime_cue_id].spoken_text == item.spoken_text
+        for item in split
     )
 
 
