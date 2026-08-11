@@ -259,6 +259,28 @@ def test_script_sections_exist_in_order_and_do_not_overlap():
         TeachingScript.model_validate(payload)
 
 
+def test_script_sections_must_cover_exact_prefix_adjacent_method_and_suffix():
+    payload = teaching_script()
+    payload["clauses"].insert(0, script_clause("ordinary-before"))
+    with pytest.raises(ValidationError, match="opening prefix"):
+        TeachingScript.model_validate(payload)
+    payload = teaching_script()
+    payload["clauses"].insert(1, script_clause("ordinary-gap"))
+    with pytest.raises(ValidationError, match="immediately follow"):
+        TeachingScript.model_validate(payload)
+    payload = teaching_script()
+    payload["clauses"].append(script_clause("ordinary-after"))
+    with pytest.raises(ValidationError, match="closing suffix"):
+        TeachingScript.model_validate(payload)
+
+
+def test_script_section_ids_must_exist_in_clauses():
+    payload = teaching_script()
+    payload["opening_clause_ids"] = ["missing-clause"]
+    with pytest.raises(ValidationError, match="must exist in clauses"):
+        TeachingScript.model_validate(payload)
+
+
 def test_review_decision_literals_and_approval_rules():
     payload = prepared_lesson()["review"]
     payload["findings"][0]["severity"] = "blocking"
@@ -290,6 +312,10 @@ def test_prepared_lesson_requires_rubric_and_complete_history():
         PreparedLesson.model_validate(payload)
 
 
+def test_prepared_lesson_builder_validates():
+    assert PreparedLesson.model_validate(prepared_lesson()).rubric_version == "v1"
+
+
 def test_role_call_output_pair_and_nonnegative_token_usage():
     payload = {"role": "lesson_reviewer", "output_artifact_type": "solution_trace", "duration_ms": 0, "retry_count": 0}
     with pytest.raises(ValidationError, match="output type and version"):
@@ -297,3 +323,43 @@ def test_role_call_output_pair_and_nonnegative_token_usage():
     payload = {"role": "lesson_reviewer", "duration_ms": 0, "retry_count": 0, "token_usage": {"input": -1}}
     with pytest.raises(ValidationError, match="token usage"):
         RoleCallRecord.model_validate(payload)
+
+
+@pytest.mark.parametrize("version", [0, -1])
+def test_role_call_input_artifact_versions_must_be_positive(version):
+    payload = {
+        "role": "lesson_reviewer", "input_artifact_versions": {"solution_trace": version},
+        "duration_ms": 0, "retry_count": 0,
+    }
+    with pytest.raises(ValidationError):
+        RoleCallRecord.model_validate(payload)
+
+
+def test_interaction_feedback_map_rejects_extra_or_invalid_id_keys():
+    payload = interaction()
+    payload["incorrect_feedback_by_option"]["option-extra"] = "多余反馈"
+    with pytest.raises(ValidationError, match="incorrect feedback"):
+        PlannedInteraction.model_validate(payload)
+    payload = interaction()
+    payload["incorrect_feedback_by_option"] = {"bad key": "反馈", "option-c": "反馈"}
+    with pytest.raises(ValidationError):
+        PlannedInteraction.model_validate(payload)
+
+
+def test_full_generation_record_with_seven_role_calls_validates():
+    record = GenerationRecord.model_validate({
+        "generation_id": "generation-1", "lesson_id": "lesson-1", "route_fingerprint": "route-1",
+        "prepared_lesson": prepared_lesson(),
+        "role_calls": [
+            {
+                "role": role, "input_artifact_versions": {"solution_trace": 1},
+                "output_artifact_type": "solution_trace", "output_artifact_version": 1,
+                "duration_ms": 1, "retry_count": 0,
+            }
+            for role in [
+                "reference_analyst", "teaching_designer", "script_teacher", "interaction_designer",
+                "classroom_director", "student_simulator", "lesson_reviewer",
+            ]
+        ], "created_at": "2026-08-11T10:00:00+08:00",
+    })
+    assert len(record.role_calls) == 7

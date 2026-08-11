@@ -1,6 +1,6 @@
 from typing import Dict, List, Literal, Optional
 
-from pydantic import Field, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from app.schemas import (
     CueSpokenText,
@@ -150,6 +150,16 @@ class TeachingScript(SchemaModel):
         positions = [clause_ids.index(item) for item in flattened]
         if positions != sorted(positions):
             raise ValueError("script sections must retain script order")
+        opening_count = len(self.opening_clause_ids)
+        method_count = len(self.method_introduction_clause_ids)
+        if clause_ids[:opening_count] != self.opening_clause_ids:
+            raise ValueError("opening section must be the exact opening prefix")
+        method_start = opening_count
+        method_end = method_start + method_count
+        if clause_ids[method_start:method_end] != self.method_introduction_clause_ids:
+            raise ValueError("method-introduction section must immediately follow opening")
+        if clause_ids[-len(self.closing_summary_clause_ids):] != self.closing_summary_clause_ids:
+            raise ValueError("closing summary section must be the exact closing suffix")
         return self
 
 
@@ -284,7 +294,7 @@ class LessonReviewDecision(SchemaModel):
 
 class ArtifactRevision(SchemaModel):
     artifact_type: ArtifactType
-    version: int = Field(ge=1)
+    version: PositiveInt
     responsible_role: ResponsibleRole
     finding_ids: List[GeneratedId] = Field(default_factory=list)
 
@@ -304,9 +314,9 @@ class PreparedLesson(SchemaModel):
 
 class RoleCallRecord(SchemaModel):
     role: RoleName
-    input_artifact_versions: Dict[ArtifactType, int] = Field(default_factory=dict)
+    input_artifact_versions: Dict[ArtifactType, PositiveInt] = Field(default_factory=dict)
     output_artifact_type: Optional[ArtifactType] = None
-    output_artifact_version: Optional[int] = Field(default=None, ge=1)
+    output_artifact_version: Optional[PositiveInt] = None
     duration_ms: int = Field(ge=0)
     retry_count: int = Field(ge=0)
     failure_category: Optional[NonEmptyString] = None
