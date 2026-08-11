@@ -483,7 +483,7 @@ def test_reference_safety_does_not_derive_a_secret_from_public_variables():
         )
 
 
-def test_reference_safety_bounds_novel_split_digit_budget():
+def test_reference_safety_does_not_apply_a_blanket_novel_digit_budget():
     policy = ReferenceSafetyPolicy.from_problem(
         ProblemInput(
             problem_text="已知x=1，求x。",
@@ -492,16 +492,18 @@ def test_reference_safety_bounds_novel_split_digit_budget():
         )
     )
 
-    with pytest.raises(ReferenceContentSafetyError):
-        policy.ensure_safe(
-            {"state_after": StrictMathText._validate("1234+5678+9012")}
-        )
+    policy.ensure_safe(
+        {"state_after": StrictMathText._validate("1234+5678+9012")}
+    )
 
 
 def test_reference_safety_preserves_candidate_identity_and_multiplicity():
     policy = ReferenceSafetyPolicy.from_problem(
         ProblemInput(
-            problem_text="公开标记PASSWORD，变量p与a已知。",
+            problem_text=(
+                "公开标记PASSWORD，"
+                "变量w、o、r、d、a、p、i、k已知。"
+            ),
             reference_answer="p=1",
             reference_solution_text="PASSWORD;APIKEY;PASSWORD",
         )
@@ -663,5 +665,197 @@ def test_grounding_provenance_normalizes_latex_but_rejects_substring_matches():
 
     assert [item.source_kind for item in sanitized.assumptions] == [
         "problem",
+        "solution",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw_secret", "recombined_math"),
+    [
+        ("ADMIN", "a+d+m+i+n"),
+        ("PASS WORD", "p+a+s+s+w+o+r+d"),
+        ("USE PASS WORD", "p+a+s+s+w+o+r+d"),
+        ("API KEY", r"\frac{a+p+i}{k+e+y}"),
+        ("RUN CMD", "r+u+n+c+m+d"),
+        ("₆₉₈₆₁₈", "6+9+8+6+1+8"),
+        ("PASSWORD", "p^1+x+a+s+s+w+o+r+d"),
+        ("698618", "6^1+9+x+8+6+1+8"),
+    ],
+)
+def test_reference_safety_correlates_split_candidates_as_ordered_tokens(
+    raw_secret,
+    recombined_math,
+):
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text=(
+                "变量a、b、c、d、e、f、g、h、i、j、k、l、m、n、"
+                "o、p、q、r、s、t、u、v、w、x、y、z均为实数。"
+            ),
+            reference_answer="x=1",
+            reference_solution_text=raw_secret,
+        )
+    )
+
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe(
+            {"state_after": StrictMathText._validate(recombined_math)}
+        )
+
+
+def test_reference_safety_allows_many_normal_numbers_without_a_secret_candidate():
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="已知x为实数。",
+            reference_answer="x=1",
+            reference_solution_text="逐项检查这个多项式。",
+        )
+    )
+
+    policy.ensure_safe(
+        {
+            "state_after": StrictMathText._validate(
+                "(x-1)(x-2)(x-3)(x-4)(x-5)"
+                "(x-6)(x-7)(x-8)(x-9)(x-10)=0"
+            )
+        }
+    )
+
+
+def test_reference_safety_tracks_only_one_novel_helper_across_the_route():
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="已知x、y、z为实数。",
+            reference_answer="x=1",
+            reference_solution_text="引入一个辅助量整理。",
+        )
+    )
+
+    policy.ensure_safe({"state_after": StrictMathText._validate("x+y+z=1")})
+    policy.ensure_safe({"state_after": StrictMathText._validate("t=x+1")})
+    policy.ensure_safe({"state_after": StrictMathText._validate("t=y+2")})
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe({"state_after": StrictMathText._validate("u=t+1")})
+
+
+def test_rejected_content_does_not_consume_the_route_helper_slot():
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="变量p、a、s、w、o、r、d、x均为实数。",
+            reference_answer="x=1",
+            reference_solution_text="PASSWORD",
+        )
+    )
+
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe(
+            {
+                "state_after": StrictMathText._validate(
+                    "p+q+a+s+s+w+o+r+d"
+                )
+            }
+        )
+    policy.ensure_safe({"state_after": StrictMathText._validate("t=x+1")})
+
+
+def test_grounding_server_ids_cannot_be_denied_by_a_raw_collision():
+    source = ProblemInput(
+        problem_text="已知x=1，求y。",
+        reference_answer="y=2",
+        reference_solution_text=(
+            "ground-step-001 ground-assumption-001 ground-check-001"
+        ),
+    )
+    sanitized = ReferenceSafetyPolicy.from_problem(
+        source
+    ).sanitize_grounding_brief(
+        _brief_with_model_ids("raw-a", "raw-s", "raw-c"),
+        source.reference_answer,
+    )
+
+    assert sanitized.reasoning_steps[0].step_id == "ground-step-001"
+    assert sanitized.assumptions[0].assumption_id == "ground-assumption-001"
+    assert sanitized.check_requests[0].check_id == "ground-check-001"
+    with pytest.raises(ReferenceContentSafetyError):
+        ReferenceSafetyPolicy.from_problem(source).ensure_safe(
+            {"summary": "ground-step-001"}
+        )
+
+
+def test_grounding_deletes_raw_free_prose_before_the_safety_gate():
+    marker = "PRIVATE-GROUNDING-AUDIT-71ad"
+    source = ProblemInput(
+        problem_text="已知x=1，求y。",
+        reference_answer="y=2",
+        reference_solution_text=marker,
+    )
+    payload = _brief_with_model_ids("a", "s", "c").model_dump(mode="python")
+    payload["task_summary"] = marker
+    payload["audit_notes"] = [marker]
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        payload,
+        source.reference_answer,
+    )
+
+    sanitized = ReferenceSafetyPolicy.from_problem(
+        source
+    ).sanitize_grounding_brief(brief, source.reference_answer)
+
+    assert marker not in sanitized.model_dump_json()
+
+
+def test_grounding_authorizes_its_deterministic_free_prose_projection():
+    server_summary = "结构化数学路线"
+    source = ProblemInput(
+        problem_text="已知x=1，求y。",
+        reference_answer="y=2",
+        reference_solution_text=server_summary,
+    )
+
+    sanitized = ReferenceSafetyPolicy.from_problem(
+        source
+    ).sanitize_grounding_brief(
+        _brief_with_model_ids("a", "s", "c"),
+        source.reference_answer,
+    )
+
+    assert sanitized.task_summary == server_summary
+
+
+def test_grounding_derives_honest_problem_and_problem_derived_provenance():
+    source = ProblemInput(
+        problem_text=(
+            "若2n（n不等于0）是关于x的方程x^2-2mx+2n=0的根，"
+            "则求m-n；错误选项y=2。"
+        ),
+        reference_answer="m-n=1/2",
+        reference_solution_text="n!=0；x=2n；m-n=1/2；y=2。",
+    )
+    payload = _brief_with_model_ids("a", "s", "c").model_dump(mode="python")
+    payload.update(target="m-n", reference_conclusion="m-n=1/2")
+    payload["assumptions"] = [
+        {"assumption_id": "nonzero", "expression": "n!=0"},
+        {"assumption_id": "root-substitution", "expression": "x=2n"},
+        {"assumption_id": "target-answer", "expression": "m-n=1/2"},
+        {"assumption_id": "distractor", "expression": "y=2"},
+    ]
+    payload["reasoning_steps"][0].update(
+        statement_before="x^2-2mx+2n=0",
+        statement_after="m-n=1/2",
+        assumption_ids_used=["nonzero", "root-substitution"],
+    )
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        payload,
+        source.reference_answer,
+    )
+
+    sanitized = ReferenceSafetyPolicy.from_problem(
+        source
+    ).sanitize_grounding_brief(brief, source.reference_answer)
+
+    assert [item.source_kind for item in sanitized.assumptions] == [
+        "problem",
+        "problem_derived",
+        "solution",
         "solution",
     ]

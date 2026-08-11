@@ -105,6 +105,7 @@ _MATH_COMMANDS = frozenset(
         "sim",
         "sin",
         "sqrt",
+        "square",
         "subset",
         "subseteq",
         "sum",
@@ -168,16 +169,18 @@ _ALLOWED_UNICODE_MATH = frozenset(
     "⁰ⁱ⁴⁵⁶⁷⁸⁹⁺⁻ⁿ"
     "₀₁₂₃₄₅₆₇₈₉₊₋"
     "→⇒∅∈∉∑−∓√∞∩∪≈≠≤≥⊂⊆"
-    "∠°⊥∥△≅∽∵∴⊙"
+    "∠°⊥∥△≅∽∵∴⊙□▱"
 )
 _ASCII_WORD = re.compile(r"[A-Za-z]+")
 _ASCII_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _OPAQUE_MIXED_ALNUM = re.compile(r"[A-Za-z0-9]{7,}")
 _GEOMETRY_COMMAND = re.compile(
     r"\\(?:angle|overline|overrightarrow|parallel|perp|triangle|"
-    r"cong|sim|vec|widehat)\b"
+    r"cong|sim|square|vec|widehat)\b"
 )
-_GEOMETRY_RELATION_MARKERS = frozenset("=/:\u2220⊥∥△≅∽∵∴⊙")
+_GEOMETRY_RELATION_MARKERS = frozenset(
+    "=/:\u2220⊥∥△≅∽∵∴⊙□▱"
+)
 _CONTROL_SKELETON_TERMS = (
     "ignore",
     "rules",
@@ -310,7 +313,16 @@ def _is_geometry_point_name(word: str, source: str) -> bool:
     return (
         has_geometry_context
         and word.isupper()
-        and 2 <= len(word) <= 3
+        and (
+            2 <= len(word) <= 3
+            or (
+                len(word) == 4
+                and any(
+                    marker in source
+                    for marker in (r"\square", "□", "▱")
+                )
+            )
+        )
     )
 
 
@@ -345,10 +357,19 @@ def _validate_command_arguments(
         cursor += 1
     if command in {"frac", "dfrac", "tfrac"}:
         if cursor < len(source) and source[cursor] == "{":
-            cursor = _balanced_group_end(source, cursor, "{", "}")
+            first_end = _balanced_group_end(source, cursor, "{", "}")
+            if not source[cursor + 1 : first_end - 1].strip():
+                raise StrictMathExpressionError(
+                    "invalid strict math expression"
+                )
+            cursor = first_end
             while cursor < len(source) and source[cursor].isspace():
                 cursor += 1
-            _balanced_group_end(source, cursor, "{", "}")
+            second_end = _balanced_group_end(source, cursor, "{", "}")
+            if not source[cursor + 1 : second_end - 1].strip():
+                raise StrictMathExpressionError(
+                    "invalid strict math expression"
+                )
             return
         legacy = source[cursor : cursor + 2]
         if len(legacy) != 2 or not all(
@@ -408,7 +429,7 @@ def _validate_command_arguments(
                 "invalid strict math expression"
             )
     elif command == "sum":
-        if cursor >= len(source) or source[cursor] != "_":
+        if cursor >= len(source) or source[cursor] not in "_^":
             raise StrictMathExpressionError(
                 "invalid strict math expression"
             )
@@ -441,6 +462,7 @@ def validate_strict_math_expression(value: str) -> str:
     if (
         "://" in source
         or ".." in source
+        or re.search(r"\d\s+\.\d", source)
         or re.search(r"(?:\+\+|\*\*|//|\^\^|==|[+*/^][+*/^])", source)
     ):
         raise StrictMathExpressionError("invalid strict math expression")
@@ -499,7 +521,13 @@ def validate_strict_math_expression(value: str) -> str:
                 match.end(),
             )
             saw_math_atom = True
-            index = match.end()
+            if match.group() in {"left", "right"}:
+                index = match.end()
+                while index < len(source) and source[index].isspace():
+                    index += 1
+                index += 2 if source[index] == "\\" else 1
+            else:
+                index = match.end()
             continue
         if char in "([{":
             stack.append(char)
@@ -557,10 +585,14 @@ def allowed_gap_codes_for_operation(
         "add": ["implicit_equivalence"],
         "subtract": ["implicit_equivalence"],
         "multiply": ["implicit_equivalence"],
-        "divide": ["nonzero_condition_required"],
+        "divide": [
+            "implicit_nonzero_condition",
+            "nonzero_condition_required",
+        ],
         "apply_identity": ["implicit_identity"],
         "complete_square": ["implicit_identity"],
         "take_square_root": [
+            "implicit_domain_restriction",
             "domain_condition_required",
             "branch_completeness_required",
         ],
@@ -599,7 +631,7 @@ def geometry_identifiers(value: str) -> set:
     return {
         token
         for token in _ascii_letter_tokens(source)
-        if token.isupper() and 2 <= len(token) <= 3
+        if _is_geometry_point_name(token, source)
     }
 
 

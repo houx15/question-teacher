@@ -1,20 +1,26 @@
 """Server-owned boundary for untrusted reference-solution prose."""
 
 import re
+from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, FrozenSet, Iterable, Mapping, Sequence, Tuple
+from typing import Any, FrozenSet, Iterable, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel
 
 from app.math_expression import (
     StrictMathText,
+    deterministic_method_name,
     geometry_identifiers,
     is_strict_math_expression,
+    math_identifiers,
     render_typed_math_action,
     render_typed_math_justification,
 )
-from app.math_content import contains_cross_artifact_math_identity
+from app.math_content import (
+    contains_cross_artifact_math_identity,
+    normalize_cross_artifact_math_identity,
+)
 from app.preparation_models import SolutionTrace
 from app.schemas import ProblemInput, ReferenceGroundingBrief
 from app.teaching_route import FrozenTeachingRoute
@@ -67,10 +73,30 @@ _CONTROL_SKELETON_TERMS = (
     "token",
 )
 _MIN_SHORT_SKELETON_LENGTH = 6
-_MAX_NOVEL_DIGITS_PER_EXPRESSION = 9
 _UNICODE_DIGIT_TRANSLATION = str.maketrans(
     "⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉",
     "01234567890123456789",
+)
+_SERVER_GROUND_ID = re.compile(
+    r"ground-(?:assumption|step|check)-\d{3}"
+)
+_PLAIN_MATH_FUNCTIONS = frozenset(
+    {
+        "cos",
+        "cot",
+        "csc",
+        "exp",
+        "gcd",
+        "lcm",
+        "ln",
+        "log",
+        "max",
+        "min",
+        "mod",
+        "sec",
+        "sin",
+        "tan",
+    }
 )
 _STRUCTURAL_FIELDS = frozenset(
     {
@@ -183,53 +209,93 @@ def _short_skeleton(value: str) -> str:
     return ""
 
 
-def _canonical_math_skeleton(value: str) -> str:
+def _canonical_math_streams(value: str) -> Tuple[str, str, str]:
     without_commands = re.sub(r"\\[A-Za-z]+", "", value)
     normalized = without_commands.translate(_UNICODE_DIGIT_TRANSLATION)
-    return "".join(
-        char.casefold()
-        for char in normalized
-        if char.isascii() and char.isalnum()
-    )
+    alpha = []
+    digits = []
+    alnum = []
+    for match in _ASCII_ALNUM_RUN.finditer(normalized):
+        token = match.group().casefold()
+        if token.isalpha() and token in _PLAIN_MATH_FUNCTIONS:
+            continue
+        for char in token:
+            if char.isalpha():
+                alpha.append(char)
+                alnum.append(char)
+            elif char.isdigit():
+                digits.append(char)
+                alnum.append(char)
+    return "".join(alpha), "".join(digits), "".join(alnum)
 
 
-def _sensitive_math_candidates(value: str) -> Counter:
+def _candidate_kind(token: str) -> str:
+    if token.isalpha():
+        return "alpha"
+    if token.isdigit():
+        return "digits"
+    return "alnum"
+
+
+def _candidate_is_long_enough(kind: str, skeleton: str) -> bool:
+    return len(skeleton) >= (6 if kind == "digits" else 5)
+
+
+def _sensitive_math_candidates(
+    value: str,
+    *,
+    group_chunks: bool = True,
+) -> Counter:
     candidates = Counter()
-    matches = list(_ASCII_ALNUM_RUN.finditer(value))
+    normalized = value.translate(_UNICODE_DIGIT_TRANSLATION).replace(
+        "，", ","
+    )
+    balanced_numeric_chain = (
+        re.fullmatch(r"\s*\d{3}(?:-\d{3}){2,}\s*", normalized)
+        is not None
+    )
+    matches = list(_ASCII_ALNUM_RUN.finditer(normalized))
     for match in matches:
         token = match.group().casefold()
-        if token.isdigit() and len(token) >= 6:
-            candidates["digits:" + token] += 1
-        elif (
-            len(token) >= 6
-            and any(char.isalpha() for char in token)
-        ):
-            candidates["opaque:" + token] += 1
+        kind = _candidate_kind(token)
+        if _candidate_is_long_enough(kind, token):
+            candidates["%s:%s" % (kind, token)] += 1
+
+    if not group_chunks:
+        return candidates
 
     group_kind = None
     group_tokens = []
 
     def flush_group() -> None:
         nonlocal group_kind, group_tokens
-        skeleton = "".join(group_tokens)
-        if len(skeleton) >= 8 and group_kind is not None:
-            candidates["split-%s:%s" % (group_kind, skeleton)] += 1
+        if len(group_tokens) > 1 and not (
+            group_kind == "digits" and balanced_numeric_chain
+        ):
+            for start in range(len(group_tokens)):
+                skeleton = ""
+                for token in group_tokens[start:]:
+                    skeleton += token
+                    if _candidate_is_long_enough(
+                        group_kind,
+                        skeleton,
+                    ):
+                        candidates[
+                            "%s:%s" % (group_kind, skeleton)
+                        ] += 1
+                        break
         group_kind = None
         group_tokens = []
 
     previous_end = 0
     for match in matches:
         token = match.group().casefold()
-        kind = (
-            "alpha"
-            if token.isalpha() and len(token) <= 2
-            else "digits"
-            if token.isdigit() and len(token) <= 2
-            else None
-        )
-        separator = value[previous_end : match.start()]
-        separator_is_safe = not any(char.isalnum() for char in separator)
-        if kind is None or (group_kind is not None and kind != group_kind):
+        kind = _candidate_kind(token)
+        separator = normalized[previous_end : match.start()]
+        separator_is_safe = re.fullmatch(r"[\s_,\-]*", separator) is not None
+        if kind not in {"alpha", "digits"} or (
+            group_kind is not None and kind != group_kind
+        ):
             flush_group()
         elif group_kind is not None and not separator_is_safe:
             flush_group()
@@ -241,63 +307,59 @@ def _sensitive_math_candidates(value: str) -> Counter:
     return candidates
 
 
-def _candidate_skeleton(candidate: str) -> str:
-    return candidate.split(":", 1)[1]
+def _stream_positions(stream: str) -> dict:
+    positions = {}
+    for index, char in enumerate(stream):
+        positions.setdefault(char, []).append(index)
+    return positions
 
 
-def _candidate_fingerprints(candidate: str) -> Iterable[str]:
-    skeleton = _candidate_skeleton(candidate)
-    size = min(len(skeleton), REFERENCE_PROSE_FINGERPRINT_LENGTH)
-    for index in range(len(skeleton) - size + 1):
-        yield skeleton[index : index + size]
+def _is_ordered_subsequence(candidate: str, positions: dict) -> bool:
+    current = -1
+    for char in candidate:
+        choices = positions.get(char, [])
+        choice_index = bisect_right(choices, current)
+        if choice_index == len(choices):
+            return False
+        current = choices[choice_index]
+    return True
 
 
-def _contains_sensitive_math_fingerprint(
-    skeleton: str,
-    sensitive_fingerprints: FrozenSet[str],
+def _contains_sensitive_math_candidate(
+    streams: Tuple[str, str, str],
+    sensitive_candidates: FrozenSet[str],
 ) -> bool:
-    for size in range(
-        _MIN_SHORT_SKELETON_LENGTH,
-        REFERENCE_PROSE_FINGERPRINT_LENGTH + 1,
-    ):
-        if len(skeleton) < size:
-            continue
-        if any(
-            skeleton[index : index + size] in sensitive_fingerprints
-            for index in range(len(skeleton) - size + 1)
+    alpha, digits, alnum = streams
+    positions_by_kind = {
+        "alpha": _stream_positions(alpha),
+        "digits": _stream_positions(digits),
+        "alnum": _stream_positions(alnum),
+    }
+    for candidate in sensitive_candidates:
+        kind, skeleton = candidate.split(":", 1)
+        if _is_ordered_subsequence(
+            skeleton,
+            positions_by_kind[kind],
         ):
             return True
     return False
 
 
-def _public_digit_skeletons(value: str) -> FrozenSet[str]:
-    candidates = {
-        _candidate_skeleton(item)
-        for item in _sensitive_math_candidates(value)
-        if item.startswith(("digits:", "split-digits:"))
-    }
-    for expression in _embedded_math_expressions(value):
-        digits = "".join(
-            char
-            for char in _canonical_math_skeleton(expression)
-            if char.isdigit()
-        )
-        if digits:
-            candidates.add(digits)
-    return frozenset(candidates)
-
-
 def _is_structural_field(
     field_name: str,
+    value: str,
     *,
     check_identifiers: bool,
 ) -> bool:
     if field_name in _STRUCTURAL_FIELDS:
         return True
     is_identifier = (
-        field_name.endswith("_id") or field_name.endswith("_ids")
+        re.search(r"(?:^|_)ids?(?:_|$)", field_name) is not None
     )
-    return is_identifier and not check_identifiers
+    return is_identifier and (
+        not check_identifiers
+        or _SERVER_GROUND_ID.fullmatch(value) is not None
+    )
 
 
 def _bounded_strings(
@@ -321,6 +383,7 @@ def _bounded_strings(
                 )
             yield current, _is_structural_field(
                 field_name,
+                current,
                 check_identifiers=check_identifiers,
             )
         elif isinstance(current, BaseModel):
@@ -411,6 +474,43 @@ def _embedded_math_expressions(value: str) -> Iterable[str]:
             yield run
 
 
+def _problem_premise_text(problem_text: str) -> str:
+    boundary = len(problem_text)
+    for marker in ("则", "求", "问", "下列", "选项"):
+        position = problem_text.find(marker)
+        if position >= 0:
+            boundary = min(boundary, position)
+    return problem_text[:boundary]
+
+
+def _numeric_literals(value: str) -> set:
+    normalized = normalize_cross_artifact_math_identity(value)
+    return set(re.findall(r"\d+(?:\.\d+)?", normalized))
+
+
+def _assumption_source_kind(problem_text: str, expression: str) -> str:
+    premise = _problem_premise_text(problem_text)
+    if contains_cross_artifact_math_identity(premise, expression):
+        return "problem"
+    normalized = normalize_cross_artifact_math_identity(expression)
+    if normalized.count("=") != 1 or any(
+        marker in normalized for marker in ("!=", ">=", "<=")
+    ):
+        return "solution"
+    left, _ = normalized.split("=", 1)
+    if re.fullmatch(r"[A-Za-z]", left) is None:
+        return "solution"
+    if not math_identifiers(expression).issubset(
+        math_identifiers(premise)
+    ):
+        return "solution"
+    if not _numeric_literals(expression).issubset(
+        _numeric_literals(premise)
+    ):
+        return "solution"
+    return "problem_derived"
+
+
 @dataclass
 class ReferenceSafetyPolicy:
     """Reject raw-only prose fingerprints while allowing mathematics."""
@@ -418,10 +518,11 @@ class ReferenceSafetyPolicy:
     sensitive_fingerprints: FrozenSet[str]
     sensitive_skeleton_fingerprints: FrozenSet[str]
     sensitive_short_skeletons: FrozenSet[str]
-    sensitive_math_fingerprints: FrozenSet[str]
+    sensitive_math_candidates: FrozenSet[str]
     authorized_geometry_identifiers: FrozenSet[str]
-    authorized_digit_skeletons: FrozenSet[str]
+    authorized_math_identifiers: FrozenSet[str]
     public_problem_text: str
+    authorized_helper_identifier: Optional[str] = None
     authorized_projection_fingerprints: set = field(default_factory=set)
     authorized_projection_skeleton_fingerprints: set = field(
         default_factory=set
@@ -440,7 +541,7 @@ class ReferenceSafetyPolicy:
         raw_short_skeleton = _short_skeleton(raw)
         sensitive_math_candidates = (
             _sensitive_math_candidates(raw)
-            - _sensitive_math_candidates(public)
+            - _sensitive_math_candidates(public, group_chunks=False)
         )
         return cls(
             sensitive_fingerprints=(
@@ -455,16 +556,17 @@ class ReferenceSafetyPolicy:
                 - ({public_short_skeleton} if public_short_skeleton else set())
                 - {""}
             ),
-            sensitive_math_fingerprints=frozenset(
-                fingerprint
+            sensitive_math_candidates=frozenset(
+                item
                 for item, count in sensitive_math_candidates.items()
                 if count > 0
-                for fingerprint in _candidate_fingerprints(item)
             ),
             authorized_geometry_identifiers=frozenset(
                 geometry_identifiers(public)
             ),
-            authorized_digit_skeletons=_public_digit_skeletons(public),
+            authorized_math_identifiers=frozenset(
+                math_identifiers(public)
+            ),
             public_problem_text=problem.problem_text,
         )
 
@@ -474,10 +576,17 @@ class ReferenceSafetyPolicy:
         *,
         check_identifiers: bool = False,
     ) -> None:
-        math_skeletons = []
+        math_streams = [[], [], []]
+        helper_identifier = self.authorized_helper_identifier
         for expression in _bounded_typed_math(value):
-            self._ensure_authorized_math(expression)
-            math_skeletons.append(_canonical_math_skeleton(expression))
+            helper_identifier = self._ensure_authorized_math(
+                expression,
+                helper_identifier,
+            )
+            for index, stream in enumerate(
+                _canonical_math_streams(expression)
+            ):
+                math_streams[index].append(stream)
         for text, structural in _bounded_strings(
             value,
             check_identifiers=check_identifiers,
@@ -485,10 +594,14 @@ class ReferenceSafetyPolicy:
             if structural:
                 continue
             for expression in _embedded_math_expressions(text):
-                self._ensure_authorized_math(expression)
-                math_skeletons.append(
-                    _canonical_math_skeleton(expression)
+                helper_identifier = self._ensure_authorized_math(
+                    expression,
+                    helper_identifier,
                 )
+                for index, stream in enumerate(
+                    _canonical_math_streams(expression)
+                ):
+                    math_streams[index].append(stream)
             prose_leak = any(
                 item in self.sensitive_fingerprints
                 and item not in self.authorized_projection_fingerprints
@@ -514,41 +627,47 @@ class ReferenceSafetyPolicy:
                 raise ReferenceContentSafetyError(
                     "reference-only content crossed the safe boundary"
                 )
-        aggregate_math_skeleton = "".join(math_skeletons)
-        if _contains_sensitive_math_fingerprint(
-            aggregate_math_skeleton,
-            self.sensitive_math_fingerprints,
+        aggregate_math_streams = tuple(
+            "".join(items) for items in math_streams
+        )
+        if _contains_sensitive_math_candidate(
+            aggregate_math_streams,
+            self.sensitive_math_candidates,
         ):
             raise ReferenceContentSafetyError(
                 "unverified math content crossed the safe boundary"
             )
+        self.authorized_helper_identifier = helper_identifier
 
-    def _ensure_authorized_math(self, expression: str) -> None:
-        skeleton = _canonical_math_skeleton(expression)
-        if _contains_sensitive_math_fingerprint(
-            skeleton,
-            self.sensitive_math_fingerprints,
-        ):
-            raise ReferenceContentSafetyError(
-                "unverified math content crossed the safe boundary"
-            )
+    def _ensure_authorized_math(
+        self,
+        expression: str,
+        helper_identifier: Optional[str],
+    ) -> Optional[str]:
         if not geometry_identifiers(expression).issubset(
             self.authorized_geometry_identifiers
         ):
             raise ReferenceContentSafetyError(
                 "unverified math content crossed the safe boundary"
             )
-        digits = "".join(char for char in skeleton if char.isdigit())
-        if (
-            len(digits) > _MAX_NOVEL_DIGITS_PER_EXPRESSION
-            and not any(
-                digits == authorized
-                for authorized in self.authorized_digit_skeletons
-            )
-        ):
+        novel_identifiers = (
+            math_identifiers(expression)
+            - self.authorized_math_identifiers
+        )
+        if helper_identifier is not None:
+            novel_identifiers.discard(helper_identifier)
+        if len(novel_identifiers) > 1:
             raise ReferenceContentSafetyError(
                 "unverified math content crossed the safe boundary"
             )
+        if novel_identifiers:
+            helper = next(iter(novel_identifiers))
+            if helper_identifier is not None:
+                raise ReferenceContentSafetyError(
+                    "unverified math content crossed the safe boundary"
+                )
+            helper_identifier = helper
+        return helper_identifier
 
     def authorize_server_projection(self, value: Any) -> None:
         for text, structural in _bounded_strings(value):
@@ -607,9 +726,21 @@ class ReferenceSafetyPolicy:
         brief: ReferenceGroundingBrief,
         reference_answer: str,
     ) -> ReferenceGroundingBrief:
-        self.ensure_safe(brief)
         payload = brief.model_dump(mode="python")
+        payload["task_summary"] = "结构化数学路线"
+        payload["method_name"] = deterministic_method_name(
+            [
+                item["operation_kind"]
+                for item in payload["reasoning_steps"]
+            ]
+        )
         payload["audit_notes"] = []
+        projected = ReferenceGroundingBrief.validate_for_reference_answer(
+            payload,
+            reference_answer,
+        )
+        self.ensure_safe(projected)
+        payload = projected.model_dump(mode="python")
         assumption_id_map = {
             item["assumption_id"]: "ground-assumption-%03d" % index
             for index, item in enumerate(
@@ -626,13 +757,9 @@ class ReferenceSafetyPolicy:
             item["assumption_id"] = assumption_id_map[
                 item["assumption_id"]
             ]
-            item["source_kind"] = (
-                "problem"
-                if contains_cross_artifact_math_identity(
-                    self.public_problem_text,
-                    item["expression"],
-                )
-                else "solution"
+            item["source_kind"] = _assumption_source_kind(
+                self.public_problem_text,
+                item["expression"],
             )
         for item in payload["reasoning_steps"]:
             item["step_id"] = step_id_map[item["step_id"]]

@@ -35,6 +35,7 @@ EvidenceStatus = Literal[
     "verified_route",
     "reference_only",
     "checked",
+    "check_warning",
 ]
 ReasoningMode = Literal["understand", "plan", "explore", "execute", "monitor", "revise", "reflect"]
 TrajectoryType = Literal["planned", "exploratory", "hybrid"]
@@ -79,7 +80,13 @@ def _require_unique(values: List[str], label: str) -> None:
 
 
 class SourceAnchor(SchemaModel):
-    source_kind: Literal["problem", "answer", "solution", "verified_route"]
+    source_kind: Literal[
+        "problem",
+        "problem_derived",
+        "answer",
+        "solution",
+        "verified_route",
+    ]
     source_id: GeneratedId
     excerpt: NonEmptyString
 

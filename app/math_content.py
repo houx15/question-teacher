@@ -375,6 +375,15 @@ def normalize_cross_artifact_math_identity(value: str) -> str:
             }
         )
     )
+    for source, target in (
+        ("大于等于", ">="),
+        ("小于等于", "<="),
+        ("不等于", "!="),
+        ("大于", ">"),
+        ("小于", "<"),
+        ("等于", "="),
+    ):
+        normalized = normalized.replace(source, target)
     for delimiter in (r"\(", r"\)", r"\[", r"\]", "$$", "$"):
         normalized = normalized.replace(delimiter, "")
     normalized = re.sub(

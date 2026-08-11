@@ -146,22 +146,30 @@ def freeze_grounded_route(
         )
         else TeachingRouteConsistency.CONSISTENT
     )
-    checked_step_ids = {
-        evidence["source_step_id"]
-        for evidence in check_evidence
-        if (
-            evidence["status"] == ClaimStatus.PASSED.value
-            and evidence["conclusion_linked"]
-        )
+    evidence_by_step = {
+        step.step_id: [
+            evidence
+            for evidence in check_evidence
+            if evidence["source_step_id"] == step.step_id
+        ]
+        for step in grounding_brief.reasoning_steps
     }
+
+    def evidence_status(step_id: str) -> str:
+        bound = evidence_by_step[step_id]
+        if not bound:
+            return "reference_only"
+        if all(
+            item["status"] == ClaimStatus.PASSED.value
+            for item in bound
+        ):
+            return "checked"
+        return "check_warning"
+
     steps = [
         {
             **step.model_dump(),
-            "evidence_status": (
-                "checked"
-                if step.step_id in checked_step_ids
-                else "reference_only"
-            ),
+            "evidence_status": evidence_status(step.step_id),
         }
         for step in grounding_brief.reasoning_steps
     ]

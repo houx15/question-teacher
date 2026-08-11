@@ -310,7 +310,11 @@ def _normalize_reference_text(value: str) -> str:
 class GroundedAssumption(SchemaModel):
     assumption_id: GeneratedId
     expression: StrictMathExpression
-    source_kind: Literal["problem", "solution"] = "solution"
+    source_kind: Literal[
+        "problem",
+        "problem_derived",
+        "solution",
+    ] = "solution"
 
 
 class GroundedReasoningStep(SchemaModel):

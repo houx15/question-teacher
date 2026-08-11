@@ -217,9 +217,7 @@ def test_passed_unlinked_check_does_not_upgrade_grounded_mode():
     route = freeze_grounded_route(brief, [result])
 
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
-    assert route.to_prompt_payload()["steps"][1]["evidence_status"] == (
-        "reference_only"
-    )
+    assert route.to_prompt_payload()["steps"][1]["evidence_status"] == "checked"
 
 
 def test_model_proposed_failed_linked_check_creates_warning():
@@ -229,8 +227,47 @@ def test_model_proposed_failed_linked_check_creates_warning():
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
     assert route.consistency == TeachingRouteConsistency.WARNING
     assert route.to_prompt_payload()["steps"][1]["evidence_status"] == (
-        "reference_only"
+        "check_warning"
     )
+
+
+def test_grounded_step_aggregates_all_bound_check_results():
+    requests = []
+    for check_id, expression, expected, linked in (
+        ("passed-linked", "x", "x", True),
+        ("passed-unlinked", "m", "m", False),
+    ):
+        requests.append(
+            {
+                "check_id": check_id,
+                "source_step_id": "use-nonzero",
+                "kind": "equivalence",
+                "expression": expression,
+                "expected": expected,
+                "substitutions": {},
+                "nonzero_symbols": [],
+                "conclusion_linked": linked,
+            }
+        )
+    all_passed = grounding_brief(requests)
+    passed_results = [
+        ClaimChecker().check(request) for request in all_passed.check_requests
+    ]
+    assert freeze_grounded_route(
+        all_passed,
+        passed_results,
+    ).to_prompt_payload()["steps"][1]["evidence_status"] == "checked"
+
+    mixed_payload = [dict(item) for item in requests]
+    mixed_payload[1].update(expression="1", expected="2")
+    mixed = grounding_brief(mixed_payload)
+    mixed_results = [
+        ClaimChecker().check(request) for request in mixed.check_requests
+    ]
+    assert freeze_grounded_route(
+        mixed,
+        mixed_results,
+    ).to_prompt_payload()["steps"][1]["evidence_status"] == "check_warning"
 
 
 @pytest.mark.parametrize(

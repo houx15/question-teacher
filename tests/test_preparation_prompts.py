@@ -455,6 +455,11 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
             assert phrase in system_prompt
 
 
+def test_reference_analyst_preserves_all_route_evidence_levels():
+    for evidence_status in ("reference_only", "checked", "check_warning"):
+        assert evidence_status in SOLUTION_TRACE_SYSTEM
+
+
 def test_reviewer_system_requires_exact_dependency_metadata():
     assert "invalidated_downstream_artifacts" in LESSON_REVIEWER_SYSTEM
     assert "retained_artifacts" in LESSON_REVIEWER_SYSTEM

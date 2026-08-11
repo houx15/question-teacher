@@ -254,7 +254,7 @@ def grounded_source_problem(reference_solution_text=None):
     )
 
 
-def grounded_trace_payload(*, checked_step_ids=()):
+def grounded_trace_payload(*, checked_step_ids=(), warning_step_ids=()):
     payload = trace_payload()
     assumption_ids = {
         item["assumption_id"]: "ground-assumption-%03d" % index
@@ -268,7 +268,9 @@ def grounded_trace_payload(*, checked_step_ids=()):
         original_id = item["assumption_id"]
         item["assumption_id"] = assumption_ids[original_id]
         item["source_anchor"]["source_kind"] = (
-            "problem" if original_id == "assumption-nonzero" else "solution"
+            "problem"
+            if original_id == "assumption-nonzero"
+            else "problem_derived"
         )
     for item in payload["source_steps"]:
         original_id = item["source_step_id"]
@@ -279,7 +281,11 @@ def grounded_trace_payload(*, checked_step_ids=()):
             for assumption_id in item["assumption_ids_used"]
         ]
         item["evidence_status"] = (
-            "checked" if original_id in checked_step_ids else "reference_only"
+            "checked"
+            if original_id in checked_step_ids
+            else "check_warning"
+            if original_id in warning_step_ids
+            else "reference_only"
         )
     return payload
 
@@ -302,12 +308,18 @@ def grounded_trajectory_payload():
     return payload
 
 
-def _approved_preparation_client(route_responses=None, performance=None):
+def _approved_preparation_client(
+    route_responses=None,
+    performance=None,
+    warning_step_ids=(),
+):
     grounded = route_responses is not None
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [
-                grounded_trace_payload() if grounded else trace_payload()
+                grounded_trace_payload(warning_step_ids=warning_step_ids)
+                if grounded
+                else trace_payload()
             ],
             "teaching_designer": [
                 grounded_trajectory_payload() if grounded else trajectory_payload()
@@ -591,7 +603,8 @@ def test_checker_unavailability_softly_degrades_the_real_grounded_route():
             raise ClaimCheckerUnavailableError("private checker outage")
 
     client = _approved_preparation_client(
-        [grounding_payload([check_request])]
+        [grounding_payload([check_request])],
+        warning_step_ids=["use-nonzero"],
     )
     lesson = asyncio.run(
         LessonGenerationService(

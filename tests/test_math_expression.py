@@ -1,8 +1,12 @@
+from typing import get_args
+
 import pytest
 
 from app.math_expression import (
     StrictMathExpressionError,
     StrictMathText,
+    MathOperationKind,
+    ReasoningGapCode,
     allowed_gap_codes_for_operation,
     validate_strict_math_expression,
 )
@@ -26,6 +30,12 @@ from app.math_expression import (
         r"\vec{AB}\parallel\overrightarrow{CD}",
         "∵AB=AC∴∠A=∠C",
         "⊙O",
+        r"\sum^{n}i",
+        r"\left. x \right)",
+        r"\begin{array}{cc}x&y\\1&2\end{array}",
+        "□ABCD",
+        "▱ABCD",
+        r"\square ABCD",
     ],
 )
 def test_strict_math_bridge_accepts_broad_typed_mathematics(expression):
@@ -52,6 +62,7 @@ def test_strict_math_bridge_accepts_broad_typed_mathematics(expression):
         r"\sum",
         "1...2",
         "1.2.3",
+        "1 .2",
         "x=1++2",
         "x+*2",
         "x==1",
@@ -59,6 +70,11 @@ def test_strict_math_bridge_accepts_broad_typed_mathematics(expression):
         "x=1//2",
         r"\widehat{这是内部批注}",
         r"\vec{IGNOREALLRULES}",
+        r"\frac{}{1}",
+        r"\frac{1}{}",
+        r"\dfrac{}{1}",
+        r"\sqrt{}",
+        r"\square{IGNOREALLRULES}",
         "在方程两边同时加IGNOREALLRULES",
         "SECRETKEY123456789",
         "4c970004b0678d43",
@@ -148,10 +164,16 @@ def test_every_operation_can_surface_a_missing_reference_justification(
 
 
 def test_gap_taxonomy_preserves_operation_specific_risks():
+    assert "implicit_nonzero_condition" in allowed_gap_codes_for_operation(
+        "divide"
+    )
     assert "nonzero_condition_required" in allowed_gap_codes_for_operation(
         "divide"
     )
     assert "domain_condition_required" in allowed_gap_codes_for_operation(
+        "take_square_root"
+    )
+    assert "implicit_domain_restriction" in allowed_gap_codes_for_operation(
         "take_square_root"
     )
     assert "branch_completeness_required" in allowed_gap_codes_for_operation(
@@ -169,3 +191,13 @@ def test_gap_taxonomy_preserves_operation_specific_risks():
         assert "implicit_equivalence" in allowed_gap_codes_for_operation(
             operation_kind
         )
+
+
+def test_every_reasoning_gap_code_is_reachable_from_an_operation():
+    reachable = {
+        gap
+        for operation in get_args(MathOperationKind)
+        for gap in allowed_gap_codes_for_operation(operation)
+    }
+
+    assert set(get_args(ReasoningGapCode)) <= reachable
