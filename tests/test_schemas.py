@@ -1,6 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
+from tests.test_generation import valid_draft
+
 from app.schemas import (
     BoardAction,
     GenerationJob,
@@ -1688,3 +1690,37 @@ def test_lesson_and_job_contracts_support_nested_runtime_data():
     assert runtime.transfer_item.correct_option_id == "both-roots"
     assert len(runtime.transfer_item.options) == 3
     assert job.status == "completed"
+
+
+def test_lesson_draft_accepts_optional_authored_fixed_section_cues():
+    payload = {
+        **valid_draft(),
+        "opening_sync_cues": [
+            {"cue_id": "authored-opening", "spoken_text": "先找到已知根。"}
+        ],
+        "method_introduction_sync_cues": [
+            {"cue_id": "authored-method", "spoken_text": "根一定满足原方程。"}
+        ],
+        "summary_sync_cues": [
+            {"cue_id": "authored-summary", "spoken_text": "最后回到题目要求的关系。"}
+        ],
+    }
+
+    draft = LessonDraft.model_validate(payload)
+
+    assert draft.opening_sync_cues[0].cue_id == "authored-opening"
+    assert draft.method_introduction_sync_cues[0].cue_id == "authored-method"
+    assert draft.summary_sync_cues[0].cue_id == "authored-summary"
+
+
+def test_lesson_draft_requires_authored_cue_ids_to_be_globally_unique():
+    payload = valid_draft()
+    payload["opening_sync_cues"] = [
+        {
+            "cue_id": payload["moments"][0]["sync_cues"][0]["cue_id"],
+            "spoken_text": "这个 ID 不能与正文重复。",
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="lesson cue ids"):
+        LessonDraft.model_validate(payload)

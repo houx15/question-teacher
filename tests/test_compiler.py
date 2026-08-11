@@ -4,7 +4,7 @@ import pytest
 
 from app.compiler import LessonCompileError, LessonCompiler
 from app.problem_focus import compile_problem_focus_targets
-from app.schemas import LessonDraft, ProblemInput
+from app.schemas import LessonDraft, NarrativeSyncCue, ProblemInput
 from tests.test_generation import problem, valid_draft
 
 
@@ -455,6 +455,92 @@ def test_compiler_adds_one_stable_path_safe_cue_to_each_fixed_beat():
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", cue_id)
             for cue_id in cue_ids
         )
+
+
+def test_compiler_uses_authored_fixed_section_cues_without_rewriting_them():
+    draft_payload = valid_draft()
+    authored = {
+        "opening_sync_cues": [
+            {
+                "cue_id": "script-opening",
+                "spoken_text": "先看题目给出的根。",
+                "lead_actions": [
+                    {
+                        "surface": "problem",
+                        "type": "focus",
+                        "target": "problem-math-001",
+                    }
+                ],
+            }
+        ],
+        "method_introduction_sync_cues": [
+            {
+                "cue_id": "script-method",
+                "spoken_text": "根的定义告诉我们可以代入。",
+                "start_actions": [
+                    {
+                        "surface": "board",
+                        "type": "write",
+                        "target": "method-line",
+                        "content": "代入已知根",
+                    }
+                ],
+            }
+        ],
+        "summary_sync_cues": [
+            {
+                "cue_id": "script-summary",
+                "spoken_text": "代入、整理，再回到目标。",
+                "end_actions": [
+                    {
+                        "surface": "board",
+                        "type": "fade",
+                        "target": "method-line",
+                    }
+                ],
+            }
+        ],
+    }
+    draft_payload.update(authored)
+
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft_payload),
+        {"review_status": "approved"},
+    )
+
+    fixed_beats = (lesson.beats[0], lesson.beats[1], lesson.beats[-2])
+    expected_groups = tuple(
+        [
+            NarrativeSyncCue.model_validate(cue).model_dump(
+                exclude_none=True
+            )
+            for cue in cues
+        ]
+        for cues in authored.values()
+    )
+    for beat, expected in zip(fixed_beats, expected_groups):
+        assert [cue.model_dump(exclude_none=True) for cue in beat.sync_cues] == expected
+        assert beat.narration == "".join(item["spoken_text"] for item in expected)
+
+
+def test_compiler_legacy_draft_fixed_sections_remain_byte_equivalent():
+    draft = LessonDraft.model_validate(valid_draft())
+    first = LessonCompiler(lesson_id_factory=lambda: "legacy-fixed").compile(
+        problem(), draft, {"review_status": "approved"}
+    )
+    explicit_absence = draft.model_copy(
+        update={
+            "opening_sync_cues": None,
+            "method_introduction_sync_cues": None,
+            "summary_sync_cues": None,
+        }
+    )
+    second = LessonCompiler(lesson_id_factory=lambda: "legacy-fixed").compile(
+        problem(), explicit_absence, {"review_status": "approved"}
+    )
+
+    assert first.model_dump_json() == second.model_dump_json()
 
 
 def test_compiler_rejects_director_cue_collision_with_reserved_runtime_id():

@@ -38,15 +38,24 @@ from app.preparation_models import (
     TeachingScript,
 )
 from app.preparation_prompts import (
+    CLASSROOM_DIRECTOR_SYSTEM,
+    INTERACTION_DESIGNER_SYSTEM,
+    SCRIPT_TEACHER_SYSTEM,
     SOLUTION_TRACE_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    interaction_plan_prompt,
+    performance_score_prompt,
     reasoning_trajectory_prompt,
     solution_trace_prompt,
+    teaching_script_prompt,
 )
 from app.preparation_validation import (
     PreparationValidationError,
+    validate_interaction_plan,
+    validate_performance_score,
     validate_reasoning_trajectory,
     validate_solution_trace,
+    validate_teaching_script,
 )
 from app.schemas import ProblemFocusTarget, ProblemInput
 from app.teaching_route import FrozenTeachingRoute
@@ -345,10 +354,17 @@ class LessonPreparationPipeline:
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback],
     ) -> PreparedLesson:
-        """Task 4 boundary; Tasks 5 and 6 replace this with downstream stages."""
-        del state, problem, teaching_route, problem_focus_targets, on_stage
+        """Run Task 5 artifacts, retaining an honest Task 6 boundary."""
+        del problem, teaching_route
+        await self._create_teaching_script(state, on_stage)
+        await self._create_interaction_plan(state, on_stage)
+        await self._create_performance_score(
+            state,
+            problem_focus_targets,
+            on_stage,
+        )
         raise NotImplementedError(
-            "downstream preparation stages are not implemented in Task 4"
+            "simulation and review stages are not implemented in Task 5"
         )
 
     async def _create_solution_trace(
@@ -434,6 +450,138 @@ class LessonPreparationPipeline:
             artifact=trajectory,
         )
         return trajectory
+
+    async def _create_teaching_script(
+        self,
+        state: PreparationState,
+        on_stage: Optional[StageCallback],
+    ) -> TeachingScript:
+        self._require_active_state(state)
+        if state.reasoning_trajectory is None:
+            raise RuntimeError(
+                "reasoning trajectory must exist before script writing"
+            )
+        await self._emit(on_stage, "编写讲稿")
+        script = await self._complete_model(
+            "script_teacher",
+            SCRIPT_TEACHER_SYSTEM,
+            teaching_script_prompt(state.reasoning_trajectory),
+            TeachingScript,
+        )
+        try:
+            validate_teaching_script(script, state.reasoning_trajectory)
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "script_teacher",
+                "teaching_script_failed",
+            )
+            raise PreparationFailure(
+                category="teaching_script_failed",
+                role="script_teacher",
+                detail="讲稿未通过确定性校验。",
+            ) from None
+        self._accept_artifact(
+            state,
+            artifact_type="teaching_script",
+            responsible_role="script_teacher",
+            artifact=script,
+        )
+        return script
+
+    async def _create_interaction_plan(
+        self,
+        state: PreparationState,
+        on_stage: Optional[StageCallback],
+    ) -> InteractionPlan:
+        self._require_active_state(state)
+        if state.reasoning_trajectory is None or state.teaching_script is None:
+            raise RuntimeError(
+                "trajectory and script must exist before interaction design"
+            )
+        await self._emit(on_stage, "设计互动")
+        plan = await self._complete_model(
+            "interaction_designer",
+            INTERACTION_DESIGNER_SYSTEM,
+            interaction_plan_prompt(
+                state.reasoning_trajectory,
+                state.teaching_script,
+            ),
+            InteractionPlan,
+        )
+        try:
+            validate_interaction_plan(
+                plan,
+                state.reasoning_trajectory,
+                state.teaching_script,
+            )
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "interaction_designer",
+                "interaction_plan_failed",
+            )
+            raise PreparationFailure(
+                category="interaction_plan_failed",
+                role="interaction_designer",
+                detail="互动方案未通过确定性校验。",
+            ) from None
+        self._accept_artifact(
+            state,
+            artifact_type="interaction_plan",
+            responsible_role="interaction_designer",
+            artifact=plan,
+        )
+        return plan
+
+    async def _create_performance_score(
+        self,
+        state: PreparationState,
+        problem_focus_targets: List[ProblemFocusTarget],
+        on_stage: Optional[StageCallback],
+    ) -> PerformanceScore:
+        self._require_active_state(state)
+        if state.teaching_script is None or state.interaction_plan is None:
+            raise RuntimeError(
+                "script and interaction plan must exist before direction"
+            )
+        await self._emit(on_stage, "编排板书与高亮")
+        score = await self._complete_model(
+            "classroom_director",
+            CLASSROOM_DIRECTOR_SYSTEM,
+            performance_score_prompt(
+                problem_focus_targets,
+                state.teaching_script,
+                state.interaction_plan,
+                self.capabilities,
+            ),
+            PerformanceScore,
+        )
+        try:
+            validate_performance_score(
+                score,
+                problem_focus_targets,
+                state.teaching_script,
+                state.interaction_plan,
+            )
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "classroom_director",
+                "performance_score_failed",
+            )
+            raise PreparationFailure(
+                category="performance_score_failed",
+                role="classroom_director",
+                detail="板书与高亮编排未通过确定性校验。",
+            ) from None
+        self._accept_artifact(
+            state,
+            artifact_type="performance_score",
+            responsible_role="classroom_director",
+            artifact=score,
+        )
+        return score
 
     async def _complete_model(
         self,

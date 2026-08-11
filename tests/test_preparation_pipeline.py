@@ -193,11 +193,101 @@ def trajectory_payload(
     }
 
 
-def client(trace=None, trajectory=None):
+def downstream_script_payload():
+    clause_specs = (
+        ("clause-open", "episode-1", ["must-1"], "先找到题目要求的关系。", ["m-n"]),
+        ("clause-method", "episode-1", [], "根一定满足原方程，所以先代入。", ["x=2n"]),
+        ("clause-2", "episode-2", ["must-2"], "代入后先观察它与目标的关系。", ["4n^2-4mn+2n=0"]),
+        ("clause-3", "episode-3", ["must-3"], "注意n不等于零，这一步才能约去因式。", ["2n-2m+1=0"]),
+        ("clause-4", "episode-4", ["must-4"], "约去之后检查新关系是否能继续。", ["2n-2m+1=0"]),
+        ("clause-close", "episode-5", ["must-5"], "最后整理并回到m减n这个目标。", ["m-n=1/2"]),
+    )
+    return {
+        "title": "从参数根到目标关系",
+        "learning_goal": "理解代入根与非零条件的作用",
+        "method_rationale": "根满足原方程",
+        "method_introduction": {
+            "method_name": "代入法",
+            "student_definition": "把已知根放回原方程",
+            "target_form": "m-n",
+            "why_it_helps": "直接建立参数关系",
+        },
+        "opening_clause_ids": ["clause-open"],
+        "method_introduction_clause_ids": ["clause-method"],
+        "clauses": [
+            {
+                "clause_id": clause_id,
+                "episode_id": episode_id,
+                "pedagogical_function": "explain",
+                "spoken_text": spoken_text,
+                "math_references": math_references,
+                "learner_gain": "理解当前一步为什么推进",
+                "answer_exposure": clause_id == "clause-close",
+                "must_teach_refs": must_teach_refs,
+            }
+            for (
+                clause_id,
+                episode_id,
+                must_teach_refs,
+                spoken_text,
+                math_references,
+            ) in clause_specs
+        ],
+        "closing_summary_clause_ids": ["clause-close"],
+    }
+
+
+def downstream_transfer_payload():
+    return {
+        "problem_text": "若a是另一个方程的根，下一步应做什么？",
+        "expected_answer": "代入已知根",
+        "method_signal": "使用根的定义",
+        "options": [
+            {"option_id": "transfer-a", "label": "代入已知根", "canonical_answer": "代入已知根", "feedback": "对。"},
+            {"option_id": "transfer-b", "label": "猜测参数", "canonical_answer": "猜测", "feedback": "先用根条件。"},
+            {"option_id": "transfer-c", "label": "忽略方程", "canonical_answer": "忽略", "feedback": "根必须满足方程。"},
+        ],
+        "correct_option_id": "transfer-a",
+    }
+
+
+def downstream_interaction_payload():
+    return {"interactions": [], "transfer_item": downstream_transfer_payload()}
+
+
+def downstream_score_payload():
+    script = downstream_script_payload()
+    return {
+        "cues": [
+            {
+                "cue_id": "cue-%s" % clause["clause_id"],
+                "clause_ids": [clause["clause_id"]],
+            }
+            for clause in script["clauses"]
+        ],
+        "board_objects": [],
+        "overlay_transitions": [],
+    }
+
+
+def client(
+    trace=None,
+    trajectory=None,
+    script=None,
+    interaction=None,
+    performance=None,
+):
     return PreparationFakeClient(
         {
             "reference_analyst": [trace or trace_payload()],
             "teaching_designer": [trajectory or trajectory_payload()],
+            "script_teacher": [script or downstream_script_payload()],
+            "interaction_designer": [
+                interaction or downstream_interaction_payload()
+            ],
+            "classroom_director": [
+                performance or downstream_score_payload()
+            ],
         }
     )
 
@@ -211,11 +301,250 @@ def run_early(pipeline, on_stage=None):
 
 
 def test_public_prepare_cannot_return_a_partial_prepared_lesson():
-    with pytest.raises(NotImplementedError, match="downstream preparation"):
+    with pytest.raises(NotImplementedError, match="simulation and review"):
         asyncio.run(
             LessonPreparationPipeline(client()).prepare(
                 problem(), route(), focus_targets()
             )
+        )
+
+
+def test_script_interaction_and_performance_stages_run_in_dependency_order():
+    fake = client()
+    stages = []
+
+    with pytest.raises(NotImplementedError, match="simulation and review"):
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets(), on_stage=stages.append
+            )
+        )
+
+    assert [call.role for call in fake.calls] == [
+        "reference_analyst",
+        "teaching_designer",
+        "script_teacher",
+        "interaction_designer",
+        "classroom_director",
+    ]
+    assert stages == [
+        "整理参考解析",
+        "设计解题思维轨迹",
+        "编写讲稿",
+        "设计互动",
+        "编排板书与高亮",
+    ]
+
+
+def test_zero_interactions_and_cues_without_highlights_are_accepted():
+    fake = client(
+        interaction=downstream_interaction_payload(),
+        performance=downstream_score_payload(),
+    )
+
+    with pytest.raises(NotImplementedError, match="simulation and review"):
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert [call.role for call in fake.calls][-2:] == [
+        "interaction_designer",
+        "classroom_director",
+    ]
+
+
+def test_script_dependency_reordering_fails_without_structure_retry():
+    invalid = downstream_script_payload()
+    invalid["clauses"][2], invalid["clauses"][3] = (
+        invalid["clauses"][3],
+        invalid["clauses"][2],
+    )
+    fake = client(script=invalid)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "teaching_script_failed"
+    assert captured.value.role == "script_teacher"
+    assert [call.role for call in fake.calls].count("script_teacher") == 1
+    assert captured.value.audit.versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+
+
+def test_non_discriminating_performance_emphasis_fails_deterministically():
+    invalid = downstream_score_payload()
+    invalid["board_objects"] = [
+        {"board_object_id": "only-board-object", "content": "m-n"}
+    ]
+    invalid["cues"][0]["start_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "only-board-object",
+                "content": "m-n",
+            },
+        },
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "annotate",
+                "target": "only-board-object",
+                "annotation": "label",
+                "content": "m-n",
+            },
+        },
+    ]
+    fake = client(performance=invalid)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "performance_score_failed"
+    assert captured.value.role == "classroom_director"
+    assert [call.role for call in fake.calls].count("classroom_director") == 1
+
+
+def test_highlighting_the_only_board_element_is_non_discriminating():
+    invalid = downstream_score_payload()
+    invalid["board_objects"] = [
+        {"board_object_id": "only-board-object", "content": "m-n"}
+    ]
+    invalid["cues"][0]["start_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "only-board-object",
+                "content": "m-n",
+            },
+        },
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "only-board-object",
+                "emphasis_style": "highlight",
+            },
+        },
+    ]
+    invalid["cues"][0]["end_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "fade",
+                "target": "only-board-object",
+            },
+        }
+    ]
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(client(performance=invalid)).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "performance_score_failed"
+
+
+def test_problem_highlight_must_be_bound_to_a_clause_discussing_the_target():
+    script = downstream_script_payload()
+    script["clauses"][1]["math_references"] = ["x^2-2mx+2n=0"]
+    invalid = downstream_score_payload()
+    invalid["cues"][4]["lead_actions"] = [
+        {
+            "clause_id": "clause-4",
+            "action": {
+                "surface": "problem",
+                "type": "focus",
+                "target": "problem-equation",
+            },
+        }
+    ]
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(
+                client(script=script, performance=invalid)
+            ).prepare(problem(), route(), focus_targets())
+        )
+
+    assert captured.value.category == "performance_score_failed"
+
+
+def test_board_object_can_be_emphasized_and_faded_after_introduction():
+    script = downstream_script_payload()
+    script["clauses"][0]["math_references"].append("x=2n")
+    valid = downstream_score_payload()
+    valid["board_objects"] = [
+        {"board_object_id": "target-relation", "content": "m-n"},
+        {"board_object_id": "given-root", "content": "x=2n"},
+    ]
+    valid["cues"][0]["start_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "target-relation",
+                "content": "m-n",
+            },
+        },
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "given-root",
+                "content": "x=2n",
+            },
+        },
+    ]
+    valid["cues"][1]["start_actions"] = [
+        {
+            "clause_id": "clause-method",
+            "action": {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "target-relation",
+                "emphasis_style": "underline",
+            },
+        }
+    ]
+    valid["cues"][1]["end_actions"] = [
+        {
+            "clause_id": "clause-method",
+            "action": {
+                "surface": "board",
+                "type": "fade",
+                "target": "target-relation",
+            },
+        }
+    ]
+
+    with pytest.raises(NotImplementedError, match="simulation and review"):
+        asyncio.run(
+            LessonPreparationPipeline(
+                client(script=script, performance=valid)
+            ).prepare(problem(), route(), focus_targets())
         )
 
 

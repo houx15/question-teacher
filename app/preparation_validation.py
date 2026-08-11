@@ -795,6 +795,18 @@ def validate_performance_score(
                         bound.clause_id,
                         "Problem visual target appears before its bound clause references it.",
                     )
+                if not any(
+                    contains_normalized_cross_artifact_math_identity(
+                        reference,
+                        problem_content[action.target],
+                    )
+                    for reference in references_by_position[bound_position]
+                ):
+                    _fail(
+                        "visual_clause_invalid",
+                        bound.clause_id,
+                        "Problem visual target is not discussed by its bound clause.",
+                    )
             if action.type in {"write", "transform"}:
                 normalized_content = normalize_cross_artifact_math_identity(
                     action.content or ""
@@ -825,6 +837,17 @@ def validate_performance_score(
                     "visual_action_too_early",
                     bound.clause_id,
                     "Board visual target appears before its bound clause references it.",
+                )
+            if (
+                action.type == "emphasize"
+                and action.surface == "board"
+                and len(current_board_content) == 1
+                and action.target in current_board_content
+            ):
+                _fail(
+                    "non_discriminating_emphasis",
+                    bound.clause_id,
+                    "Emphasis on the sole visible board object is not discriminating.",
                 )
             if (
                 action.type == "annotate"

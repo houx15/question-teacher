@@ -107,20 +107,33 @@ class LessonCompiler:
         )
         authored_cue_ids = {
             cue.cue_id
-            for moment in draft.moments
-            for cue in moment.sync_cues
+            for cues in (
+                draft.opening_sync_cues or [],
+                draft.method_introduction_sync_cues or [],
+                [
+                    cue
+                    for moment in draft.moments
+                    for cue in moment.sync_cues
+                ],
+                draft.summary_sync_cues or [],
+            )
+            for cue in cues
         }
         if authored_cue_ids.intersection(_FIXED_CUE_IDS.values()):
             raise LessonCompileError(
                 "同步提示 ID 与编译器保留 ID 冲突。"
             )
 
-        opening_cues = [
-            RuntimeSyncCue(
-                cue_id=_FIXED_CUE_IDS["opening"],
-                spoken_text=draft.opening,
-            )
-        ]
+        opening_cues = (
+            [_copy_runtime_cue(cue) for cue in draft.opening_sync_cues]
+            if draft.opening_sync_cues is not None
+            else [
+                RuntimeSyncCue(
+                    cue_id=_FIXED_CUE_IDS["opening"],
+                    spoken_text=draft.opening,
+                )
+            ]
+        )
         beats: List[RuntimeBeat] = [
             _runtime_beat(
                 purpose="进入问题",
@@ -133,31 +146,38 @@ class LessonCompiler:
         method_narration = method_introduction.spoken_narration
         if len(method_narration) > 90:
             raise LessonCompileError("方法介绍的口语讲稿过长。")
-        method_cues = [
-            RuntimeSyncCue(
-                cue_id=_FIXED_CUE_IDS["method_introduction"],
-                spoken_text=method_narration,
-                start_actions=[
-                    SyncVisualAction(
-                        surface="board",
-                        type="write",
-                        target="method_name",
-                        content=method_introduction.method_name,
-                    ),
-                    SyncVisualAction(
-                        surface="board",
-                        type="focus",
-                        target="method_name",
-                    ),
-                    SyncVisualAction(
-                        surface="board",
-                        type="write",
-                        target="method_target_form",
-                        content=method_introduction.target_form,
-                    ),
-                ],
-            )
-        ]
+        method_cues = (
+            [
+                _copy_runtime_cue(cue)
+                for cue in draft.method_introduction_sync_cues
+            ]
+            if draft.method_introduction_sync_cues is not None
+            else [
+                RuntimeSyncCue(
+                    cue_id=_FIXED_CUE_IDS["method_introduction"],
+                    spoken_text=method_narration,
+                    start_actions=[
+                        SyncVisualAction(
+                            surface="board",
+                            type="write",
+                            target="method_name",
+                            content=method_introduction.method_name,
+                        ),
+                        SyncVisualAction(
+                            surface="board",
+                            type="focus",
+                            target="method_name",
+                        ),
+                        SyncVisualAction(
+                            surface="board",
+                            type="write",
+                            target="method_target_form",
+                            content=method_introduction.target_form,
+                        ),
+                    ],
+                )
+            ]
+        )
         beats.append(
             _runtime_beat(
                 purpose="先认识方法",
@@ -219,20 +239,27 @@ class LessonCompiler:
             [
                 _runtime_beat(
                     purpose="压缩方法",
-                    sync_cues=[
-                        RuntimeSyncCue(
-                            cue_id=_FIXED_CUE_IDS["summary"],
-                            spoken_text=draft.summary,
-                            start_actions=[
-                                SyncVisualAction(
-                                    surface="board",
-                                    type="write",
-                                    target="method_summary",
-                                    content=draft.summary,
-                                )
-                            ],
-                        )
-                    ],
+                    sync_cues=(
+                        [
+                            _copy_runtime_cue(cue)
+                            for cue in draft.summary_sync_cues
+                        ]
+                        if draft.summary_sync_cues is not None
+                        else [
+                            RuntimeSyncCue(
+                                cue_id=_FIXED_CUE_IDS["summary"],
+                                spoken_text=draft.summary,
+                                start_actions=[
+                                    SyncVisualAction(
+                                        surface="board",
+                                        type="write",
+                                        target="method_summary",
+                                        content=draft.summary,
+                                    )
+                                ],
+                            )
+                        ]
+                    ),
                     layer="base",
                 ),
                 _runtime_beat(

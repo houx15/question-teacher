@@ -974,6 +974,18 @@ class LessonDraft(SchemaModel):
     opening: NonEmptyString
     method_rationale: NonEmptyString
     method_introduction: MethodIntroduction
+    opening_sync_cues: Optional[List[NarrativeSyncCue]] = Field(
+        default=None,
+        min_length=1,
+    )
+    method_introduction_sync_cues: Optional[List[NarrativeSyncCue]] = Field(
+        default=None,
+        min_length=1,
+    )
+    summary_sync_cues: Optional[List[NarrativeSyncCue]] = Field(
+        default=None,
+        min_length=1,
+    )
     math_steps: List[MathStep] = Field(default_factory=list)
     teaching_route: Dict[str, object] = Field(
         default_factory=lambda: {
@@ -1019,8 +1031,17 @@ class LessonDraft(SchemaModel):
     def require_route_evidence(self) -> "LessonDraft":
         cue_ids = [
             cue.cue_id
-            for moment in self.moments
-            for cue in moment.sync_cues
+            for cues in (
+                self.opening_sync_cues or [],
+                self.method_introduction_sync_cues or [],
+                [
+                    cue
+                    for moment in self.moments
+                    for cue in moment.sync_cues
+                ],
+                self.summary_sync_cues or [],
+            )
+            for cue in cues
         ]
         if len(cue_ids) != len(set(cue_ids)):
             raise ValueError("lesson cue ids must be unique")
