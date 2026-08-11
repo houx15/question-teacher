@@ -898,6 +898,53 @@ def test_spoken_and_board_content_reject_internal_control_fragments(markup):
     )
 
 
+@pytest.mark.parametrize(
+    "markup",
+    (
+        r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\[\htmlStyle{color:red}{x}\]",
+        r"\(\htmlData{target=board-1}{x}\)",
+        r"\(\href{https://example.com}{x}\)",
+        r"\(\url{https://example.com}\)",
+        r"\(\includegraphics{lesson.png}\)",
+        '<img src="lesson.png">',
+        '<IMG SRC="lesson.png" />',
+        '<section data-target="board-1">x</section>',
+    ),
+)
+def test_board_content_rejects_dom_url_commands_and_generic_html(markup):
+    _, _, script, plan, score, *_ = models()
+    payload = score.model_dump()
+    payload["board_objects"][0]["content"] = markup
+    invalid = PerformanceScore.model_validate(payload)
+    assert_code(
+        "board_formula_invalid",
+        lambda: validate_performance_score(invalid, [], script, plan),
+    )
+
+
+@pytest.mark.parametrize(
+    "markup",
+    (
+        r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\[\htmlStyle{color:red}{x}\]",
+        r"\(\htmlData{target=board-1}{x}\)",
+        '<img src="lesson.png">',
+        '<IMG SRC="lesson.png" />',
+        '<section data-target="board-1">重点</section>',
+    ),
+)
+def test_teaching_script_rejects_generic_html_tags(markup):
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["clauses"][0]["spoken_text"] = markup
+    invalid = TeachingScript.model_validate(payload)
+    assert_code(
+        "spoken_markup_invalid",
+        lambda: validate_teaching_script(invalid, trajectory),
+    )
+
+
 def test_review_decision_rechecks_invalid_constructed_approval():
     invalid = LessonReviewDecision.model_construct(
         status="approved",

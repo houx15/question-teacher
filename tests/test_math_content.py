@@ -94,9 +94,33 @@ def test_malformed_html_selector_and_highlight_fragments_are_internal_control_sy
 @pytest.mark.parametrize(
     "value",
     (
+        r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\[\htmlStyle{color:red}{x}\]",
+        r"\(\htmlData{target=board-1}{x}\)",
+        r"\(\href{https://example.com}{x}\)",
+        r"\(\url{https://example.com}\)",
+        r"\(\includegraphics{lesson.png}\)",
+        '<img src="lesson.png">',
+        '<img src="lesson.png" />',
+        '<DIV class="lesson">content</DIV>',
+        '<section data-target="board-1"   >content</section   >',
+    ),
+)
+def test_dom_url_math_commands_and_generic_html_tags_are_internal_control_syntax(value):
+    assert contains_internal_control_syntax(value)
+    assert not is_valid_generated_display_content(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
         "x<2",
+        "a>b",
+        "用<角括号表达但不闭合",
+        "用 <说明 文字> 表达普通内容",
         "0.25",
         "观察[已知条件]",
+        "语义标识 board-1 与 problem-root",
         "由（1）得到结论",
         r"\(x<2\)",
         r"\({{x}}+1\)",
@@ -113,6 +137,25 @@ def test_legacy_spoken_cue_uses_shared_internal_control_syntax_boundary():
         NarrativeSyncCue(
             cue_id="cue-internal-control",
             spoken_text='<span class="is-highlighted">重点</span>',
+        )
+
+
+@pytest.mark.parametrize(
+    "spoken_text",
+    (
+        r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\[\htmlStyle{color:red}{x}\]",
+        r"\(\htmlData{target=board-1}{x}\)",
+        '<img src="lesson.png">',
+        '<IMG SRC="lesson.png" />',
+        '<section data-target="board-1">重点</section>',
+    ),
+)
+def test_legacy_spoken_cue_rejects_generic_html_tags(spoken_text):
+    with pytest.raises(ValidationError, match="natural speech"):
+        NarrativeSyncCue(
+            cue_id="cue-generic-html",
+            spoken_text=spoken_text,
         )
 
 
