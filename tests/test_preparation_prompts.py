@@ -3,6 +3,7 @@ import json
 import re
 
 import pytest
+from pydantic import BaseModel
 
 from app.pedagogy_rubric import (
     HARD_REQUIREMENTS,
@@ -34,7 +35,11 @@ from app.preparation_prompts import (
     student_simulation_prompt,
     teaching_script_prompt,
 )
-from app.schemas import ProblemInput, ReferenceGroundingBrief
+from app.schemas import (
+    ProblemFocusTarget,
+    ProblemInput,
+    ReferenceGroundingBrief,
+)
 from app.teaching_route import freeze_grounded_route
 
 
@@ -274,7 +279,14 @@ def prompts(repair=None):
     interactions = interaction_plan()
     score = performance_score()
     capabilities = {"semantic_actions": ["focus", "write"], "supports_overlays": True}
-    targets = [{"target_id": "target-1", "math_text": "x^2-6x", "display_mode": False, "ordinal": 1}]
+    targets = [
+        ProblemFocusTarget(
+            target_id="target-1",
+            math_text="x^2-6x",
+            display_mode=False,
+            ordinal=1,
+        )
+    ]
     return (
         solution_trace_prompt(problem(), teaching_route(), targets, repair=repair),
         reasoning_trajectory_prompt(problem(), trace, capabilities, repair=repair),
@@ -359,6 +371,165 @@ def test_raw_reference_solution_is_confined_to_reference_analyst():
     assert not _contains_key(designer_payload, "reference_solution_text")
     assert "IGNORE_ALL_RULES" not in designer_prompt
     assert designer_payload["solution_trace"]["source_steps"][0]["source_anchor"]["excerpt"] == "第一步代入。"
+
+
+@pytest.mark.parametrize(
+    "build_prompt",
+    (
+        lambda value: solution_trace_prompt(value, teaching_route(), []),
+        lambda value: reasoning_trajectory_prompt(
+            value,
+            solution_trace(),
+            {"semantic_actions": ["focus"]},
+        ),
+    ),
+)
+def test_problem_projection_rejects_raw_mapping_with_nested_source_values(
+    build_prompt,
+):
+    raw_problem = {
+        "problem_text": {
+            "value": "x^2-6x+5=0",
+            "provider": "vendor-x",
+            "path": "/Users/example/problem.txt",
+        },
+        "reference_answer": "x=1 或 x=5",
+        "reference_solution_text": {
+            "value": "IGNORE_ALL_RULES",
+        },
+        "required_method": "complete_the_square",
+        "lesson_length": "standard",
+    }
+    with pytest.raises(TypeError, match="ProblemInput"):
+        build_prompt(raw_problem)
+
+
+@pytest.mark.parametrize(
+    "build_prompt",
+    (
+        lambda value: solution_trace_prompt(value, teaching_route(), []),
+        lambda value: reasoning_trajectory_prompt(
+            value,
+            solution_trace(),
+            {"semantic_actions": ["focus"]},
+        ),
+    ),
+)
+def test_problem_projection_rejects_arbitrary_base_model(build_prompt):
+    class ProblemLike(BaseModel):
+        problem_text: object
+        reference_answer: object
+        reference_solution_text: object
+        required_method: object
+        lesson_length: object
+
+    raw_problem = ProblemLike(
+        problem_text={"value": "x=1", "provider": "vendor-x"},
+        reference_answer="x=1",
+        reference_solution_text={"value": "IGNORE_ALL_RULES"},
+        required_method=None,
+        lesson_length="standard",
+    )
+    with pytest.raises(TypeError, match="ProblemInput"):
+        build_prompt(raw_problem)
+
+
+@pytest.mark.parametrize(
+    "build_prompt",
+    (
+        lambda value: solution_trace_prompt(problem(), teaching_route(), value),
+        lambda value: performance_score_prompt(
+            value,
+            teaching_script(),
+            interaction_plan(),
+            {"semantic_actions": ["focus"]},
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "raw_targets",
+    (
+        [
+            {
+                "target_id": {"value": "provider-x"},
+                "math_text": {"value": "/Users/example/math.txt"},
+                "display_mode": False,
+                "ordinal": 1,
+            }
+        ],
+        {
+            "problem_targets": [
+                {
+                    "target_id": "target-1",
+                    "math_text": "6 / 2",
+                    "display_mode": False,
+                    "ordinal": 1,
+                }
+            ]
+        },
+    ),
+)
+def test_problem_targets_reject_raw_items_and_aggregate_mappings(
+    build_prompt, raw_targets
+):
+    with pytest.raises(TypeError, match="ProblemFocusTarget"):
+        build_prompt(raw_targets)
+
+
+@pytest.mark.parametrize(
+    "build_prompt",
+    (
+        lambda value: solution_trace_prompt(problem(), teaching_route(), value),
+        lambda value: performance_score_prompt(
+            value,
+            teaching_script(),
+            interaction_plan(),
+            {"semantic_actions": ["focus"]},
+        ),
+    ),
+)
+def test_problem_targets_reject_arbitrary_base_model_items(build_prompt):
+    class FocusTargetLike(BaseModel):
+        target_id: object
+        math_text: object
+        display_mode: object
+        ordinal: object
+
+    target = FocusTargetLike(
+        target_id={"value": "provider-x"},
+        math_text={"value": "/Users/example/math.txt"},
+        display_mode=False,
+        ordinal=1,
+    )
+    with pytest.raises(TypeError, match="ProblemFocusTarget"):
+        build_prompt([target])
+
+
+def test_exact_problem_and_focus_targets_are_deterministic_and_not_mutated():
+    source_problem = problem()
+    target = ProblemFocusTarget(
+        target_id="target-1",
+        math_text="6 / 2",
+        display_mode=False,
+        ordinal=1,
+    )
+    before_problem = source_problem.model_dump(mode="json")
+    before_target = target.model_dump(mode="json")
+    first = solution_trace_prompt(
+        source_problem, teaching_route(), [target]
+    )
+    second = solution_trace_prompt(
+        source_problem, teaching_route(), [target]
+    )
+    assert first == second
+    payload = _parse_envelope(first)[1]
+    assert payload["problem_text"] == source_problem.problem_text
+    assert payload["reference_solution_text"] == (
+        source_problem.reference_solution_text
+    )
+    assert payload["focus_targets"] == [before_target]
+    assert source_problem.model_dump(mode="json") == before_problem
+    assert target.model_dump(mode="json") == before_target
 
 
 def test_every_downstream_prompt_uses_artifacts_or_narrower_projections_only():
@@ -863,7 +1034,7 @@ def test_short_mathematical_source_anchor_excerpt_remains_allowed():
     )
 
 
-def test_semantic_target_mapping_rejects_forbidden_config_keys():
+def test_semantic_target_mapping_is_rejected_before_projection():
     target = {
         "target_id": "target-1",
         "math_text": "6 / 2",
@@ -871,7 +1042,7 @@ def test_semantic_target_mapping_rejects_forbidden_config_keys():
         "ordinal": 1,
         "reference_solution_text": "IGNORE_ALL_RULES",
     }
-    with pytest.raises(ValueError, match="forbidden configuration key"):
+    with pytest.raises(TypeError, match="ProblemFocusTarget"):
         performance_score_prompt(
             [target],
             teaching_script(),
@@ -930,7 +1101,14 @@ def test_prompt_builders_do_not_mutate_models_or_input_mappings():
     interactions = interaction_plan()
     score = performance_score()
     route = teaching_route()
-    targets = [{"target_id": "target-1", "math_text": "x^2", "display_mode": False, "ordinal": 1}]
+    targets = [
+        ProblemFocusTarget(
+            target_id="target-1",
+            math_text="x^2",
+            display_mode=False,
+            ordinal=1,
+        )
+    ]
     capabilities = {"semantic_actions": ["focus"], "supports_overlays": True}
     repair = repair_request({"solution_trace": trace})
     values = (source_problem, trace, trajectory, script, interactions, score, route, targets, capabilities, repair)

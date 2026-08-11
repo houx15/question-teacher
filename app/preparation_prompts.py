@@ -21,6 +21,7 @@ from app.preparation_models import (
     SolutionTrace,
     TeachingScript,
 )
+from app.schemas import ProblemFocusTarget, ProblemInput
 from app.teaching_route import FrozenTeachingRoute
 
 
@@ -233,8 +234,13 @@ def _artifact_payload(
     return value.model_dump(mode="json")
 
 
-def _problem_projection(problem: Any, include_reference_solution: bool) -> Dict[str, Any]:
-    source = _mapping_payload(problem, "problem")
+def _problem_projection(
+    problem: ProblemInput,
+    include_reference_solution: bool,
+) -> Dict[str, Any]:
+    if type(problem) is not ProblemInput:
+        raise TypeError("problem must be an exact ProblemInput model")
+    source = problem.model_dump(mode="json")
     fields = (
         "problem_text",
         "reference_answer",
@@ -247,25 +253,23 @@ def _problem_projection(problem: Any, include_reference_solution: bool) -> Dict[
     return result
 
 
-def _problem_targets_projection(problem_targets: Any) -> Any:
-    raw = _json_data(problem_targets)
-    _guard_structural_keys(raw, "problem_targets")
-    if isinstance(raw, dict):
-        for aggregate_key in ("problem_targets", "focus_targets", "problem_focus_targets"):
-            if aggregate_key in raw:
-                raw = raw[aggregate_key]
-                break
-        else:
-            raw = [raw]
-    if not isinstance(raw, list):
-        raise TypeError("problem targets must serialize to a JSON array")
-    allowed = ("target_id", "math_text", "display_mode", "ordinal")
+def _problem_targets_projection(
+    problem_targets: Sequence[ProblemFocusTarget],
+) -> Any:
+    if (
+        isinstance(problem_targets, (str, bytes, Mapping))
+        or not isinstance(problem_targets, Sequence)
+    ):
+        raise TypeError(
+            "problem_targets must be a sequence of exact ProblemFocusTarget models"
+        )
     projected = []
-    for item in raw:
-        if not isinstance(item, dict):
-            raise TypeError("each problem target must serialize to a JSON object")
-        projected.append({key: item[key] for key in allowed if key in item})
-    _guard_structural_keys(projected, "problem_targets")
+    for item in problem_targets:
+        if type(item) is not ProblemFocusTarget:
+            raise TypeError(
+                "problem_targets must contain exact ProblemFocusTarget models"
+            )
+        projected.append(item.model_dump(mode="json"))
     return projected
 
 
@@ -457,9 +461,9 @@ def _prompt_envelope(task: str, payload: Mapping[str, Any]) -> str:
 
 
 def solution_trace_prompt(
-    problem: Any,
+    problem: ProblemInput,
     teaching_route: Any,
-    focus_targets: Sequence[Any],
+    focus_targets: Sequence[ProblemFocusTarget],
     repair: Optional[Mapping[str, Any]] = None,
 ) -> str:
     payload = _problem_projection(problem, include_reference_solution=True)
@@ -476,7 +480,7 @@ def solution_trace_prompt(
 
 
 def reasoning_trajectory_prompt(
-    problem: Any,
+    problem: ProblemInput,
     solution_trace: SolutionTrace,
     capabilities: Mapping[str, Any],
     repair: Optional[Mapping[str, Any]] = None,
@@ -535,7 +539,7 @@ def interaction_plan_prompt(
 
 
 def performance_score_prompt(
-    problem_targets: Any,
+    problem_targets: Sequence[ProblemFocusTarget],
     teaching_script: TeachingScript,
     interaction_plan: InteractionPlan,
     capabilities: Mapping[str, Any],
