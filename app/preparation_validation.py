@@ -23,6 +23,7 @@ from app.problem_focus import MAX_PROBLEM_FOCUS_TARGETS
 from app.preparation_models import (
     InteractionPlan,
     LessonReviewDecision,
+    MAX_PREPARATION_ITEMS,
     PerformanceScore,
     PreparedLesson,
     ReasoningTrajectory,
@@ -36,7 +37,7 @@ from app.teaching_route import FrozenTeachingRoute
 
 ProblemTargets = Union[List[ProblemFocusTarget], Tuple[ProblemFocusTarget, ...]]
 ActionKey = Tuple[str, str]
-MAX_PERFORMANCE_CLAUSES = 256
+MAX_PERFORMANCE_CLAUSES = MAX_PREPARATION_ITEMS
 MAX_PERFORMANCE_ACTIONS = 2048
 MAX_PERFORMANCE_MATH_REFERENCES = 2048
 

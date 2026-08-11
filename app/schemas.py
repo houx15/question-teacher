@@ -1,3 +1,4 @@
+from types import MappingProxyType
 from typing import Annotated, Dict, List, Literal, Optional
 
 from pydantic import (
@@ -163,6 +164,15 @@ LessonLayer = Literal[
     "comparison",
     "interaction",
 ]
+FIXED_RUNTIME_CUE_IDS = MappingProxyType(
+    {
+        "opening": "runtime-opening-cue",
+        "method_introduction": "runtime-method-introduction-cue",
+        "summary": "runtime-summary-cue",
+        "transfer_intro": "runtime-transfer-intro-cue",
+    }
+)
+RESERVED_RUNTIME_CUE_IDS = frozenset(FIXED_RUNTIME_CUE_IDS.values())
 NarrativeLayer = Literal[
     "base",
     "micro_explanation",
@@ -990,6 +1000,10 @@ class LessonDraft(SchemaModel):
         GeneratedId,
         Interaction,
     ] = Field(default_factory=dict)
+    fixed_section_layers_by_cue: Dict[
+        GeneratedId,
+        NarrativeLayer,
+    ] = Field(default_factory=dict)
     transfer_feedback_is_authoritative: bool = False
     math_steps: List[MathStep] = Field(default_factory=list)
     teaching_route: Dict[str, object] = Field(
@@ -1064,6 +1078,10 @@ class LessonDraft(SchemaModel):
         ):
             raise ValueError(
                 "fixed-section interaction must follow an authored fixed cue"
+            )
+        if not set(self.fixed_section_layers_by_cue).issubset(fixed_cue_ids):
+            raise ValueError(
+                "fixed-section layer must reference an authored fixed cue"
             )
         mode = self.teaching_route.get("verification_mode")
         if mode == "symbolic_verified" and not self.math_steps:

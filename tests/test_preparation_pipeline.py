@@ -362,6 +362,45 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
     ]
 
 
+def test_oversized_valid_upstream_prompt_fails_safely_with_current_audit():
+    oversized = trajectory_payload(modes=("plan",))
+    private_marker = "PRIVATE-OVERSIZED-TRAJECTORY"
+    oversized["episodes"][0]["decision"] = (
+        private_marker + "大" * 300_000
+    )
+    fake = client(trajectory=oversized)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    failure = captured.value
+    assert failure.category == "prompt_payload_too_large"
+    assert failure.role == "script_teacher"
+    assert failure.detail == "备课内容超出可处理范围。"
+    assert private_marker not in failure.detail
+    assert [call.role for call in fake.calls] == [
+        "reference_analyst",
+        "teaching_designer",
+    ]
+    assert failure.audit is not None
+    assert failure.audit.versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+    assert [call.role for call in failure.audit.role_calls] == [
+        "reference_analyst",
+        "teaching_designer",
+        "script_teacher",
+    ]
+    assert failure.audit.role_calls[-1].failure_category == (
+        "prompt_payload_too_large"
+    )
+
+
 def test_zero_interactions_and_cues_without_highlights_are_accepted():
     fake = client(
         interaction=downstream_interaction_payload(),

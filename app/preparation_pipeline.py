@@ -377,7 +377,10 @@ class LessonPreparationPipeline:
     ) -> SolutionTrace:
         self._require_active_state(state)
         await self._emit(on_stage, "整理参考解析")
-        prompt = solution_trace_prompt(
+        prompt = self._build_prompt(
+            state,
+            "reference_analyst",
+            solution_trace_prompt,
             problem,
             teaching_route,
             problem_focus_targets,
@@ -419,7 +422,10 @@ class LessonPreparationPipeline:
         if state.solution_trace is None:
             raise RuntimeError("solution trace must exist before trajectory design")
         await self._emit(on_stage, "设计解题思维轨迹")
-        prompt = reasoning_trajectory_prompt(
+        prompt = self._build_prompt(
+            state,
+            "teaching_designer",
+            reasoning_trajectory_prompt,
             problem,
             state.solution_trace,
             self.capabilities,
@@ -465,7 +471,12 @@ class LessonPreparationPipeline:
         script = await self._complete_model(
             "script_teacher",
             SCRIPT_TEACHER_SYSTEM,
-            teaching_script_prompt(state.reasoning_trajectory),
+            self._build_prompt(
+                state,
+                "script_teacher",
+                teaching_script_prompt,
+                state.reasoning_trajectory,
+            ),
             TeachingScript,
         )
         try:
@@ -500,13 +511,17 @@ class LessonPreparationPipeline:
                 "trajectory and script must exist before interaction design"
             )
         await self._emit(on_stage, "设计互动")
+        prompt = self._build_prompt(
+            state,
+            "interaction_designer",
+            interaction_plan_prompt,
+            state.reasoning_trajectory,
+            state.teaching_script,
+        )
         plan = await self._complete_model(
             "interaction_designer",
             INTERACTION_DESIGNER_SYSTEM,
-            interaction_plan_prompt(
-                state.reasoning_trajectory,
-                state.teaching_script,
-            ),
+            prompt,
             InteractionPlan,
         )
         try:
@@ -546,15 +561,19 @@ class LessonPreparationPipeline:
                 "script and interaction plan must exist before direction"
             )
         await self._emit(on_stage, "编排板书与高亮")
+        prompt = self._build_prompt(
+            state,
+            "classroom_director",
+            performance_score_prompt,
+            problem_focus_targets,
+            state.teaching_script,
+            state.interaction_plan,
+            self.capabilities,
+        )
         score = await self._complete_model(
             "classroom_director",
             CLASSROOM_DIRECTOR_SYSTEM,
-            performance_score_prompt(
-                problem_focus_targets,
-                state.teaching_script,
-                state.interaction_plan,
-                self.capabilities,
-            ),
+            prompt,
             PerformanceScore,
         )
         try:
@@ -582,6 +601,33 @@ class LessonPreparationPipeline:
             artifact=score,
         )
         return score
+
+    def _build_prompt(
+        self,
+        state: PreparationState,
+        role: str,
+        builder: Callable[..., str],
+        *args: object,
+    ) -> str:
+        started = time.monotonic()
+        try:
+            return builder(*args)
+        except ValueError as error:
+            if str(error) != "prompt_payload_too_large":
+                raise
+            self._append_call_record(
+                state,
+                role,
+                started,
+                0,
+                "prompt_payload_too_large",
+                None,
+            )
+            raise PreparationFailure(
+                category="prompt_payload_too_large",
+                role=role,
+                detail="备课内容超出可处理范围。",
+            ) from None
 
     async def _complete_model(
         self,

@@ -33,6 +33,11 @@ ROLE_CALL_TOKEN_USAGE_KEYS = frozenset(
     }
 )
 MAX_ROLE_CALL_TOKEN_COUNTER = 1_000_000_000
+MAX_PREPARATION_ITEMS = 256
+MAX_DETAIL_ITEMS = 64
+MAX_MATH_REFERENCE_ITEMS = 2048
+MAX_VISUAL_ACTION_ITEMS = 2048
+MAX_ARTIFACT_HISTORY_ITEMS = 64
 
 
 def _require_unique(values: List[str], label: str) -> None:
@@ -54,8 +59,12 @@ class SolutionTraceStep(SchemaModel):
     justification: NonEmptyString
     state_after: NonEmptyString
     new_information: NonEmptyString
-    assumption_ids_used: List[GeneratedId] = Field(default_factory=list)
-    omitted_reasoning: List[NonEmptyString] = Field(default_factory=list)
+    assumption_ids_used: List[GeneratedId] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
+    omitted_reasoning: List[NonEmptyString] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
     evidence_status: EvidenceStatus
 
 
@@ -68,9 +77,15 @@ class TraceAssumption(SchemaModel):
 class SolutionTrace(SchemaModel):
     task_target: NonEmptyString
     reference_conclusion: NonEmptyString
-    assumptions: List[TraceAssumption] = Field(default_factory=list)
-    source_steps: List[SolutionTraceStep] = Field(min_length=1)
-    audit_notes: List[NonEmptyString] = Field(default_factory=list)
+    assumptions: List[TraceAssumption] = Field(
+        default_factory=list, max_length=MAX_PREPARATION_ITEMS
+    )
+    source_steps: List[SolutionTraceStep] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    audit_notes: List[NonEmptyString] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
 
     @model_validator(mode="after")
     def validate_local_ids(self) -> "SolutionTrace":
@@ -89,9 +104,13 @@ class ReasoningEpisode(SchemaModel):
     episode_id: GeneratedId
     sequence_index: int = Field(ge=0)
     mode: ReasoningMode
-    source_step_ids: List[GeneratedId] = Field(min_length=1)
+    source_step_ids: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
     learner_state_before: NonEmptyString
-    attention_targets: List[NonEmptyString] = Field(min_length=1)
+    attention_targets: List[NonEmptyString] = Field(
+        min_length=1, max_length=MAX_DETAIL_ITEMS
+    )
     thinking_question: NonEmptyString
     decision: NonEmptyString
     decision_reason: NonEmptyString
@@ -100,8 +119,12 @@ class ReasoningEpisode(SchemaModel):
     result: NonEmptyString
     result_meaning: NonEmptyString
     transition_reason: NonEmptyString
-    must_teach: List[MustTeachItem] = Field(min_length=1)
-    likely_misconceptions: List[NonEmptyString] = Field(default_factory=list)
+    must_teach: List[MustTeachItem] = Field(
+        min_length=1, max_length=MAX_DETAIL_ITEMS
+    )
+    likely_misconceptions: List[NonEmptyString] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
     interaction_intent: Optional[NonEmptyString] = None
     visual_intent: Optional[NonEmptyString] = None
 
@@ -114,7 +137,9 @@ class ReasoningEpisode(SchemaModel):
 class ReasoningTrajectory(SchemaModel):
     trajectory_type: TrajectoryType
     lesson_purpose: NonEmptyString
-    episodes: List[ReasoningEpisode] = Field(min_length=1)
+    episodes: List[ReasoningEpisode] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
     method_summary: NonEmptyString
     error_summary: NonEmptyString
 
@@ -131,10 +156,14 @@ class ScriptClause(SchemaModel):
     episode_id: GeneratedId
     pedagogical_function: PedagogicalFunction
     spoken_text: CueSpokenText
-    math_references: List[GeneratedMathAnswer] = Field(default_factory=list)
+    math_references: List[GeneratedMathAnswer] = Field(
+        default_factory=list, max_length=MAX_MATH_REFERENCE_ITEMS
+    )
     learner_gain: NonEmptyString
     answer_exposure: bool
-    must_teach_refs: List[GeneratedId] = Field(default_factory=list)
+    must_teach_refs: List[GeneratedId] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
 
 
 class TeachingScript(SchemaModel):
@@ -142,22 +171,33 @@ class TeachingScript(SchemaModel):
     learning_goal: NonEmptyString
     method_rationale: NonEmptyString
     method_introduction: MethodIntroduction
-    opening_clause_ids: List[GeneratedId] = Field(min_length=1)
-    method_introduction_clause_ids: List[GeneratedId] = Field(min_length=1)
-    clauses: List[ScriptClause] = Field(min_length=1)
-    closing_summary_clause_ids: List[GeneratedId] = Field(min_length=1)
+    opening_clause_ids: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    method_introduction_clause_ids: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    clauses: List[ScriptClause] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    closing_summary_clause_ids: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
 
     @model_validator(mode="after")
     def validate_clause_sections(self) -> "TeachingScript":
         clause_ids = [item.clause_id for item in self.clauses]
         _require_unique(clause_ids, "clause ids")
+        clause_positions = {
+            clause_id: index for index, clause_id in enumerate(clause_ids)
+        }
         sections = (self.opening_clause_ids, self.method_introduction_clause_ids, self.closing_summary_clause_ids)
         flattened = [item for section in sections for item in section]
         if any(item not in clause_ids for item in flattened):
             raise ValueError("script section clause ids must exist in clauses")
         if len(flattened) != len(set(flattened)):
             raise ValueError("script sections must not overlap")
-        positions = [clause_ids.index(item) for item in flattened]
+        positions = [clause_positions[item] for item in flattened]
         if positions != sorted(positions):
             raise ValueError("script sections must retain script order")
         opening_count = len(self.opening_clause_ids)
@@ -193,7 +233,9 @@ class PlannedInteraction(SchemaModel):
     incorrect_feedback_by_option: Dict[GeneratedId, NonEmptyString]
     hint: NonEmptyString
     resume_clause_id: GeneratedId
-    concealed_targets: List[GeneratedId] = Field(default_factory=list)
+    concealed_targets: List[GeneratedId] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
 
     @model_validator(mode="after")
     def validate_options(self) -> "PlannedInteraction":
@@ -224,10 +266,18 @@ class ClauseBoundVisualAction(SchemaModel):
 
 class PerformanceCue(SchemaModel):
     cue_id: GeneratedId
-    clause_ids: List[GeneratedId] = Field(min_length=1)
-    lead_actions: List[ClauseBoundVisualAction] = Field(default_factory=list)
-    start_actions: List[ClauseBoundVisualAction] = Field(default_factory=list)
-    end_actions: List[ClauseBoundVisualAction] = Field(default_factory=list)
+    clause_ids: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    lead_actions: List[ClauseBoundVisualAction] = Field(
+        default_factory=list, max_length=MAX_VISUAL_ACTION_ITEMS
+    )
+    start_actions: List[ClauseBoundVisualAction] = Field(
+        default_factory=list, max_length=MAX_VISUAL_ACTION_ITEMS
+    )
+    end_actions: List[ClauseBoundVisualAction] = Field(
+        default_factory=list, max_length=MAX_VISUAL_ACTION_ITEMS
+    )
 
 
 class PerformanceBoardObject(SchemaModel):
@@ -244,9 +294,15 @@ class OverlayTransition(SchemaModel):
 
 
 class PerformanceScore(SchemaModel):
-    cues: List[PerformanceCue] = Field(min_length=1)
-    board_objects: List[PerformanceBoardObject] = Field(default_factory=list)
-    overlay_transitions: List[OverlayTransition] = Field(default_factory=list)
+    cues: List[PerformanceCue] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    board_objects: List[PerformanceBoardObject] = Field(
+        default_factory=list, max_length=MAX_PREPARATION_ITEMS
+    )
+    overlay_transitions: List[OverlayTransition] = Field(
+        default_factory=list, max_length=MAX_PREPARATION_ITEMS
+    )
 
     @model_validator(mode="after")
     def validate_local_ids(self) -> "PerformanceScore":
@@ -263,14 +319,22 @@ class EpisodeSimulationResult(SchemaModel):
     can_explain_decision: bool
     can_execute_action: bool
     can_use_result_to_continue: bool
-    evidence: List[NonEmptyString] = Field(min_length=1)
+    evidence: List[NonEmptyString] = Field(
+        min_length=1, max_length=MAX_DETAIL_ITEMS
+    )
 
 
 class SimulationReport(SchemaModel):
-    episode_results: List[EpisodeSimulationResult] = Field(min_length=1)
-    interaction_results: List[NonEmptyString] = Field(default_factory=list)
+    episode_results: List[EpisodeSimulationResult] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    interaction_results: List[NonEmptyString] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
     end_of_lesson_recall: NonEmptyString
-    blocking_findings: List[NonEmptyString] = Field(default_factory=list)
+    blocking_findings: List[NonEmptyString] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
 
 
 class ReviewFinding(SchemaModel):
@@ -282,13 +346,19 @@ class ReviewFinding(SchemaModel):
     evidence: NonEmptyString
     responsible_role: ResponsibleRole
     requested_change: NonEmptyString
-    invalidated_downstream_artifacts: List[ArtifactType] = Field(default_factory=list)
+    invalidated_downstream_artifacts: List[ArtifactType] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
 
 
 class LessonReviewDecision(SchemaModel):
     status: Literal["approved", "revision_required", "failed"]
-    findings: List[ReviewFinding] = Field(default_factory=list)
-    retained_artifacts: List[ArtifactType] = Field(default_factory=list)
+    findings: List[ReviewFinding] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
+    retained_artifacts: List[ArtifactType] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
     approval_summary: NonEmptyString
 
     @model_validator(mode="after")
@@ -306,7 +376,9 @@ class ArtifactRevision(SchemaModel):
     artifact_type: ArtifactType
     version: PositiveInt
     responsible_role: ResponsibleRole
-    finding_ids: List[GeneratedId] = Field(default_factory=list)
+    finding_ids: List[GeneratedId] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
 
 
 class PreparedLesson(SchemaModel):
@@ -319,7 +391,9 @@ class PreparedLesson(SchemaModel):
     simulation_report: SimulationReport
     review: LessonReviewDecision
     repair_count: int = Field(ge=0)
-    artifact_history: List[ArtifactRevision] = Field(min_length=5)
+    artifact_history: List[ArtifactRevision] = Field(
+        min_length=5, max_length=MAX_ARTIFACT_HISTORY_ITEMS
+    )
 
 
 class RoleCallRecord(SchemaModel):
@@ -365,5 +439,7 @@ class GenerationRecord(SchemaModel):
     lesson_id: NonEmptyString
     route_fingerprint: NonEmptyString
     prepared_lesson: PreparedLesson
-    role_calls: List[RoleCallRecord] = Field(min_length=7)
+    role_calls: List[RoleCallRecord] = Field(
+        min_length=7, max_length=MAX_ARTIFACT_HISTORY_ITEMS
+    )
     created_at: NonEmptyString

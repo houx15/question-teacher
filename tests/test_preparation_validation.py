@@ -1,6 +1,7 @@
 import copy
 
 import pytest
+from pydantic import ValidationError
 
 from app.math_content import contains_internal_control_syntax
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
@@ -1106,12 +1107,8 @@ def test_performance_score_handles_large_valid_artifact_with_bounded_state():
 
 
 def test_performance_score_rejects_artifacts_over_explicit_count_bound():
-    _, _, _, plan, *_ = models()
-    script, score = large_performance_models(257)
-    assert_code(
-        "artifact_size_invalid",
-        lambda: validate_performance_score(score, [], script, plan),
-    )
+    with pytest.raises(ValidationError, match="at most 256"):
+        large_performance_models(257)
 
 
 def test_performance_score_uses_upstream_problem_target_cap():
@@ -1136,21 +1133,13 @@ def test_performance_score_uses_upstream_problem_target_cap():
 
 
 def test_performance_score_rejects_excessive_math_reference_count():
-    _, _, script, plan, score, *_ = models()
+    _, _, script, *_ = models()
     script_value = script.model_dump()
     script_value["clauses"][0]["math_references"] = [STATES[0]] + [
         "extra-reference-%d" % index for index in range(2048)
     ]
-    invalid_script = TeachingScript.model_validate(script_value)
-    assert_code(
-        "artifact_size_invalid",
-        lambda: validate_performance_score(
-            score,
-            [],
-            invalid_script,
-            plan,
-        ),
-    )
+    with pytest.raises(ValidationError, match="at most 2048"):
+        TeachingScript.model_validate(script_value)
 
 
 def test_simulation_report_requires_exact_episode_coverage_and_no_private_answers():

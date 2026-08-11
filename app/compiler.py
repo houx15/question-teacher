@@ -5,6 +5,7 @@ from app.lesson_ids import is_valid_lesson_id
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import (
     BoardAction,
+    FIXED_RUNTIME_CUE_IDS,
     Interaction,
     InteractionOption,
     LessonDraft,
@@ -18,12 +19,6 @@ from app.schemas import (
 )
 
 NEAR_TRANSFER_INTERACTION_ID = "near-transfer"
-_FIXED_CUE_IDS = {
-    "opening": "runtime-opening-cue",
-    "method_introduction": "runtime-method-introduction-cue",
-    "summary": "runtime-summary-cue",
-    "transfer_intro": "runtime-transfer-intro-cue",
-}
 _LEGACY_BOARD_ACTION_TYPES = {
     "write",
     "transform",
@@ -84,35 +79,40 @@ def _runtime_beat(
 def _authored_section_beats(
     *,
     purpose: str,
-    layer: LessonLayer,
+    default_layer: LessonLayer,
     cues: List[RuntimeSyncCue],
     interactions_after_cue: Dict[str, Interaction],
+    layers_by_cue: Dict[str, LessonLayer],
 ) -> List[RuntimeBeat]:
-    """Split an authored fixed section only at explicit interaction boundaries."""
+    """Split authored fixed speech at interaction and layer boundaries."""
     beats = []
     pending = []
-    for cue in cues:
-        pending.append(cue)
-        interaction = interactions_after_cue.get(cue.cue_id)
-        if interaction is None:
-            continue
+    pending_layer = default_layer
+
+    def flush(interaction: Optional[Interaction] = None) -> None:
+        nonlocal pending
+        if not pending:
+            return
         beats.append(
             _runtime_beat(
                 purpose=purpose,
-                layer=layer,
+                layer=pending_layer,
                 sync_cues=pending,
                 interaction=interaction,
             )
         )
         pending = []
-    if pending:
-        beats.append(
-            _runtime_beat(
-                purpose=purpose,
-                layer=layer,
-                sync_cues=pending,
-            )
-        )
+
+    for cue in cues:
+        cue_layer = layers_by_cue.get(cue.cue_id, default_layer)
+        if pending and cue_layer != pending_layer:
+            flush()
+        pending_layer = cue_layer
+        pending.append(cue)
+        interaction = interactions_after_cue.get(cue.cue_id)
+        if interaction is not None:
+            flush(interaction)
+    flush()
     return beats
 
 
@@ -154,7 +154,7 @@ class LessonCompiler:
             )
             for cue in cues
         }
-        if authored_cue_ids.intersection(_FIXED_CUE_IDS.values()):
+        if authored_cue_ids.intersection(FIXED_RUNTIME_CUE_IDS.values()):
             raise LessonCompileError(
                 "同步提示 ID 与编译器保留 ID 冲突。"
             )
@@ -164,18 +164,19 @@ class LessonCompiler:
             if draft.opening_sync_cues is not None
             else [
                 RuntimeSyncCue(
-                    cue_id=_FIXED_CUE_IDS["opening"],
+                    cue_id=FIXED_RUNTIME_CUE_IDS["opening"],
                     spoken_text=draft.opening,
                 )
             ]
         )
         beats: List[RuntimeBeat] = _authored_section_beats(
             purpose="进入问题",
-            layer="base",
+            default_layer="base",
             cues=opening_cues,
             interactions_after_cue=(
                 draft.fixed_section_interactions_after_cue
             ),
+            layers_by_cue=draft.fixed_section_layers_by_cue,
         )
 
         method_introduction = draft.method_introduction
@@ -190,7 +191,7 @@ class LessonCompiler:
             if draft.method_introduction_sync_cues is not None
             else [
                 RuntimeSyncCue(
-                    cue_id=_FIXED_CUE_IDS["method_introduction"],
+                    cue_id=FIXED_RUNTIME_CUE_IDS["method_introduction"],
                     spoken_text=method_narration,
                     start_actions=[
                         SyncVisualAction(
@@ -217,11 +218,12 @@ class LessonCompiler:
         beats.extend(
             _authored_section_beats(
                 purpose="先认识方法",
-                layer="micro_explanation",
+                default_layer="micro_explanation",
                 cues=method_cues,
                 interactions_after_cue=(
                     draft.fixed_section_interactions_after_cue
                 ),
+                layers_by_cue=draft.fixed_section_layers_by_cue,
             )
         )
 
@@ -290,7 +292,7 @@ class LessonCompiler:
             if draft.summary_sync_cues is not None
             else [
                 RuntimeSyncCue(
-                    cue_id=_FIXED_CUE_IDS["summary"],
+                    cue_id=FIXED_RUNTIME_CUE_IDS["summary"],
                     spoken_text=draft.summary,
                     start_actions=[
                         SyncVisualAction(
@@ -306,11 +308,12 @@ class LessonCompiler:
         beats.extend(
             _authored_section_beats(
                 purpose="压缩方法",
-                layer="base",
+                default_layer="base",
                 cues=summary_cues,
                 interactions_after_cue=(
                     draft.fixed_section_interactions_after_cue
                 ),
+                layers_by_cue=draft.fixed_section_layers_by_cue,
             )
         )
         beats.append(
@@ -318,7 +321,7 @@ class LessonCompiler:
                 purpose="完成近迁移",
                 sync_cues=[
                     RuntimeSyncCue(
-                        cue_id=_FIXED_CUE_IDS["transfer_intro"],
+                        cue_id=FIXED_RUNTIME_CUE_IDS["transfer_intro"],
                         spoken_text=(
                             "现在换一道表面不同、结构相同的题。"
                         ),

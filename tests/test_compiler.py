@@ -1,7 +1,12 @@
+import json
+from pathlib import Path
 import re
 
 import pytest
 
+import app.compiler as compiler_module
+import app.prepared_lesson_adapter as prepared_adapter
+import app.schemas as schemas_module
 from app.compiler import LessonCompileError, LessonCompiler
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import LessonDraft, NarrativeSyncCue, ProblemInput
@@ -524,23 +529,120 @@ def test_compiler_uses_authored_fixed_section_cues_without_rewriting_them():
         assert beat.narration == "".join(item["spoken_text"] for item in expected)
 
 
-def test_compiler_legacy_draft_fixed_sections_remain_byte_equivalent():
-    draft = LessonDraft.model_validate(valid_draft())
-    first = LessonCompiler(lesson_id_factory=lambda: "legacy-fixed").compile(
-        problem(), draft, {"review_status": "approved"}
-    )
-    explicit_absence = draft.model_copy(
-        update={
-            "opening_sync_cues": None,
-            "method_introduction_sync_cues": None,
-            "summary_sync_cues": None,
+def test_compiler_preserves_authored_base_layer_for_method_section():
+    draft = valid_draft()
+    draft["method_introduction_sync_cues"] = [
+        {
+            "cue_id": "method-authored-base",
+            "spoken_text": "先按主板上的关系继续推理。",
         }
-    )
-    second = LessonCompiler(lesson_id_factory=lambda: "legacy-fixed").compile(
-        problem(), explicit_absence, {"review_status": "approved"}
+    ]
+    draft["fixed_section_layers_by_cue"] = {
+        "method-authored-base": "base"
+    }
+
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
     )
 
-    assert first.model_dump_json() == second.model_dump_json()
+    method = next(beat for beat in lesson.beats if beat.purpose == "先认识方法")
+    assert method.layer == "base"
+
+
+def test_compiler_preserves_authored_comparison_layer_for_summary_section():
+    draft = valid_draft()
+    draft["summary_sync_cues"] = [
+        {
+            "cue_id": "summary-authored-comparison",
+            "spoken_text": "在比较层上总结这两种关系。",
+        }
+    ]
+    draft["fixed_section_layers_by_cue"] = {
+        "summary-authored-comparison": "comparison"
+    }
+
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
+    )
+
+    summary = next(beat for beat in lesson.beats if beat.purpose == "压缩方法")
+    assert summary.layer == "comparison"
+
+
+def test_authored_fixed_section_splits_at_interaction_and_layer_boundaries():
+    draft = valid_draft()
+    draft["method_introduction_sync_cues"] = [
+        {"cue_id": "method-base", "spoken_text": "先留在主板判断。"},
+        {
+            "cue_id": "method-comparison",
+            "spoken_text": "互动后进入比较层继续。",
+        },
+    ]
+    draft["fixed_section_layers_by_cue"] = {
+        "method-base": "base",
+        "method-comparison": "comparison",
+    }
+    interaction = dict(draft["moments"][0]["interaction"])
+    interaction["interaction_id"] = "fixed-method-choice"
+    draft["fixed_section_interactions_after_cue"] = {
+        "method-base": interaction
+    }
+
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(draft),
+        {"review_status": "approved"},
+    )
+
+    method_beats = [
+        beat for beat in lesson.beats if beat.purpose == "先认识方法"
+    ]
+    assert [beat.layer for beat in method_beats] == ["base", "comparison"]
+    assert method_beats[0].interaction.interaction_id == "fixed-method-choice"
+    assert method_beats[1].interaction is None
+    assert [cue.cue_id for cue in method_beats[0].sync_cues] == [
+        "method-base"
+    ]
+    assert [cue.cue_id for cue in method_beats[1].sync_cues] == [
+        "method-comparison"
+    ]
+
+
+def test_compiler_legacy_draft_fixed_sections_remain_byte_equivalent():
+    draft = LessonDraft.model_validate(valid_draft())
+    lesson = LessonCompiler(lesson_id_factory=lambda: "legacy-fixed").compile(
+        problem(), draft, {"review_status": "approved"}
+    )
+    expected = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "legacy_runtime_lesson_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert lesson.model_dump(mode="json") == expected
+
+
+def test_reserved_runtime_cue_ids_have_one_shared_vocabulary():
+    expected = {
+        "opening": "runtime-opening-cue",
+        "method_introduction": "runtime-method-introduction-cue",
+        "summary": "runtime-summary-cue",
+        "transfer_intro": "runtime-transfer-intro-cue",
+    }
+
+    assert schemas_module.FIXED_RUNTIME_CUE_IDS == expected
+    assert compiler_module.FIXED_RUNTIME_CUE_IDS is (
+        schemas_module.FIXED_RUNTIME_CUE_IDS
+    )
+    assert prepared_adapter.RESERVED_RUNTIME_CUE_IDS is (
+        schemas_module.RESERVED_RUNTIME_CUE_IDS
+    )
 
 
 def test_compiler_rejects_director_cue_collision_with_reserved_runtime_id():

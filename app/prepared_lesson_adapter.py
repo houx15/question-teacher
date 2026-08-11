@@ -1,7 +1,8 @@
 """Adapt an approved private lesson preparation to the runtime draft."""
 
+import re
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 from app.preparation_models import (
     PerformanceCue,
@@ -20,6 +21,7 @@ from app.schemas import (
     MathStep,
     NarrativeSyncCue,
     ProblemInput,
+    RESERVED_RUNTIME_CUE_IDS,
     TransferItem,
     TransferOption,
 )
@@ -35,8 +37,11 @@ class _AdaptedCue:
     interaction: Optional[Interaction] = None
 
 
+_GENERATED_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
 @dataclass(frozen=True)
-class RuntimeCueProvenance:
+class CueProvenanceRecord:
     """Immutable private link from an authored clause to its runtime cue."""
 
     episode_id: str
@@ -45,38 +50,145 @@ class RuntimeCueProvenance:
     runtime_cue_id: str
     spoken_text: str
 
+    def __post_init__(self) -> None:
+        for value in (
+            self.episode_id,
+            self.clause_id,
+            self.original_performance_cue_id,
+            self.runtime_cue_id,
+        ):
+            if (
+                type(value) is not str
+                or _GENERATED_ID_PATTERN.fullmatch(value) is None
+            ):
+                raise ValueError("provenance ids must be generated ids")
+        if type(self.spoken_text) is not str or not self.spoken_text.strip():
+            raise ValueError("provenance spoken text must be nonblank")
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, init=False)
 class PreparedDraftRun:
     """Defensive draft plus request-private clause-to-cue provenance."""
 
     _draft_json: str
-    cue_provenance: Tuple[RuntimeCueProvenance, ...]
+    _cue_provenance: Tuple[CueProvenanceRecord, ...]
+    _expected_clause_ids: Tuple[str, ...]
+
+    def __init__(
+        self,
+        draft: LessonDraft,
+        cue_provenance: Sequence[CueProvenanceRecord],
+        expected_clause_ids: Tuple[str, ...],
+    ) -> None:
+        if type(draft) is not LessonDraft:
+            raise TypeError("draft must be an exact LessonDraft")
+        if type(expected_clause_ids) is not tuple:
+            raise TypeError("expected clause ids must be an exact tuple")
+        if any(
+            type(clause_id) is not str
+            or _GENERATED_ID_PATTERN.fullmatch(clause_id) is None
+            for clause_id in expected_clause_ids
+        ):
+            raise ValueError("expected clause ids must be generated ids")
+        if len(expected_clause_ids) != len(set(expected_clause_ids)):
+            raise ValueError("expected clause ids must be unique")
+        if type(cue_provenance) not in (list, tuple):
+            raise TypeError("cue provenance must be a list or tuple")
+        if any(
+            type(item) is not CueProvenanceRecord
+            for item in cue_provenance
+        ):
+            raise TypeError(
+                "cue provenance must contain exact CueProvenanceRecord values"
+            )
+        normalized = tuple(
+            CueProvenanceRecord(
+                episode_id=item.episode_id,
+                clause_id=item.clause_id,
+                original_performance_cue_id=(
+                    item.original_performance_cue_id
+                ),
+                runtime_cue_id=item.runtime_cue_id,
+                spoken_text=item.spoken_text,
+            )
+            for item in cue_provenance
+        )
+        if tuple(item.clause_id for item in normalized) != (
+            expected_clause_ids
+        ):
+            raise ValueError(
+                "source clause provenance must be complete and ordered"
+            )
+
+        runtime_cues = {
+            cue.cue_id: cue
+            for cues in (
+                draft.opening_sync_cues or [],
+                draft.method_introduction_sync_cues or [],
+                [
+                    cue
+                    for moment in draft.moments
+                    for cue in moment.sync_cues
+                ],
+                draft.summary_sync_cues or [],
+            )
+            for cue in cues
+        }
+        mapped_runtime_ids = {
+            item.runtime_cue_id for item in normalized
+        }
+        if mapped_runtime_ids != set(runtime_cues):
+            raise ValueError(
+                "provenance runtime cue ids must exactly match the draft"
+            )
+        original_cue_ids = {
+            item.original_performance_cue_id for item in normalized
+        }
+        if not original_cue_ids.issubset(
+            mapped_runtime_ids | RESERVED_RUNTIME_CUE_IDS
+        ):
+            raise ValueError(
+                "original performance cue ids must be traceable"
+            )
+        grouped_text = {cue_id: [] for cue_id in runtime_cues}
+        for item in normalized:
+            grouped_text[item.runtime_cue_id].append(item.spoken_text)
+        if any(
+            "".join(grouped_text[cue_id]) != cue.spoken_text
+            for cue_id, cue in runtime_cues.items()
+        ):
+            raise ValueError(
+                "grouped provenance text must equal runtime cue narration"
+            )
+
+        object.__setattr__(self, "_draft_json", draft.model_dump_json())
+        object.__setattr__(self, "_cue_provenance", normalized)
+        object.__setattr__(
+            self,
+            "_expected_clause_ids",
+            tuple(expected_clause_ids),
+        )
 
     @classmethod
     def from_draft(
         cls,
         draft: LessonDraft,
-        cue_provenance: List[RuntimeCueProvenance],
+        cue_provenance: List[CueProvenanceRecord],
+        expected_clause_ids: Tuple[str, ...],
     ) -> "PreparedDraftRun":
-        if type(draft) is not LessonDraft:
-            raise TypeError("draft must be an exact LessonDraft")
-        return cls(
-            _draft_json=draft.model_dump_json(),
-            cue_provenance=tuple(cue_provenance),
-        )
+        return cls(draft, cue_provenance, expected_clause_ids)
 
     @property
     def draft(self) -> LessonDraft:
         return LessonDraft.model_validate_json(self._draft_json)
 
+    @property
+    def cue_provenance(self) -> Tuple[CueProvenanceRecord, ...]:
+        return self._cue_provenance
 
-_COMPILER_RESERVED_CUE_IDS = {
-    "runtime-opening-cue",
-    "runtime-method-introduction-cue",
-    "runtime-summary-cue",
-    "runtime-transfer-intro-cue",
-}
+    @property
+    def expected_clause_ids(self) -> Tuple[str, ...]:
+        return self._expected_clause_ids
 
 
 def _runtime_cue_id(
@@ -88,7 +200,7 @@ def _runtime_cue_id(
 ) -> str:
     if (
         part_index == 0
-        and original_id not in _COMPILER_RESERVED_CUE_IDS
+        and original_id not in RESERVED_RUNTIME_CUE_IDS
         and original_id not in allocated_ids
     ):
         allocated_ids.add(original_id)
@@ -103,7 +215,7 @@ def _runtime_cue_id(
         if (
             candidate not in reserved_ids
             and candidate not in allocated_ids
-            and candidate not in _COMPILER_RESERVED_CUE_IDS
+            and candidate not in RESERVED_RUNTIME_CUE_IDS
         ):
             allocated_ids.add(candidate)
             return candidate
@@ -202,6 +314,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
     }
     allocated_ids = set()
     fixed_interactions = {}
+    fixed_layers = {}
     cue_provenance = []
 
     def clause_section(clause_id: str) -> str:
@@ -218,6 +331,14 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         current = []
         current_key = None
         current_length = 0
+        action_clause_ids = {
+            item.clause_id
+            for item in (
+                *score_cue.lead_actions,
+                *score_cue.start_actions,
+                *score_cue.end_actions,
+            )
+        }
         for clause_id in score_cue.clause_ids:
             clause = clauses[clause_id]
             key = (
@@ -227,7 +348,9 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
             )
             spoken_length = len(clause.spoken_text)
             if current and (
-                key != current_key or current_length + spoken_length > 90
+                key != current_key
+                or current_length + spoken_length > 90
+                or clause_id in action_clause_ids
             ):
                 parts.append(tuple(current))
                 current = []
@@ -235,7 +358,10 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
             current.append(clause_id)
             current_key = key
             current_length += spoken_length
-            if clause_id in interactions_after_clause:
+            if (
+                clause_id in interactions_after_clause
+                or clause_id in action_clause_ids
+            ):
                 parts.append(tuple(current))
                 current = []
                 current_key = None
@@ -260,7 +386,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
                 cue_id,
             )
             cue_provenance.extend(
-                RuntimeCueProvenance(
+                CueProvenanceRecord(
                     episode_id=clauses[clause_id].episode_id,
                     clause_id=clause_id,
                     original_performance_cue_id=score_cue.cue_id,
@@ -285,6 +411,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
                 )
             else:
                 section_cues[section].append(narrative_cue)
+                fixed_layers[cue_id] = layer_by_clause[clause_ids[0]]
                 if interaction is not None:
                     fixed_interactions[cue_id] = interaction
     if any(not section_cues[name] for name in ("opening", "method", "summary")):
@@ -297,6 +424,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         section_cues["body"],
         section_cues["summary"],
         fixed_interactions,
+        fixed_layers,
         cue_provenance,
     )
 
@@ -398,6 +526,7 @@ def prepared_lesson_to_draft_with_provenance(
         body,
         summary,
         fixed_interactions,
+        fixed_layers,
         cue_provenance,
     ) = _runtime_sections(prepared)
     route_payload["teaching_route_fingerprint"] = teaching_route.fingerprint
@@ -412,6 +541,7 @@ def prepared_lesson_to_draft_with_provenance(
         method_introduction_sync_cues=method,
         summary_sync_cues=summary,
         fixed_section_interactions_after_cue=fixed_interactions,
+        fixed_section_layers_by_cue=fixed_layers,
         transfer_feedback_is_authoritative=True,
         math_steps=math_steps,
         teaching_route=route_payload,
@@ -419,7 +549,11 @@ def prepared_lesson_to_draft_with_provenance(
         summary="".join(cue.spoken_text for cue in summary),
         transfer_item=_transfer_item(prepared),
     )
-    return PreparedDraftRun.from_draft(draft, cue_provenance)
+    return PreparedDraftRun.from_draft(
+        draft,
+        cue_provenance,
+        tuple(clause.clause_id for clause in script.clauses),
+    )
 
 
 def prepared_lesson_to_draft(

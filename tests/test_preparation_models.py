@@ -212,6 +212,61 @@ def test_reasoning_trajectory_rejects_duplicate_episode_ids():
         ReasoningTrajectory.model_validate(payload)
 
 
+def test_reasoning_trajectory_episode_count_is_bounded_at_validation_edge():
+    maximum = 256
+    payload = prepared_lesson()["reasoning_trajectory"]
+    payload["episodes"] = [
+        episode("episode-%d" % index, index)
+        for index in range(maximum)
+    ]
+
+    assert len(ReasoningTrajectory.model_validate(payload).episodes) == maximum
+    payload["episodes"].append(episode("episode-overflow", maximum))
+    with pytest.raises(ValidationError, match="at most 256"):
+        ReasoningTrajectory.model_validate(payload)
+
+
+def test_teaching_script_clause_count_is_bounded_at_validation_edge():
+    maximum = 256
+    payload = teaching_script()
+    payload["clauses"] = [
+        script_clause("clause-%d" % index)
+        for index in range(maximum)
+    ]
+    payload["opening_clause_ids"] = ["clause-0"]
+    payload["method_introduction_clause_ids"] = ["clause-1"]
+    payload["closing_summary_clause_ids"] = ["clause-255"]
+
+    assert len(TeachingScript.model_validate(payload).clauses) == maximum
+    payload["clauses"].insert(-1, script_clause("clause-overflow"))
+    with pytest.raises(ValidationError, match="at most 256"):
+        TeachingScript.model_validate(payload)
+
+
+def test_performance_score_collection_counts_are_bounded():
+    maximum = 256
+    payload = {
+        "cues": [
+            {"cue_id": "cue-%d" % index, "clause_ids": ["clause-1"]}
+            for index in range(maximum)
+        ],
+        "board_objects": [
+            {"board_object_id": "board-%d" % index, "content": "x=%d" % index}
+            for index in range(maximum)
+        ],
+        "overlay_transitions": [],
+    }
+
+    assert len(
+        preparation_models.PerformanceScore.model_validate(payload).cues
+    ) == maximum
+    payload["cues"].append(
+        {"cue_id": "cue-overflow", "clause_ids": ["clause-1"]}
+    )
+    with pytest.raises(ValidationError, match="at most 256"):
+        preparation_models.PerformanceScore.model_validate(payload)
+
+
 def test_reasoning_mode_is_closed_literal():
     payload = episode(mode="lecture")
     with pytest.raises(ValidationError):

@@ -1,5 +1,5 @@
 import importlib.util
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -93,6 +93,92 @@ def body_interaction_payload(with_overlay=False):
     return payload
 
 
+def later_clause_action_payload(phase):
+    payload = prepared_payload()
+    clauses = payload["teaching_script"]["clauses"]
+    clause_index = next(
+        index
+        for index, clause in enumerate(clauses)
+        if clause["clause_id"] == "clause-3"
+    )
+    clauses.insert(
+        clause_index,
+        {
+            **clauses[clause_index],
+            "clause_id": "clause-3-prelude",
+            "spoken_text": "先停一下，观察我们已经得到的信息。",
+            "must_teach_refs": [],
+        },
+    )
+    cue = next(
+        cue
+        for cue in payload["performance_score"]["cues"]
+        if cue["clause_ids"] == ["clause-3"]
+    )
+    cue["clause_ids"].insert(0, "clause-3-prelude")
+    cue["lead_actions"] = []
+    cue["start_actions"] = []
+    cue["end_actions"] = []
+    if phase == "start_actions":
+        cue[phase] = [
+            {
+                "clause_id": "clause-3",
+                "action": {
+                    "surface": "board",
+                    "type": "write",
+                    "target": "board-3",
+                    "content": payload["performance_score"][
+                        "board_objects"
+                    ][2]["content"],
+                },
+            }
+        ]
+    elif phase == "lead_actions":
+        cue[phase] = [
+            {
+                "clause_id": "clause-3",
+                "action": {
+                    "surface": "board",
+                    "type": "focus",
+                    "target": "board-2",
+                },
+            }
+        ]
+        cue["end_actions"] = [
+            {
+                "clause_id": "clause-3",
+                "action": {
+                    "surface": "board",
+                    "type": "clear_focus",
+                    "target": "board-2",
+                },
+            }
+        ]
+    else:
+        cue["lead_actions"] = [
+            {
+                "clause_id": "clause-3",
+                "action": {
+                    "surface": "board",
+                    "type": "emphasize",
+                    "target": "board-2",
+                    "emphasis_style": "underline",
+                },
+            }
+        ]
+        cue[phase] = [
+            {
+                "clause_id": "clause-3",
+                "action": {
+                    "surface": "board",
+                    "type": "fade",
+                    "target": "board-2",
+                },
+            }
+        ]
+    return payload
+
+
 def symbolic_route_and_steps():
     grounded = route()
     payload = grounded.to_prompt_payload()
@@ -171,6 +257,56 @@ def test_adapter_unwraps_clause_actions_and_keeps_audio_empty():
         assert actual == expected_actions[cue_id]
         assert runtime_cue.audio_url is None
     assert all(beat.audio_url is None for beat in lesson.beats)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ("lead_actions", "start_actions", "end_actions"),
+)
+def test_later_clause_actions_keep_their_own_runtime_timing_boundary(phase):
+    prepared = PreparedLesson.model_validate(
+        later_clause_action_payload(phase)
+    )
+
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    lesson = LessonCompiler(lesson_id_factory=lambda: "action-timing").compile(
+        source_problem(), run.draft, {"review_status": "approved"}
+    )
+    runtime_cues = {
+        cue.cue_id: cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+    }
+    records = [
+        item
+        for item in run.cue_provenance
+        if item.clause_id in {"clause-3-prelude", "clause-3"}
+    ]
+    prelude = next(
+        item for item in records if item.clause_id == "clause-3-prelude"
+    )
+    action_clause = next(
+        item for item in records if item.clause_id == "clause-3"
+    )
+
+    assert prelude.runtime_cue_id != action_clause.runtime_cue_id
+    assert runtime_cues[prelude.runtime_cue_id].spoken_text == prelude.spoken_text
+    assert runtime_cues[action_clause.runtime_cue_id].spoken_text == (
+        action_clause.spoken_text
+    )
+    assert runtime_cues[prelude.runtime_cue_id].lead_actions == []
+    assert runtime_cues[prelude.runtime_cue_id].start_actions == []
+    assert runtime_cues[prelude.runtime_cue_id].end_actions == []
+    assert getattr(runtime_cues[action_clause.runtime_cue_id], phase)
+    assert "".join(
+        cue.spoken_text
+        for beat in lesson.beats[:-1]
+        for cue in beat.sync_cues
+    ) == "".join(
+        clause.spoken_text for clause in prepared.teaching_script.clauses
+    )
 
 
 def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
@@ -375,6 +511,45 @@ def test_overlay_enters_for_one_teaching_point_then_returns_to_base():
     )
 
 
+def test_adapter_carries_authored_base_layer_for_fixed_method_clause():
+    draft = prepared_lesson_to_draft(
+        source_problem(), approved_prepared(), route()
+    )
+
+    method_cue_id = draft.method_introduction_sync_cues[0].cue_id
+    assert draft.fixed_section_layers_by_cue[method_cue_id] == "base"
+
+
+def test_adapter_carries_comparison_layer_for_fixed_summary_clause():
+    payload = prepared_payload()
+    payload["performance_score"]["board_objects"][6]["layer"] = (
+        "comparison"
+    )
+    payload["performance_score"]["overlay_transitions"] = [
+        {
+            "transition_id": "enter-summary-comparison",
+            "after_clause_id": "clause-6",
+            "action": "enter",
+            "layer": "comparison",
+        },
+        {
+            "transition_id": "return-summary-comparison",
+            "after_clause_id": "clause-7",
+            "action": "return",
+            "layer": "comparison",
+        },
+    ]
+    prepared = PreparedLesson.model_validate(payload)
+
+    draft = prepared_lesson_to_draft(source_problem(), prepared, route())
+    lesson = LessonCompiler(lesson_id_factory=lambda: "summary-layer").compile(
+        source_problem(), draft, {"review_status": "approved"}
+    )
+
+    summary = next(beat for beat in lesson.beats if beat.purpose == "压缩方法")
+    assert summary.layer == "comparison"
+
+
 def test_compiled_prepared_lesson_adds_only_fixed_runtime_navigation_speech():
     prepared = approved_prepared()
     lesson = LessonCompiler(lesson_id_factory=lambda: "speech-sources").compile(
@@ -492,6 +667,108 @@ def test_prepared_draft_run_is_defensive_and_provenance_is_immutable():
     assert isinstance(run.cue_provenance, tuple)
     with pytest.raises(FrozenInstanceError):
         run.cue_provenance[0].runtime_cue_id = "changed"
+
+
+def test_prepared_draft_run_constructor_normalizes_without_mutable_alias():
+    prepared = approved_prepared()
+    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    records = list(original.cue_provenance)
+    expected_clause_ids = tuple(
+        clause.clause_id for clause in prepared.teaching_script.clauses
+    )
+
+    rebuilt = prepared_adapter.PreparedDraftRun(
+        original.draft,
+        records,
+        expected_clause_ids,
+    )
+    records.pop()
+    changed = rebuilt.draft
+    changed.title = "外部修改"
+
+    assert type(rebuilt.cue_provenance[0]) is (
+        prepared_adapter.CueProvenanceRecord
+    )
+    assert rebuilt.cue_provenance[0] is not original.cue_provenance[0]
+    assert len(rebuilt.cue_provenance) == len(expected_clause_ids)
+    assert rebuilt.expected_clause_ids == expected_clause_ids
+    assert rebuilt.draft.title != changed.title
+
+
+def test_prepared_draft_run_rejects_nonexact_or_nonimmutable_records():
+    prepared = approved_prepared()
+    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    expected = tuple(
+        clause.clause_id for clause in prepared.teaching_script.clauses
+    )
+    forged = [item for item in original.cue_provenance]
+    forged[0] = forged[0].__dict__
+
+    with pytest.raises(TypeError, match="exact CueProvenanceRecord"):
+        prepared_adapter.PreparedDraftRun(original.draft, forged, expected)
+    with pytest.raises(TypeError, match="expected clause ids.*tuple"):
+        prepared_adapter.PreparedDraftRun(
+            original.draft,
+            original.cue_provenance,
+            list(expected),
+        )
+
+
+@pytest.mark.parametrize("mutation", ("missing", "duplicate", "reordered"))
+def test_prepared_draft_run_rejects_incomplete_or_reordered_source_mapping(
+    mutation,
+):
+    prepared = approved_prepared()
+    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    expected = tuple(
+        clause.clause_id for clause in prepared.teaching_script.clauses
+    )
+    records = list(original.cue_provenance)
+    if mutation == "missing":
+        records.pop()
+    elif mutation == "duplicate":
+        records[-1] = records[0]
+    else:
+        records[0], records[1] = records[1], records[0]
+
+    with pytest.raises(ValueError, match="complete and ordered"):
+        prepared_adapter.PreparedDraftRun(original.draft, records, expected)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("runtime_id", "original_id", "spoken_text"),
+)
+def test_prepared_draft_run_rejects_forged_runtime_mapping(mutation):
+    prepared = approved_prepared()
+    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    expected = tuple(
+        clause.clause_id for clause in prepared.teaching_script.clauses
+    )
+    records = list(original.cue_provenance)
+    if mutation == "runtime_id":
+        records[0] = replace(records[0], runtime_cue_id="forged-cue")
+        message = "runtime cue ids"
+    elif mutation == "original_id":
+        records[0] = replace(
+            records[0],
+            original_performance_cue_id="forged-original-cue",
+        )
+        message = "original performance cue ids"
+    else:
+        records[0] = replace(records[0], spoken_text="伪造讲稿")
+        message = "provenance text"
+
+    with pytest.raises(ValueError, match=message):
+        prepared_adapter.PreparedDraftRun(original.draft, records, expected)
 
 
 def test_adapter_splits_a_contiguous_cue_crossing_adjacent_episodes():
