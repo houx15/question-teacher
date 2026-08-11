@@ -12,12 +12,14 @@ from app.math_content import (
     contains_explicit_choice_answer_leak,
     contains_internal_control_syntax,
     contains_math_markup,
+    contains_normalized_cross_artifact_math_identity,
     is_valid_generated_display_content,
     normalize_answer_leak_text,
     normalize_grounded_choice_option_label,
     normalize_cross_artifact_math_identity,
 )
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
+from app.problem_focus import MAX_PROBLEM_FOCUS_TARGETS
 from app.preparation_models import (
     InteractionPlan,
     LessonReviewDecision,
@@ -256,7 +258,7 @@ def _leaks_correct_answer(interaction: object) -> bool:
     for option in interaction.options:
         if option.option_id == interaction.correct_option_id:
             continue
-        wrong_visible = (option.display_text, option.canonical_answer)
+        wrong_visible = (option.display_text,)
         if any(
             contains_bounded_answer_token(item, form)
             for form in correct_forms
@@ -666,7 +668,7 @@ def validate_performance_score(
         len(script.clauses) > MAX_PERFORMANCE_CLAUSES
         or len(score.cues) > MAX_PERFORMANCE_CLAUSES
         or len(score.board_objects) > MAX_PERFORMANCE_CLAUSES
-        or len(problem_targets) > MAX_PERFORMANCE_CLAUSES
+        or len(problem_targets) > MAX_PROBLEM_FOCUS_TARGETS
         or action_count > MAX_PERFORMANCE_ACTIONS
         or math_reference_count > MAX_PERFORMANCE_MATH_REFERENCES
     ):
@@ -771,7 +773,7 @@ def validate_performance_score(
         first_position = None
         for position, references in enumerate(references_by_position):
             if any(
-                contains_cross_artifact_math_identity(
+                contains_normalized_cross_artifact_math_identity(
                     reference,
                     target_content,
                 )

@@ -50,27 +50,31 @@ STATES = (
 )
 
 
-def route():
+def route(final_conclusion="m-n=1/2"):
     brief = ReferenceGroundingBrief.validate_for_reference_answer(
         {
             "task_summary": "由参数根求m-n",
             "target": "m-n",
             "assumptions": ["n!=0", "x=2n是原方程的根"],
-            "reference_conclusion": "m-n=1/2",
+            "reference_conclusion": final_conclusion,
             "method_name": "代入法",
             "reasoning_steps": [
                 {
                     "step_id": step_id,
                     "statement_before": "题目条件" if index == 0 else STATES[index - 1],
                     "operation_explanation": "保留这一步的数学依赖",
-                    "statement_after": state,
+                    "statement_after": (
+                        final_conclusion
+                        if index == len(STEP_IDS) - 1
+                        else state
+                    ),
                 }
                 for index, (step_id, state) in enumerate(zip(STEP_IDS, STATES))
             ],
             "check_requests": [],
             "audit_notes": [],
         },
-        "m-n=1/2",
+        final_conclusion,
     )
     return freeze_grounded_route(brief, [])
 
@@ -431,6 +435,12 @@ def test_solution_trace_accepts_presentation_only_conclusion_variants():
     )
     validate_solution_trace(SolutionTrace.model_validate(payload), route())
 
+    payload["reference_conclusion"] = r"m-n=\frac{-1}{2}"
+    validate_solution_trace(
+        SolutionTrace.model_validate(payload),
+        route("m-n=-1/2"),
+    )
+
 
 def test_solution_trace_rejects_structurally_inconsistent_verified_route_anchor():
     payload = trace_payload()
@@ -563,6 +573,60 @@ def test_interaction_plan_does_not_treat_x1_as_substring_of_x10():
         InteractionPlan.model_validate(payload),
         trajectory,
         script,
+    )
+
+
+@pytest.mark.parametrize("display_text", ("x=1/2", "x=1.5", "x=1+2"))
+def test_interaction_plan_accepts_compound_math_distractors(display_text):
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["options"][0].update(
+        display_text="x=1",
+        canonical_answer="x=1",
+    )
+    interaction["options"][1].update(
+        display_text=display_text,
+        canonical_answer="private-distractor-value",
+    )
+    validate_interaction_plan(
+        InteractionPlan.model_validate(payload), trajectory, script
+    )
+
+
+def test_interaction_plan_ignores_private_wrong_canonical_answer():
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["options"][0].update(
+        display_text="x=1",
+        canonical_answer="x=1",
+    )
+    interaction["options"][1].update(
+        display_text="另一个计算过程",
+        canonical_answer="x=1",
+    )
+    validate_interaction_plan(
+        InteractionPlan.model_validate(payload), trajectory, script
+    )
+
+
+def test_interaction_plan_still_rejects_exact_displayed_answer_leaks():
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["options"][0].update(
+        display_text="x=1",
+        canonical_answer="x=1",
+    )
+    interaction["options"][1].update(
+        display_text="错误项直接写出 x=1",
+        canonical_answer="private-wrong-value",
+    )
+    invalid = InteractionPlan.model_validate(payload)
+    assert_code(
+        "interaction_answer_leakage",
+        lambda: validate_interaction_plan(invalid, trajectory, script),
     )
 
 
@@ -715,18 +779,26 @@ def test_performance_score_preserves_grouping_for_first_introduction_identity():
     )
 
 
-def test_performance_score_accepts_presentation_only_first_introduction_variants():
+@pytest.mark.parametrize(
+    ("reference", "display"),
+    (
+        (r"\(\left x=\tfrac{1}{2}\right\)", r"$x=\dfrac{1}{2}$"),
+        (r"\(x=\frac{-1}{2}\)", "x=-1/2"),
+        (r"\(x^{2}\)", "x^2"),
+        (r"\(2\times x\)", r"$2\cdot x$"),
+    ),
+)
+def test_performance_score_accepts_presentation_only_first_introduction_variants(
+    reference,
+    display,
+):
     _, _, script, plan, score, *_ = models()
     script_value = script.model_dump()
-    script_value["clauses"][0]["math_references"] = [
-        r"\(\left x=\tfrac{1}{2}\right\)"
-    ]
+    script_value["clauses"][0]["math_references"] = [reference]
     script = TeachingScript.model_validate(script_value)
     score_value = score.model_dump()
-    score_value["board_objects"][0]["content"] = r"$x=\dfrac{1}{2}$"
-    score_value["cues"][0]["start_actions"][0]["action"]["content"] = (
-        r"$x=\dfrac{1}{2}$"
-    )
+    score_value["board_objects"][0]["content"] = display
+    score_value["cues"][0]["start_actions"][0]["action"]["content"] = display
     validate_performance_score(
         PerformanceScore.model_validate(score_value), [], script, plan
     )
@@ -1042,6 +1114,27 @@ def test_performance_score_rejects_artifacts_over_explicit_count_bound():
     )
 
 
+def test_performance_score_uses_upstream_problem_target_cap():
+    _, _, script, plan, score, *_ = models()
+    targets = [
+        ProblemFocusTarget(
+            target_id="problem-target-%d" % index,
+            math_text="x=%d" % index,
+            ordinal=(index % 64) + 1,
+        )
+        for index in range(65)
+    ]
+    assert_code(
+        "artifact_size_invalid",
+        lambda: validate_performance_score(
+            score,
+            targets,
+            script,
+            plan,
+        ),
+    )
+
+
 def test_performance_score_rejects_excessive_math_reference_count():
     _, _, script, plan, score, *_ = models()
     script_value = script.model_dump()
@@ -1106,7 +1199,13 @@ def test_simulation_report_accepts_nonleaking_incorrect_option_observation():
     )
 
 
-def test_simulation_private_answers_use_bounded_math_tokens():
+@pytest.mark.parametrize(
+    "observed_distractor",
+    ("x=10", "x=1/2", "x=1.5", "x=1+2"),
+)
+def test_simulation_private_answers_use_bounded_math_tokens(
+    observed_distractor,
+):
     _, trajectory, _, plan, _, report, _ = models()
     plan_value = plan.model_dump()
     transfer = plan_value["transfer_item"]
@@ -1117,7 +1216,9 @@ def test_simulation_private_answers_use_bounded_math_tokens():
     )
     plan = InteractionPlan.model_validate(plan_value)
     report_value = report.model_dump()
-    report_value["interaction_results"] = ["learner tested x=10 first"]
+    report_value["interaction_results"] = [
+        "learner tested %s first" % observed_distractor
+    ]
     validate_simulation_report(
         SimulationReport.model_validate(report_value), trajectory, plan
     )

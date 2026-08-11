@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app import math_content
 from app.math_content import (
+    contains_bounded_answer_token,
     contains_explicit_choice_answer_leak,
     contains_internal_control_syntax,
     contains_math_markup,
@@ -218,6 +219,14 @@ def test_cross_artifact_identity_preserves_semantic_grouping_and_equivalences():
     assert normalizer is not None
     assert normalizer("x={1,2}") != normalizer("x=12")
     assert normalizer(r"\frac{1+2}{3}") != normalizer("1+2/3")
+    safe_equivalents = (
+        (r"\frac{-1}{2}", "-1/2"),
+        (r"x^{2}", "x^2"),
+        (r"2\times x", "2*x"),
+        (r"2\cdot x", "2*x"),
+    )
+    for left, right in safe_equivalents:
+        assert normalizer(left) == normalizer(right)
     equivalents = (
         r"\(\left m−n \right=\dfrac{1}{2}\)",
         r"$m-n=\tfrac{1}{2}$",
@@ -230,11 +239,17 @@ def test_generated_display_content_has_an_explicit_length_limit():
     assert not is_valid_generated_display_content("x" * 501)
 
 
-def test_internal_control_detection_is_bounded_for_unclosed_tag_prefix():
-    adversarial = "<a" + (" " * 10000)
-    started = time.perf_counter()
-    assert not contains_internal_control_syntax(adversarial)
-    assert time.perf_counter() - started < 0.25
+def test_internal_control_detection_scales_linearly_for_unclosed_tag_prefix():
+    def elapsed(size):
+        adversarial = "<a" + (" " * size)
+        started = time.perf_counter()
+        for _ in range(5):
+            assert not contains_internal_control_syntax(adversarial)
+        return time.perf_counter() - started
+
+    small = elapsed(20000)
+    large = elapsed(100000)
+    assert large / max(small, 1e-9) < 10
 
 
 def test_bounded_answer_leak_detection_requires_explicit_short_answer_context():
@@ -250,3 +265,23 @@ def test_bounded_answer_leak_detection_requires_explicit_short_answer_context():
     assert contains_explicit_choice_answer_leak(
         r"答案应为 \(x=1\)", "option-a", r"\(x=1\)"
     )
+
+
+@pytest.mark.parametrize(
+    "distractor",
+    ("x=1/2", "x=1.5", "x=1+2", "x=1×2", "x=1≤2"),
+)
+def test_bounded_answer_token_preserves_math_continuations(distractor):
+    assert not contains_bounded_answer_token(distractor, "x=1")
+    assert contains_bounded_answer_token("答案是 x=1", "x=1")
+
+
+def test_normalized_cross_artifact_containment_has_an_explicit_helper():
+    helper = getattr(
+        math_content,
+        "contains_normalized_cross_artifact_math_identity",
+        None,
+    )
+    assert helper is not None
+    assert helper("x=1", "x=1")
+    assert not helper("x=10", "x=1")

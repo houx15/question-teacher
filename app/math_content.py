@@ -20,6 +20,31 @@ _INTERNAL_CONTROL_SYNTAX = re.compile(
 )
 _MALFORMED_HTML_CONTROL_TAGS = {"div", "em", "mark", "span", "strong"}
 _ASCII_TOKEN_CHARACTER = re.compile(r"[A-Za-z0-9_]")
+_MATH_TOKEN_CONTINUATION_CHARACTER = re.compile(
+    r"[A-Za-z0-9_.+\-*/^=<>!]"
+)
+_MATH_OPERATOR_TRANSLATION = str.maketrans(
+    {
+        "×": "*",
+        "·": "*",
+        "÷": "/",
+        "−": "-",
+        "－": "-",
+        "–": "-",
+        "—": "-",
+        "＋": "+",
+        "＝": "=",
+        "≠": "!=",
+        "≤": "<=",
+        "≥": ">=",
+        "＜": "<",
+        "＞": ">",
+        "．": ".",
+        "／": "/",
+        "＊": "*",
+        "＾": "^",
+    }
+)
 
 
 def contains_math_markup(value: str) -> bool:
@@ -179,14 +204,19 @@ def contains_bounded_answer_token(
         end = position + len(private)
         before_is_token = (
             position > 0
-            and _ASCII_TOKEN_CHARACTER.fullmatch(visible[position - 1])
+            and _MATH_TOKEN_CONTINUATION_CHARACTER.fullmatch(
+                visible[position - 1]
+            )
             is not None
-            and _ASCII_TOKEN_CHARACTER.fullmatch(private[0]) is not None
+            and _MATH_TOKEN_CONTINUATION_CHARACTER.fullmatch(private[0])
+            is not None
         )
         after_is_token = (
             end < len(visible)
-            and _ASCII_TOKEN_CHARACTER.fullmatch(visible[end]) is not None
-            and _ASCII_TOKEN_CHARACTER.fullmatch(private[-1]) is not None
+            and _MATH_TOKEN_CONTINUATION_CHARACTER.fullmatch(visible[end])
+            is not None
+            and _MATH_TOKEN_CONTINUATION_CHARACTER.fullmatch(private[-1])
+            is not None
         )
         if not before_is_token and not after_is_token:
             return True
@@ -195,20 +225,29 @@ def contains_bounded_answer_token(
 
 
 def _normalize_bounded_answer_text(value: str) -> str:
-    normalized = value.lower()
+    normalized = value.lower().translate(_MATH_OPERATOR_TRANSLATION)
     normalized = re.sub(
         r"\\(?:left|right|text|mathrm|mathbf)",
         "",
         normalized,
     )
+    for command, replacement in (
+        (r"\times", "*"),
+        (r"\cdot", "*"),
+        (r"\div", "/"),
+        (r"\neq", "!="),
+        (r"\ne", "!="),
+    ):
+        normalized = normalized.replace(command, replacement)
     normalized = re.sub(
         r"\\(?:[()\[\]]|[A-Za-z]+)",
         lambda item: item.group()[1:],
         normalized,
     )
     normalized = re.sub(r"[$()\[\]{}]", "", normalized)
-    normalized = re.sub(r"[\s，。；：、,.!?！？;:]+", " ", normalized)
-    normalized = re.sub(r"\s*([=+\-*/^<>])\s*", r"\1", normalized)
+    normalized = re.sub(r"(?<!\d)\.|\.(?!\d)", " ", normalized)
+    normalized = re.sub(r"[\s，。；：、,!?！？;:]+", " ", normalized)
+    normalized = re.sub(r"\s*([=+\-*/^<>!])\s*", r"\1", normalized)
     normalized = re.sub(r"\s*(和|或)\s*", r"\1", normalized)
     return normalized
 
@@ -321,6 +360,7 @@ def normalize_cross_artifact_math_identity(value: str) -> str:
         str.maketrans(
             {
                 "×": "*",
+                "·": "*",
                 "÷": "/",
                 "−": "-",
                 "－": "-",
@@ -344,12 +384,26 @@ def normalize_cross_artifact_math_identity(value: str) -> str:
     )
     normalized = normalized.replace(r"\{", "{").replace(r"\}", "}")
     normalized = re.sub(r"\\(?:dfrac|tfrac)", r"\\frac", normalized)
+    for command, replacement in (
+        (r"\times", "*"),
+        (r"\cdot", "*"),
+        (r"\div", "/"),
+    ):
+        normalized = normalized.replace(command, replacement)
     normalized = re.sub(r"\s+", "", normalized)
     simple_fraction = re.compile(
-        r"\\frac\{([A-Za-z0-9.]+)\}\{([A-Za-z0-9.]+)\}"
+        r"\\frac\{(-?[A-Za-z0-9.]+)\}\{(-?[A-Za-z0-9.]+)\}"
     )
     while True:
         reduced = simple_fraction.sub(r"\1/\2", normalized)
+        if reduced == normalized:
+            break
+        normalized = reduced
+    redundant_script_braces = re.compile(
+        r"([_^])\{(-?[A-Za-z0-9.]+|\\[A-Za-z]+)\}"
+    )
+    while True:
+        reduced = redundant_script_braces.sub(r"\1\2", normalized)
         if reduced == normalized:
             break
         normalized = reduced
@@ -371,6 +425,19 @@ def contains_cross_artifact_math_identity(
     """Bounded containment for a declared math target within a reference."""
     container = normalize_cross_artifact_math_identity(container_value)
     candidate = normalize_cross_artifact_math_identity(candidate_value)
+    return contains_normalized_cross_artifact_math_identity(
+        container,
+        candidate,
+    )
+
+
+def contains_normalized_cross_artifact_math_identity(
+    normalized_container: str,
+    normalized_candidate: str,
+) -> bool:
+    """Containment for inputs already normalized as strict identities."""
+    container = normalized_container
+    candidate = normalized_candidate
     if not candidate:
         return False
     position = container.find(candidate)
