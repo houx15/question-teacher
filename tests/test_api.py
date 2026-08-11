@@ -11,7 +11,7 @@ from app.api import (
     run_generation,
     safe_generation_error,
 )
-from app.compiler import LessonCompiler
+from app.compiler import LessonCompileError, LessonCompiler
 from app.config import Settings
 from app.generation import LessonGenerationService, LessonInputError
 from app.main import PROJECT_ROOT, create_app
@@ -28,7 +28,13 @@ from app.schemas import (
     TransferOption,
 )
 from app.store import MemoryStore
-from tests.test_generation import problem, valid_draft
+from tests.test_generation import (
+    _approved_preparation_client,
+    preparation_problem,
+    preparation_route,
+    problem,
+    valid_draft,
+)
 from tests.generation_fakes import FakeClient
 
 
@@ -406,6 +412,45 @@ def test_nonconverged_preparation_never_reaches_compiler_or_audio_service():
     assert failed.error == "课程生成失败，请稍后重试。"
     assert "private review findings" not in failed.error
     assert compiler.calls == 0
+    assert audio_service.calls == 0
+
+
+def test_compiler_failure_never_reaches_audio_service():
+    class FailingCompiler:
+        def compile(self, *args, **kwargs):
+            del args, kwargs
+            raise LessonCompileError("private compiler output")
+
+    model_client = _approved_preparation_client()
+    generator = LessonGenerationService(
+        model_client,
+        MathEngine(),
+        compiler=FailingCompiler(),
+    )
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    generator._build_grounded_teaching_route = grounded_route
+    audio_service = FakeAudioService()
+    store = RecordingStore()
+    job = store.create_job()
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            preparation_problem(),
+            store,
+            generator,
+            audio_service,
+        )
+    )
+
+    failed = store.get_job(job.job_id)
+    assert failed.status == "failed"
+    assert failed.error == "课程生成失败，请稍后重试。"
+    assert "private compiler output" not in failed.error
     assert audio_service.calls == 0
 
 

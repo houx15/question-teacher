@@ -671,6 +671,29 @@ def test_live_smoke_accepts_more_than_two_complete_targeted_repairs():
     )
 
 
+def test_live_smoke_accepts_the_pipeline_repair_cycle_limit():
+    performance_repair = PREPARATION_SYSTEM_PROMPTS[4:]
+
+    smoke_live.assert_model_call_contract(
+        [
+            *PREPARATION_SYSTEM_PROMPTS,
+            *(performance_repair * smoke_live.LessonPreparationPipeline.MAX_REPAIR_CYCLES),
+        ]
+    )
+
+
+def test_live_smoke_rejects_more_than_the_pipeline_repair_cycle_limit():
+    performance_repair = PREPARATION_SYSTEM_PROMPTS[4:]
+
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [
+                *PREPARATION_SYSTEM_PROMPTS,
+                *(performance_repair * (smoke_live.LessonPreparationPipeline.MAX_REPAIR_CYCLES + 1)),
+            ]
+        )
+
+
 def test_live_smoke_accepts_one_fresh_final_review_call():
     smoke_live.assert_model_call_contract(
         [

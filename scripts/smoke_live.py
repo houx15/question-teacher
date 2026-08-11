@@ -34,7 +34,10 @@ from app.preparation_prompts import (
     STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
 )
-from app.preparation_pipeline import PreparationFailure
+from app.preparation_pipeline import (
+    LessonPreparationPipeline,
+    PreparationFailure,
+)
 from app.schemas import ProblemInput
 from app.tts_client import (
     OpenAISpeechClient,
@@ -154,7 +157,10 @@ def assert_model_call_contract(
         "smoke 的路线审计阶段顺序不正确。",
     )
     _require_contract(
-        all(count <= 2 for _stage, count in runs[: len(prefix)]),
+        all(
+            count <= LessonPreparationPipeline.MAX_STRUCTURE_ATTEMPTS
+            for _stage, count in runs[: len(prefix)]
+        ),
         "smoke 的路线审计阶段重试超限。",
     )
     preparation_order = [
@@ -174,12 +180,21 @@ def assert_model_call_contract(
         "smoke 未按依赖顺序完成首轮备课、模拟与审核。",
     )
     _require_contract(
-        all(count <= 2 for _stage, count in initial_runs),
+        all(
+            count <= LessonPreparationPipeline.MAX_STRUCTURE_ATTEMPTS
+            for _stage, count in initial_runs
+        ),
         "smoke 首轮备课或审核的结构重试超限。",
     )
     remaining = preparation_runs[len(preparation_order) :]
     repair_starts = preparation_order[:5]
+    repair_cycles = 0
     while remaining:
+        repair_cycles += 1
+        _require_contract(
+            repair_cycles <= LessonPreparationPipeline.MAX_REPAIR_CYCLES,
+            "smoke 的定向修复轮数超限。",
+        )
         repair_start = remaining[0][0]
         _require_contract(
             repair_start in repair_starts,
@@ -194,11 +209,15 @@ def assert_model_call_contract(
             "smoke 的定向修复未完整重建下游并审核。",
         )
         _require_contract(
-            all(count <= 2 for _stage, count in actual_suffix[:-1]),
+            all(
+                count <= LessonPreparationPipeline.MAX_STRUCTURE_ATTEMPTS
+                for _stage, count in actual_suffix[:-1]
+            ),
             "smoke 的定向修复角色结构重试超限。",
         )
         _require_contract(
-            actual_suffix[-1][1] <= 4,
+            actual_suffix[-1][1]
+            <= 2 * LessonPreparationPipeline.MAX_STRUCTURE_ATTEMPTS,
             "smoke 定向修复后的审核重试超限。",
         )
         remaining = remaining[len(expected_suffix) :]

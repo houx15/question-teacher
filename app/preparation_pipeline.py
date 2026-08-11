@@ -70,6 +70,10 @@ from app.preparation_validation import (
     validate_teaching_script,
 )
 from app.schemas import ProblemFocusTarget, ProblemInput
+from app.reference_safety import (
+    ReferenceContentSafetyError,
+    ReferenceSafetyPolicy,
+)
 from app.teaching_route import FrozenTeachingRoute
 
 
@@ -132,6 +136,7 @@ class PreparationFailure(RuntimeError):
 
 @dataclass
 class PreparationState:
+    reference_safety: Optional[ReferenceSafetyPolicy] = None
     solution_trace: Optional[SolutionTrace] = None
     reasoning_trajectory: Optional[ReasoningTrajectory] = None
     teaching_script: Optional[TeachingScript] = None
@@ -324,7 +329,9 @@ class LessonPreparationPipeline:
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback] = None,
     ) -> PreparedLessonRun:
-        state = PreparationState()
+        state = PreparationState(
+            reference_safety=ReferenceSafetyPolicy.from_problem(problem)
+        )
         state_token = self._active_state.set(state)
         try:
             await self._populate_early_state(
@@ -359,7 +366,9 @@ class LessonPreparationPipeline:
         on_stage: Optional[StageCallback] = None,
     ) -> PreparationRunSnapshot:
         """Run Task 4 only and return a defensive, request-scoped snapshot."""
-        state = PreparationState()
+        state = PreparationState(
+            reference_safety=ReferenceSafetyPolicy.from_problem(problem)
+        )
         state_token = self._active_state.set(state)
         try:
             await self._populate_early_state(
@@ -547,6 +556,12 @@ class LessonPreparationPipeline:
             prompt,
             SolutionTrace,
         )
+        try:
+            trace = self._reference_safety(state).sanitize_solution_trace(
+                trace
+            )
+        except ReferenceContentSafetyError:
+            self._raise_reference_content_leak(state, "reference_analyst")
         try:
             validate_solution_trace(trace, teaching_route)
         except PreparationValidationError:
@@ -865,6 +880,10 @@ class LessonPreparationPipeline:
             ),
             LessonReviewDecision,
         )
+        try:
+            self._reference_safety(state).ensure_safe(decision)
+        except ReferenceContentSafetyError:
+            self._raise_reference_content_leak(state, "lesson_reviewer")
         try:
             validate_review_decision(
                 decision,
@@ -1203,6 +1222,10 @@ class LessonPreparationPipeline:
         record = state.role_calls[-1]
         if record.role != responsible_role or record.failure_category is not None:
             raise RuntimeError("model call record does not match accepted artifact")
+        try:
+            self._reference_safety(state).ensure_safe(artifact)
+        except ReferenceContentSafetyError:
+            self._raise_reference_content_leak(state, responsible_role)
         version = state.versions.get(artifact_type, 0) + 1
         revision = ArtifactRevision(
             artifact_type=artifact_type,
@@ -1233,6 +1256,30 @@ class LessonPreparationPipeline:
         state.active_versions = active_versions
         state.history = history
         state.role_calls = role_calls
+
+    @staticmethod
+    def _reference_safety(
+        state: PreparationState,
+    ) -> ReferenceSafetyPolicy:
+        if state.reference_safety is None:
+            raise RuntimeError("reference safety policy is missing")
+        return state.reference_safety
+
+    def _raise_reference_content_leak(
+        self,
+        state: PreparationState,
+        role: str,
+    ) -> None:
+        self._mark_last_call_failed(
+            state,
+            role,
+            "reference_content_leak",
+        )
+        raise PreparationFailure(
+            category="reference_content_leak",
+            role=role,
+            detail="备课内容包含不安全的参考材料复述。",
+        ) from None
 
     @staticmethod
     def _set_last_call_finding_ids(

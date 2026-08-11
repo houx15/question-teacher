@@ -1587,6 +1587,79 @@ def test_raw_reference_solution_reaches_only_reference_analyst():
     assert all(RAW_REFERENCE_MARKER not in call.user for call in designer_calls)
 
 
+def test_reference_anchor_excerpt_is_replaced_before_downstream_use():
+    trace = trace_payload()
+    trace["assumptions"][0]["source_anchor"]["excerpt"] = (
+        RAW_REFERENCE_MARKER
+    )
+    fake = client(trace=trace)
+
+    result = run_early(LessonPreparationPipeline(fake))
+
+    assert RAW_REFERENCE_MARKER not in result.solution_trace.model_dump_json()
+    designer_call = next(
+        call for call in fake.calls if call.role == "teaching_designer"
+    )
+    assert RAW_REFERENCE_MARKER not in designer_call.user
+
+
+def test_reference_only_literal_in_trajectory_is_rejected_before_script():
+    trajectory = trajectory_payload()
+    trajectory["lesson_purpose"] += " " + RAW_REFERENCE_MARKER
+    fake = client(trajectory=trajectory)
+
+    with pytest.raises(PreparationFailure) as captured:
+        run_early(LessonPreparationPipeline(fake))
+
+    assert captured.value.category == "reference_content_leak"
+    assert RAW_REFERENCE_MARKER not in str(captured.value)
+    assert [call.role for call in fake.calls] == [
+        "reference_analyst",
+        "teaching_designer",
+    ]
+
+
+def test_reference_only_literal_in_script_is_rejected_before_interaction():
+    script = downstream_script_payload()
+    script["title"] += " " + RAW_REFERENCE_MARKER
+    fake = client(script=script)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "reference_content_leak"
+    assert RAW_REFERENCE_MARKER not in str(captured.value)
+    assert [call.role for call in fake.calls] == [
+        "reference_analyst",
+        "teaching_designer",
+        "script_teacher",
+    ]
+
+
+def test_reference_only_literal_in_review_is_rejected_privately():
+    review = downstream_review_payload()
+    review["approval_summary"] += " " + RAW_REFERENCE_MARKER
+    fake = client(reviews=[review])
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "reference_content_leak"
+    assert RAW_REFERENCE_MARKER not in str(captured.value)
+    assert captured.value.audit is not None
+    assert captured.value.audit.role_calls[-1].failure_category == (
+        "reference_content_leak"
+    )
+
+
 def test_each_role_gets_one_structure_retry():
     fake = PreparationFakeClient(
         {

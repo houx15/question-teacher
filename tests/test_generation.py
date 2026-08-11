@@ -2,8 +2,11 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
+from app.api import public_lesson_payload
 from app.claim_checker import ClaimCheckerUnavailableError
+from app.compiler import LessonCompileError, LessonCompiler
 from app.generation import (
     GeneratedLessonBundle,
     LessonGenerationService,
@@ -26,6 +29,7 @@ from tests.generation_fakes import (
 )
 from tests.preparation_fakes import PreparationFakeClient
 from tests.test_preparation_pipeline import (
+    RAW_REFERENCE_MARKER,
     downstream_interaction_payload,
     downstream_review_payload,
     downstream_score_payload,
@@ -389,6 +393,68 @@ def test_grounded_raw_reference_reaches_only_grounder_and_reference_analyst():
     ]
 
 
+def test_grounded_reference_anchor_marker_is_absent_from_all_downstream_outputs():
+    trace = trace_payload()
+    trace["source_steps"][0]["source_anchor"]["excerpt"] = (
+        RAW_REFERENCE_MARKER
+    )
+    preparation_client = PreparationFakeClient(
+        {
+            "reference_analyst": [trace],
+            "teaching_designer": [trajectory_payload()],
+            "script_teacher": [downstream_script_payload()],
+            "interaction_designer": [downstream_interaction_payload()],
+            "classroom_director": [downstream_score_payload()],
+            "student_simulator": [downstream_simulation_payload()],
+            "lesson_reviewer": [downstream_review_payload()],
+        }
+    )
+    client = CompositeGenerationClient(
+        FakeClient([grounding_payload()]), preparation_client
+    )
+    source = grounded_source_problem(
+        reference_solution_text=(
+            RAW_REFERENCE_MARKER + "\n将已知根代入并整理。"
+        )
+    )
+
+    bundle = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate_bundle(source)
+    )
+
+    assert all(
+        RAW_REFERENCE_MARKER not in call.user
+        for call in client.calls
+        if call.role not in {"reference_grounder", "reference_analyst"}
+    )
+    assert RAW_REFERENCE_MARKER not in json.dumps(
+        public_lesson_payload(bundle.lesson), ensure_ascii=False
+    )
+    assert (
+        RAW_REFERENCE_MARKER
+        not in bundle.generation_record.prepared_lesson.model_dump_json()
+    )
+
+
+def test_grounder_reference_only_literal_is_rejected_before_preparation():
+    payload = grounding_payload()
+    payload["method_name"] = RAW_REFERENCE_MARKER
+    client = _approved_preparation_client([payload])
+    source = grounded_source_problem(
+        reference_solution_text=RAW_REFERENCE_MARKER
+    )
+
+    with pytest.raises(LessonQualityError) as captured:
+        asyncio.run(
+            LessonGenerationService(client, MathEngine()).generate_bundle(
+                source
+            )
+        )
+
+    assert RAW_REFERENCE_MARKER not in str(captured.value)
+    assert [call.role for call in client.calls] == ["reference_grounder"]
+
+
 def test_checker_unavailability_softly_degrades_the_real_grounded_route():
     check_request = {
         "check_id": "divide-by-n",
@@ -572,7 +638,6 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
         },
         "repair_count": 0,
         "review_status": "approved",
-        "review_assessment": "核心门槛通过",
     }
     serialized_report = json.dumps(
         bundle.lesson.validation_report,
@@ -587,6 +652,222 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
         for beat in bundle.lesson.beats
         for cue in beat.sync_cues
     )
+
+
+def test_model_authored_review_summary_remains_private():
+    marker = "PRIVATE-REVIEW-ASSESSMENT-TASK7"
+    review = downstream_review_payload()
+    review["approval_summary"] = marker
+    preparation_client = PreparationFakeClient(
+        {
+            "reference_analyst": [trace_payload()],
+            "teaching_designer": [trajectory_payload()],
+            "script_teacher": [downstream_script_payload()],
+            "interaction_designer": [downstream_interaction_payload()],
+            "classroom_director": [downstream_score_payload()],
+            "student_simulator": [downstream_simulation_payload()],
+            "lesson_reviewer": [review],
+        }
+    )
+    client = CompositeGenerationClient(FakeClient([]), preparation_client)
+    service = LessonGenerationService(client, MathEngine())
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+    bundle = asyncio.run(service.generate_bundle(preparation_problem()))
+
+    assert marker not in json.dumps(
+        bundle.lesson.validation_report, ensure_ascii=False
+    )
+    assert (
+        bundle.generation_record.prepared_lesson.review.approval_summary
+        == marker
+    )
+
+
+class _MutatingCompiler:
+    def __init__(self, mutation):
+        self.mutation = mutation
+
+    def compile(self, source_problem, draft, report):
+        lesson = LessonCompiler().compile(source_problem, draft, report)
+        return self.mutation(lesson)
+
+
+def _replace_first_authored_cue(lesson, *, spoken_text=None, drop=False):
+    beats = list(lesson.beats)
+    for beat_index, beat in enumerate(beats):
+        cues = list(beat.sync_cues)
+        for cue_index, cue in enumerate(cues):
+            if cue.cue_id == "runtime-transfer-intro-cue":
+                continue
+            if drop:
+                cues.pop(cue_index)
+            else:
+                cues[cue_index] = cue.model_copy(
+                    update={"spoken_text": spoken_text}
+                )
+            beats[beat_index] = beat.model_copy(update={"sync_cues": cues})
+            return lesson.model_copy(update={"beats": beats})
+    raise AssertionError("fixture has no authored cue")
+
+
+def _merge_first_two_authored_cues(lesson):
+    beats = list(lesson.beats)
+    locations = []
+    for beat_index, beat in enumerate(beats):
+        for cue_index, cue in enumerate(beat.sync_cues):
+            if cue.cue_id != "runtime-transfer-intro-cue":
+                locations.append((beat_index, cue_index, cue))
+    first_beat, first_index, first = locations[0]
+    second_beat, second_index, second = locations[1]
+    first_cues = list(beats[first_beat].sync_cues)
+    first_cues[first_index] = first.model_copy(
+        update={"spoken_text": first.spoken_text + second.spoken_text}
+    )
+    beats[first_beat] = beats[first_beat].model_copy(
+        update={"sync_cues": first_cues}
+    )
+    second_cues = list(beats[second_beat].sync_cues)
+    second_cues.pop(second_index)
+    beats[second_beat] = beats[second_beat].model_copy(
+        update={"sync_cues": second_cues}
+    )
+    return lesson.model_copy(update={"beats": beats})
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda lesson: lesson.model_copy(
+            update={
+                "problem": ProblemInput(
+                    problem_text="另一个完整题目",
+                    reference_answer="另一个答案",
+                )
+            }
+        ),
+        lambda lesson: lesson.model_copy(
+            update={"validation_report": {"review_status": "forged"}}
+        ),
+        lambda lesson: _replace_first_authored_cue(
+            lesson, spoken_text="被编译器改写的讲稿"
+        ),
+        lambda lesson: _replace_first_authored_cue(lesson, drop=True),
+        _merge_first_two_authored_cues,
+    ],
+)
+def test_post_compile_integrity_rejects_mutated_problem_report_or_cues(
+    mutation,
+):
+    client = _approved_preparation_client()
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        compiler=_MutatingCompiler(mutation),
+    )
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    with pytest.raises(LessonQualityError, match="完整性"):
+        asyncio.run(service.generate_bundle(preparation_problem()))
+
+
+def test_expected_compiler_failure_is_mapped_to_safe_quality_error():
+    class FailingCompiler:
+        def compile(self, source_problem, draft, report):
+            del source_problem, draft, report
+            raise LessonCompileError("private compiler detail")
+
+    client = _approved_preparation_client()
+    service = LessonGenerationService(
+        client, MathEngine(), compiler=FailingCompiler()
+    )
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    with pytest.raises(LessonQualityError) as captured:
+        asyncio.run(service.generate_bundle(preparation_problem()))
+
+    assert "private compiler detail" not in str(captured.value)
+
+
+def test_unexpected_compiler_error_propagates_unchanged():
+    programmer_error = RuntimeError("programmer bug")
+
+    class BrokenCompiler:
+        def compile(self, source_problem, draft, report):
+            del source_problem, draft, report
+            raise programmer_error
+
+    client = _approved_preparation_client()
+    service = LessonGenerationService(
+        client, MathEngine(), compiler=BrokenCompiler()
+    )
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    with pytest.raises(RuntimeError) as captured:
+        asyncio.run(service.generate_bundle(preparation_problem()))
+
+    assert captured.value is programmer_error
+
+
+def test_compiler_cancellation_propagates_unchanged():
+    class CancelledCompiler:
+        def compile(self, source_problem, draft, report):
+            del source_problem, draft, report
+            raise asyncio.CancelledError()
+
+    client = _approved_preparation_client()
+    service = LessonGenerationService(
+        client, MathEngine(), compiler=CancelledCompiler()
+    )
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.generate_bundle(preparation_problem()))
+
+
+def test_bundle_rejects_a_generation_record_for_another_lesson():
+    client = _approved_preparation_client()
+    service = LessonGenerationService(client, MathEngine())
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+    bundle = asyncio.run(service.generate_bundle(preparation_problem()))
+    forged_record = bundle.generation_record.model_copy(
+        update={"lesson_id": "another-lesson"}
+    )
+
+    with pytest.raises(ValidationError, match="lesson id mismatch"):
+        GeneratedLessonBundle(
+            lesson=bundle.lesson,
+            generation_record=forged_record,
+        )
 
 
 def test_generate_remains_runtime_lesson_compatibility_wrapper():

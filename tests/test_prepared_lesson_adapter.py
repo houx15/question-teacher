@@ -6,7 +6,10 @@ import pytest
 import app.prepared_lesson_adapter as prepared_adapter
 from app.compiler import LessonCompiler
 from app.preparation_models import PreparedLesson
-from app.prepared_lesson_adapter import prepared_lesson_to_draft
+from app.prepared_lesson_adapter import (
+    PreparedLessonAdaptationError,
+    prepared_lesson_to_draft,
+)
 from app.schemas import MathStep, ProblemInput, RuntimeLesson
 from app.teaching_route import (
     TeachingRouteConsistency,
@@ -413,9 +416,9 @@ def test_adapter_requires_symbolic_steps_only_for_symbolic_route():
     prepared = approved_prepared()
     symbolic, steps = symbolic_route_and_steps()
 
-    with pytest.raises(ValueError, match="symbolic.*math steps"):
+    with pytest.raises(PreparedLessonAdaptationError):
         prepared_lesson_to_draft(source_problem(), prepared, symbolic)
-    with pytest.raises(ValueError, match="grounded.*math steps"):
+    with pytest.raises(PreparedLessonAdaptationError):
         prepared_lesson_to_draft(
             source_problem(), prepared, route(), verified_math_steps=steps
         )
@@ -481,7 +484,7 @@ def test_adapter_rejects_a_prepared_lesson_that_is_not_approved():
     payload["review"]["findings"][0]["severity"] = "material"
     prepared = PreparedLesson.model_validate(payload)
 
-    with pytest.raises(ValueError, match="approved"):
+    with pytest.raises(PreparedLessonAdaptationError):
         prepared_lesson_to_draft(source_problem(), prepared, route())
 
 

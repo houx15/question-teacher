@@ -11,7 +11,7 @@ from typing import (
 )
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 
 from app.compiler import LessonCompileError, LessonCompiler
 from app.claim_checker import (
@@ -29,6 +29,7 @@ from app.preparation_models import (
 )
 from app.preparation_pipeline import LessonPreparationPipeline
 from app.prepared_lesson_adapter import (
+    PreparedLessonAdaptationError,
     prepared_lesson_to_draft_with_provenance,
 )
 from app.prompts import (
@@ -40,6 +41,7 @@ from app.prompts import (
     reference_audit_prompt,
 )
 from app.schemas import (
+    FIXED_RUNTIME_CUE_IDS,
     MathRouteDraft,
     ProblemInput,
     ReferenceGroundingBrief,
@@ -52,6 +54,10 @@ from app.problem_capability import (
     ProblemIntakeStatus,
 )
 from app.problem_focus import compile_problem_focus_targets
+from app.reference_safety import (
+    ReferenceContentSafetyError,
+    ReferenceSafetyPolicy,
+)
 from app.teaching_route import (
     FrozenTeachingRoute,
     TeachingRouteEvidenceError,
@@ -94,6 +100,34 @@ class LessonQualityError(RuntimeError):
 class GeneratedLessonBundle(SchemaModel):
     lesson: RuntimeLesson
     generation_record: GenerationRecord
+
+    @model_validator(mode="after")
+    def validate_private_runtime_links(self) -> "GeneratedLessonBundle":
+        if self.generation_record.lesson_id != self.lesson.lesson_id:
+            raise ValueError("generation record lesson id mismatch")
+        runtime_cues = [
+            cue for beat in self.lesson.beats for cue in beat.sync_cues
+        ]
+        runtime_by_id = {cue.cue_id: cue for cue in runtime_cues}
+        if len(runtime_by_id) != len(runtime_cues):
+            raise ValueError("compiled runtime cue ids must be unique")
+        authored_runtime_ids = set(runtime_by_id) - set(
+            FIXED_RUNTIME_CUE_IDS.values()
+        )
+        provenance = self.generation_record.cue_provenance
+        provenance_ids = {item.runtime_cue_id for item in provenance}
+        if provenance_ids != authored_runtime_ids:
+            raise ValueError("compiled authored cue ids changed")
+        grouped = {cue_id: [] for cue_id in provenance_ids}
+        for item in provenance:
+            grouped[item.runtime_cue_id].append(item.spoken_text)
+        if any(
+            "".join(grouped[cue_id])
+            != runtime_by_id[cue_id].spoken_text
+            for cue_id in provenance_ids
+        ):
+            raise ValueError("compiled authored cue text changed")
+        return self
 
 
 class LessonInputError(LessonQualityError):
@@ -248,16 +282,19 @@ class LessonGenerationService:
             on_stage=on_stage,
         )
         prepared = prepared_run.prepared_lesson
-        prepared_draft_run = prepared_lesson_to_draft_with_provenance(
-            problem,
-            prepared,
-            teaching_route,
-            verified_math_steps=(
-                verified_route.thaw().math_steps
-                if verified_route is not None
-                else None
-            ),
-        )
+        try:
+            prepared_draft_run = prepared_lesson_to_draft_with_provenance(
+                problem,
+                prepared,
+                teaching_route,
+                verified_math_steps=(
+                    verified_route.thaw().math_steps
+                    if verified_route is not None
+                    else None
+                ),
+            )
+        except PreparedLessonAdaptationError:
+            raise LessonQualityError("课程编排失败。") from None
         draft = prepared_draft_run.draft
 
         await self._emit(on_stage, "正在编译课堂")
@@ -269,7 +306,6 @@ class LessonGenerationService:
             "artifact_versions": prepared_run.audit.active_versions,
             "repair_count": prepared.repair_count,
             "review_status": prepared.review.status,
-            "review_assessment": prepared.review.approval_summary,
         }
         if verified_route is not None and problem_report is not None:
             validation_report.update(
@@ -297,9 +333,12 @@ class LessonGenerationService:
                 validation_report,
             )
         except LessonCompileError:
-            raise
-        except Exception:
             raise LessonQualityError("课堂编译失败。") from None
+        if (
+            lesson.problem != problem
+            or lesson.validation_report != validation_report
+        ):
+            raise LessonQualityError("课堂编译完整性检查失败。")
         generation_record = GenerationRecord(
             generation_id=str(uuid4()),
             lesson_id=lesson.lesson_id,
@@ -320,10 +359,13 @@ class LessonGenerationService:
             ],
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        return GeneratedLessonBundle(
-            lesson=lesson,
-            generation_record=generation_record,
-        )
+        try:
+            return GeneratedLessonBundle(
+                lesson=lesson,
+                generation_record=generation_record,
+            )
+        except ValidationError:
+            raise LessonQualityError("课堂编译完整性检查失败。") from None
 
     async def _build_grounded_teaching_route(
         self,
@@ -342,6 +384,15 @@ class LessonGenerationService:
             )
         except ValidationError:
             raise LessonQualityError("参考教学路线结构无效。") from None
+        try:
+            brief = ReferenceSafetyPolicy.from_problem(
+                problem
+            ).sanitize_grounding_brief(
+                brief,
+                problem.reference_answer,
+            )
+        except ReferenceContentSafetyError:
+            raise LessonQualityError("参考教学路线内容无效。") from None
 
         results = []
         for request in brief.check_requests:

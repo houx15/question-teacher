@@ -4,13 +4,18 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
+from pydantic import ValidationError
+
 from app.preparation_models import (
     PerformanceCue,
     PlannedInteraction,
     PreparedLesson,
     TeachingScript,
 )
-from app.preparation_validation import validate_prepared_lesson
+from app.preparation_validation import (
+    PreparationValidationError,
+    validate_prepared_lesson,
+)
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import (
     Interaction,
@@ -40,6 +45,10 @@ class _AdaptedCue:
 _GENERATED_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
+class PreparedLessonAdaptationError(ValueError):
+    """An approved preparation could not be adapted to a runtime draft."""
+
+
 @dataclass(frozen=True)
 class CueProvenanceRecord:
     """Immutable private link from an authored clause to its runtime cue."""
@@ -61,9 +70,13 @@ class CueProvenanceRecord:
                 type(value) is not str
                 or _GENERATED_ID_PATTERN.fullmatch(value) is None
             ):
-                raise ValueError("provenance ids must be generated ids")
+                raise PreparedLessonAdaptationError(
+                    "provenance ids must be generated ids"
+                )
         if type(self.spoken_text) is not str or not self.spoken_text.strip():
-            raise ValueError("provenance spoken text must be nonblank")
+            raise PreparedLessonAdaptationError(
+                "provenance spoken text must be nonblank"
+            )
 
 
 @dataclass(frozen=True, init=False)
@@ -85,11 +98,15 @@ class PreparedDraftRun:
         runtime_cue_by_clause: Dict[str, str],
     ) -> "PreparedDraftRun":
         if type(draft) is not LessonDraft:
-            raise TypeError("draft must be an exact LessonDraft")
+            raise PreparedLessonAdaptationError(
+                "draft must be an exact LessonDraft"
+            )
         if type(prepared) is not PreparedLesson:
-            raise TypeError("prepared must be an exact PreparedLesson")
+            raise PreparedLessonAdaptationError(
+                "prepared must be an exact PreparedLesson"
+            )
         if type(runtime_cue_by_clause) is not dict:
-            raise TypeError(
+            raise PreparedLessonAdaptationError(
                 "runtime cue assignment must be an exact built-in dict"
             )
 
@@ -102,9 +119,13 @@ class PreparedDraftRun:
             or _GENERATED_ID_PATTERN.fullmatch(clause_id) is None
             for clause_id in expected_clause_ids
         ):
-            raise ValueError("expected clause ids must be generated ids")
+            raise PreparedLessonAdaptationError(
+                "expected clause ids must be generated ids"
+            )
         if len(expected_clause_ids) != len(set(expected_clause_ids)):
-            raise ValueError("expected clause ids must be unique")
+            raise PreparedLessonAdaptationError(
+                "expected clause ids must be unique"
+            )
         if any(
             type(clause_id) is not str
             or type(runtime_cue_id) is not str
@@ -112,11 +133,11 @@ class PreparedDraftRun:
             or _GENERATED_ID_PATTERN.fullmatch(runtime_cue_id) is None
             for clause_id, runtime_cue_id in runtime_cue_by_clause.items()
         ):
-            raise ValueError(
+            raise PreparedLessonAdaptationError(
                 "runtime cue assignment must contain generated ids"
             )
         if set(runtime_cue_by_clause) != set(expected_clause_ids):
-            raise ValueError(
+            raise PreparedLessonAdaptationError(
                 "runtime cue assignment must be a complete clause mapping"
             )
 
@@ -128,12 +149,12 @@ class PreparedDraftRun:
                     clause_id not in clause_ids
                     or clause_id in original_cue_by_clause
                 ):
-                    raise ValueError(
+                    raise PreparedLessonAdaptationError(
                         "performance cue membership must be unique and exact"
                     )
                 original_cue_by_clause[clause_id] = cue.cue_id
         if set(original_cue_by_clause) != clause_ids:
-            raise ValueError(
+            raise PreparedLessonAdaptationError(
                 "performance cue membership must be complete"
             )
 
@@ -168,7 +189,7 @@ class PreparedDraftRun:
             item.runtime_cue_id for item in normalized
         }
         if mapped_runtime_ids != set(runtime_cues):
-            raise ValueError(
+            raise PreparedLessonAdaptationError(
                 "provenance runtime cue ids must exactly match the draft"
             )
         grouped_text = {cue_id: [] for cue_id in runtime_cues}
@@ -178,7 +199,7 @@ class PreparedDraftRun:
             "".join(grouped_text[cue_id]) != cue.spoken_text
             for cue_id, cue in runtime_cues.items()
         ):
-            raise ValueError(
+            raise PreparedLessonAdaptationError(
                 "grouped provenance text must equal runtime cue narration"
             )
 
@@ -405,7 +426,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
             )
             for clause_id in clause_ids:
                 if clause_id in runtime_cue_by_clause:
-                    raise ValueError(
+                    raise PreparedLessonAdaptationError(
                         "runtime cue assignment contains a duplicate clause"
                     )
                 runtime_cue_by_clause[clause_id] = cue_id
@@ -429,9 +450,13 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
                 if interaction is not None:
                     fixed_interactions[cue_id] = interaction
     if any(not section_cues[name] for name in ("opening", "method", "summary")):
-        raise ValueError("prepared script section has no performance cue")
+        raise PreparedLessonAdaptationError(
+            "prepared script section has no performance cue"
+        )
     if not section_cues["body"]:
-        raise ValueError("prepared script requires explanatory body clauses")
+        raise PreparedLessonAdaptationError(
+            "prepared script requires explanatory body clauses"
+        )
     return (
         section_cues["opening"],
         section_cues["method"],
@@ -507,29 +532,41 @@ def _transfer_item(prepared: PreparedLesson) -> TransferItem:
     )
 
 
-def prepared_lesson_to_draft_with_provenance(
+def _prepared_lesson_to_draft_with_provenance(
     problem: ProblemInput,
     prepared: PreparedLesson,
     teaching_route: FrozenTeachingRoute,
     verified_math_steps: Optional[List[MathStep]] = None,
 ) -> PreparedDraftRun:
     if type(problem) is not ProblemInput:
-        raise TypeError("problem must be an exact ProblemInput")
+        raise PreparedLessonAdaptationError(
+            "problem must be an exact ProblemInput"
+        )
     if type(prepared) is not PreparedLesson:
-        raise TypeError("prepared must be an exact PreparedLesson")
+        raise PreparedLessonAdaptationError(
+            "prepared must be an exact PreparedLesson"
+        )
     if type(teaching_route) is not FrozenTeachingRoute:
-        raise TypeError("teaching_route must be an exact FrozenTeachingRoute")
+        raise PreparedLessonAdaptationError(
+            "teaching_route must be an exact FrozenTeachingRoute"
+        )
     if prepared.review.status != "approved":
-        raise ValueError("prepared lesson must be approved before adaptation")
+        raise PreparedLessonAdaptationError(
+            "prepared lesson must be approved before adaptation"
+        )
 
     route_payload = teaching_route.to_prompt_payload()
     if teaching_route.mode is TeachingRouteMode.SYMBOLIC_VERIFIED:
         if not verified_math_steps:
-            raise ValueError("symbolic route requires non-empty math steps")
+            raise PreparedLessonAdaptationError(
+                "symbolic route requires non-empty math steps"
+            )
         math_steps = [item.model_copy(deep=True) for item in verified_math_steps]
     else:
         if verified_math_steps is not None:
-            raise ValueError("grounded route rejects verified math steps")
+            raise PreparedLessonAdaptationError(
+                "grounded route rejects verified math steps"
+            )
         math_steps = []
 
     problem_targets = compile_problem_focus_targets(problem.problem_text)
@@ -568,6 +605,27 @@ def prepared_lesson_to_draft_with_provenance(
         prepared,
         runtime_cue_by_clause,
     )
+
+
+def prepared_lesson_to_draft_with_provenance(
+    problem: ProblemInput,
+    prepared: PreparedLesson,
+    teaching_route: FrozenTeachingRoute,
+    verified_math_steps: Optional[List[MathStep]] = None,
+) -> PreparedDraftRun:
+    try:
+        return _prepared_lesson_to_draft_with_provenance(
+            problem,
+            prepared,
+            teaching_route,
+            verified_math_steps,
+        )
+    except PreparedLessonAdaptationError:
+        raise
+    except (PreparationValidationError, ValidationError) as error:
+        raise PreparedLessonAdaptationError(
+            "prepared lesson adaptation failed"
+        ) from error
 
 
 def prepared_lesson_to_draft(
