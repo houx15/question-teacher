@@ -2165,7 +2165,9 @@ def test_run_snapshot_returns_defensive_copies_of_audit_and_artifacts():
     assert result.role_calls[0].failure_category is None
     assert result.versions["solution_trace"] == 1
     assert result.active_versions["solution_trace"] == 1
-    assert result.solution_trace.task_target == "求m-n"
+    assert result.solution_trace.task_target == (
+        "按既定方法完成题目并得到参考结论"
+    )
 
 
 def test_prepare_with_audit_returns_defensive_approved_lesson_and_full_audit():

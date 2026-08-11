@@ -52,6 +52,19 @@ _PUBLIC_GENERATION_STAGES = {
     "正在生成讲解语音": "正在生成讲解语音",
 }
 
+_PUBLIC_GENERATION_STAGE_ORDER = (
+    "正在理解题目",
+    "正在核对题目材料",
+    "正在设计完整讲解",
+    "正在进行整篇审稿",
+    "正在修订并编译课堂",
+    "正在生成讲解语音",
+)
+_PUBLIC_GENERATION_STAGE_ORDINALS = {
+    stage: ordinal
+    for ordinal, stage in enumerate(_PUBLIC_GENERATION_STAGE_ORDER)
+}
+
 
 def safe_generation_error(error: Exception) -> str:
     if isinstance(error, LessonInputError):
@@ -93,15 +106,20 @@ async def run_generation(
         status="running",
         stage="正在理解题目",
     )
-    current_stage = "正在理解题目"
+    current_stage_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
+        "正在理解题目"
+    ]
 
     def report_stage(stage: str) -> None:
-        nonlocal current_stage
+        nonlocal current_stage_ordinal
         public_stage = _PUBLIC_GENERATION_STAGES.get(stage)
-        if public_stage is None or public_stage == current_stage:
+        if public_stage is None:
+            return
+        stage_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[public_stage]
+        if stage_ordinal <= current_stage_ordinal:
             return
         store.update_job(job_id, stage=public_stage)
-        current_stage = public_stage
+        current_stage_ordinal = stage_ordinal
 
     try:
         lesson = await generator.generate(problem, on_stage=report_stage)

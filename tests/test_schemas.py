@@ -580,6 +580,18 @@ def test_problem_input_rejects_oversized_reference_solution():
         )
 
 
+@pytest.mark.parametrize("field_name", ["problem_text", "reference_answer"])
+def test_problem_input_bounds_public_authoring_text(field_name):
+    payload = {
+        "problem_text": "解方程 x=1",
+        "reference_answer": "x=1",
+    }
+    payload[field_name] = "甲" * 12001
+
+    with pytest.raises(ValidationError):
+        ProblemInput(**payload)
+
+
 def test_reference_material_audit_accepts_approved_review():
     audit = ReferenceMaterialAudit(
         status="approved",

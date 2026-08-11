@@ -442,6 +442,45 @@ def test_grounded_reference_anchor_marker_is_absent_from_all_downstream_outputs(
     )
 
 
+def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream():
+    marker = "这是只供内部审核的批注不要公开"
+    trace = trace_payload()
+    trace["source_steps"][0]["mathematical_action"] = marker
+    preparation_client = PreparationFakeClient(
+        {
+            "reference_analyst": [trace],
+            "teaching_designer": [trajectory_payload()],
+            "script_teacher": [downstream_script_payload()],
+            "interaction_designer": [downstream_interaction_payload()],
+            "classroom_director": [downstream_score_payload()],
+            "student_simulator": [downstream_simulation_payload()],
+            "lesson_reviewer": [downstream_review_payload()],
+        }
+    )
+    client = CompositeGenerationClient(
+        FakeClient([grounding_payload()]), preparation_client
+    )
+    source = grounded_source_problem(reference_solution_text=marker)
+
+    bundle = asyncio.run(
+        LessonGenerationService(client, MathEngine()).generate_bundle(source)
+    )
+
+    assert [call.role for call in client.calls if marker in call.user] == [
+        "reference_grounder",
+        "reference_analyst",
+    ]
+    assert marker not in bundle.generation_record.prepared_lesson.model_dump_json()
+    assert (
+        bundle.generation_record.prepared_lesson.solution_trace.source_steps[
+            0
+        ].mathematical_action
+        == preparation_route().to_prompt_payload()["steps"][0][
+            "operation_explanation"
+        ]
+    )
+
+
 def test_grounder_reference_only_literal_is_rejected_before_preparation():
     payload = grounding_payload()
     payload["method_name"] = RAW_REFERENCE_MARKER
@@ -661,7 +700,7 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
 
 
 def test_model_authored_review_summary_remains_private():
-    marker = "PRIVATE-REVIEW-ASSESSMENT-TASK7"
+    marker = "MODEL-REVIEW-ASSESSMENT-TASK7"
     review = downstream_review_payload()
     review["approval_summary"] = marker
     preparation_client = PreparationFakeClient(

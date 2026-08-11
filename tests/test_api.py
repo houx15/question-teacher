@@ -152,6 +152,35 @@ class PreparationStageGenerator(FakeGenerator):
         return runtime_lesson(problem)
 
 
+class RepairStageGenerator(FakeGenerator):
+    _INITIAL_PREPARATION_STAGES = [
+        "正在验证数学路线",
+        "整理参考解析",
+        "设计解题思维轨迹",
+        "编写讲稿",
+        "设计互动",
+        "编排板书与高亮",
+        "模拟学生并审核课程",
+    ]
+
+    def __init__(self, repair_rounds, *, lesson_id="lesson-repaired"):
+        super().__init__()
+        self.repair_rounds = repair_rounds
+        self.lesson_id = lesson_id
+
+    async def generate(self, problem, on_stage=None):
+        self.calls += 1
+        stages = list(self._INITIAL_PREPARATION_STAGES)
+        for repair_round in self.repair_rounds:
+            stages.extend(repair_round)
+        stages.append("正在编译课堂")
+        for stage in stages:
+            if on_stage:
+                on_stage(stage)
+            await asyncio.sleep(0)
+        return runtime_lesson(problem, lesson_id=self.lesson_id)
+
+
 class SequentialIdGenerator(FakeGenerator):
     async def generate(self, problem, on_stage=None):
         lesson = await super().generate(problem, on_stage=on_stage)
@@ -169,6 +198,18 @@ class RecordingStore(MemoryStore):
         job = super().update_job(job_id, **changes)
         if "stage" in changes:
             self.seen_stages.append(job.stage)
+        return job
+
+
+class PerJobRecordingStore(MemoryStore):
+    def __init__(self):
+        super().__init__()
+        self.seen_stages_by_job = {}
+
+    def update_job(self, job_id, **changes):
+        job = super().update_job(job_id, **changes)
+        if "stage" in changes:
+            self.seen_stages_by_job.setdefault(job_id, []).append(job.stage)
         return job
 
 
@@ -302,6 +343,164 @@ def test_preparation_pipeline_stages_advance_public_progress_monotonically():
         "正在生成讲解语音",
         "已完成",
     ]
+
+
+def test_script_repair_after_review_does_not_regress_public_progress():
+    store = RecordingStore()
+    generator = RepairStageGenerator(
+        [
+            [
+                "编写讲稿",
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ]
+        ]
+    )
+    client, _, _ = build_client(store=store, generator=generator)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+
+    assert response.status_code == 202
+    assert store.seen_stages == [
+        "正在理解题目",
+        "正在核对题目材料",
+        "正在设计完整讲解",
+        "正在进行整篇审稿",
+        "正在修订并编译课堂",
+        "正在生成讲解语音",
+        "已完成",
+    ]
+
+
+@pytest.mark.parametrize(
+    "repair_rounds",
+    [
+        [
+            [
+                "整理参考解析",
+                "设计解题思维轨迹",
+                "编写讲稿",
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+            [
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+        ],
+        [
+            [
+                "设计解题思维轨迹",
+                "编写讲稿",
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+            [
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+            [
+                "编写讲稿",
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+        ],
+    ],
+)
+def test_multiple_repairs_from_different_roles_keep_public_progress_monotonic(
+    repair_rounds,
+):
+    store = RecordingStore()
+    generator = RepairStageGenerator(repair_rounds)
+    client, _, _ = build_client(store=store, generator=generator)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+
+    assert response.status_code == 202
+    expected = [
+        "正在理解题目",
+        "正在核对题目材料",
+        "正在设计完整讲解",
+        "正在进行整篇审稿",
+        "正在修订并编译课堂",
+        "正在生成讲解语音",
+        "已完成",
+    ]
+    assert store.seen_stages == expected
+
+
+def test_concurrent_generation_jobs_keep_independent_progress_state():
+    store = PerJobRecordingStore()
+    first_job = store.create_job()
+    second_job = store.create_job()
+    first_generator = RepairStageGenerator(
+        [
+            [
+                "编写讲稿",
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ]
+        ],
+        lesson_id="lesson-first",
+    )
+    second_generator = RepairStageGenerator(
+        [
+            [
+                "设计互动",
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+            [
+                "编排板书与高亮",
+                "模拟学生并审核课程",
+            ],
+        ],
+        lesson_id="lesson-second",
+    )
+
+    async def run_both():
+        await asyncio.gather(
+            run_generation(
+                first_job.job_id,
+                problem_input(),
+                store,
+                first_generator,
+                FakeAudioService(),
+            ),
+            run_generation(
+                second_job.job_id,
+                problem_input(),
+                store,
+                second_generator,
+                FakeAudioService(),
+            ),
+        )
+
+    asyncio.run(run_both())
+
+    expected = [
+        "正在理解题目",
+        "正在核对题目材料",
+        "正在设计完整讲解",
+        "正在进行整篇审稿",
+        "正在修订并编译课堂",
+        "正在生成讲解语音",
+        "已完成",
+    ]
+    assert store.seen_stages_by_job[first_job.job_id] == expected
+    assert store.seen_stages_by_job[second_job.job_id] == expected
 
 
 @pytest.mark.parametrize(

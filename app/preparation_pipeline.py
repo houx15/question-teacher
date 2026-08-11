@@ -557,11 +557,27 @@ class LessonPreparationPipeline:
             SolutionTrace,
         )
         try:
+            validate_solution_trace(trace, teaching_route)
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "reference_analyst",
+                "reference_trace_failed",
+            )
+            raise PreparationFailure(
+                category="reference_trace_failed",
+                role="reference_analyst",
+                detail="参考解析轨迹未通过确定性校验。",
+            ) from None
+        try:
             trace = self._reference_safety(state).sanitize_solution_trace(
-                trace
+                trace,
+                teaching_route,
             )
         except ReferenceContentSafetyError:
             self._raise_reference_content_leak(state, "reference_analyst")
+        # Validate the server-owned projection too, so route reconstruction
+        # cannot silently weaken the cross-artifact contract.
         try:
             validate_solution_trace(trace, teaching_route)
         except PreparationValidationError:

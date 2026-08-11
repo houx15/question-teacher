@@ -1234,7 +1234,7 @@ def test_generation_page_has_focused_authoring_form():
     assert 'name="reference_answer"' in html
     assert 'name="reference_solution_text"' in html
     assert 'id="reference_solution_text"' in html
-    assert 'maxlength="12000"' in html
+    assert html.count('maxlength="12000"') == 3
     assert "参考解析" in html
     assert "输入题目、参考答案与可选参考解析" in html
     assert 'name="required_method"' in html

@@ -24,7 +24,11 @@ NonEmptyString = Annotated[
 ]
 ProblemText = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=3),
+    StringConstraints(strip_whitespace=True, min_length=3, max_length=12000),
+]
+ReferenceAnswerText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=12000),
 ]
 ReferenceSolutionText = Annotated[
     str,
@@ -186,7 +190,7 @@ class SchemaModel(BaseModel):
 
 class ProblemInput(SchemaModel):
     problem_text: ProblemText
-    reference_answer: NonEmptyString
+    reference_answer: ReferenceAnswerText
     reference_solution_text: Optional[ReferenceSolutionText] = None
     required_method: Optional[
         Literal["factor", "quadratic_formula", "complete_the_square"]
