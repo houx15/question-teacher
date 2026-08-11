@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from app.preparation_models import (
     PerformanceCue,
@@ -74,16 +74,26 @@ class PreparedDraftRun:
     _cue_provenance: Tuple[CueProvenanceRecord, ...]
     _expected_clause_ids: Tuple[str, ...]
 
-    def __init__(
-        self,
+    @classmethod
+    def from_prepared_lesson(
+        cls,
         draft: LessonDraft,
-        cue_provenance: Sequence[CueProvenanceRecord],
-        expected_clause_ids: Tuple[str, ...],
-    ) -> None:
+        prepared: PreparedLesson,
+        runtime_cue_by_clause: Dict[str, str],
+    ) -> "PreparedDraftRun":
         if type(draft) is not LessonDraft:
             raise TypeError("draft must be an exact LessonDraft")
-        if type(expected_clause_ids) is not tuple:
-            raise TypeError("expected clause ids must be an exact tuple")
+        if type(prepared) is not PreparedLesson:
+            raise TypeError("prepared must be an exact PreparedLesson")
+        if type(runtime_cue_by_clause) is not dict:
+            raise TypeError(
+                "runtime cue assignment must be an exact built-in dict"
+            )
+
+        clauses = prepared.teaching_script.clauses
+        expected_clause_ids = tuple(
+            clause.clause_id for clause in clauses
+        )
         if any(
             type(clause_id) is not str
             or _GENERATED_ID_PATTERN.fullmatch(clause_id) is None
@@ -92,33 +102,50 @@ class PreparedDraftRun:
             raise ValueError("expected clause ids must be generated ids")
         if len(expected_clause_ids) != len(set(expected_clause_ids)):
             raise ValueError("expected clause ids must be unique")
-        if type(cue_provenance) not in (list, tuple):
-            raise TypeError("cue provenance must be a list or tuple")
         if any(
-            type(item) is not CueProvenanceRecord
-            for item in cue_provenance
-        ):
-            raise TypeError(
-                "cue provenance must contain exact CueProvenanceRecord values"
-            )
-        normalized = tuple(
-            CueProvenanceRecord(
-                episode_id=item.episode_id,
-                clause_id=item.clause_id,
-                original_performance_cue_id=(
-                    item.original_performance_cue_id
-                ),
-                runtime_cue_id=item.runtime_cue_id,
-                spoken_text=item.spoken_text,
-            )
-            for item in cue_provenance
-        )
-        if tuple(item.clause_id for item in normalized) != (
-            expected_clause_ids
+            type(clause_id) is not str
+            or type(runtime_cue_id) is not str
+            or _GENERATED_ID_PATTERN.fullmatch(clause_id) is None
+            or _GENERATED_ID_PATTERN.fullmatch(runtime_cue_id) is None
+            for clause_id, runtime_cue_id in runtime_cue_by_clause.items()
         ):
             raise ValueError(
-                "source clause provenance must be complete and ordered"
+                "runtime cue assignment must contain generated ids"
             )
+        if set(runtime_cue_by_clause) != set(expected_clause_ids):
+            raise ValueError(
+                "runtime cue assignment must be a complete clause mapping"
+            )
+
+        clause_ids = set(expected_clause_ids)
+        original_cue_by_clause = {}
+        for cue in prepared.performance_score.cues:
+            for clause_id in cue.clause_ids:
+                if (
+                    clause_id not in clause_ids
+                    or clause_id in original_cue_by_clause
+                ):
+                    raise ValueError(
+                        "performance cue membership must be unique and exact"
+                    )
+                original_cue_by_clause[clause_id] = cue.cue_id
+        if set(original_cue_by_clause) != clause_ids:
+            raise ValueError(
+                "performance cue membership must be complete"
+            )
+
+        normalized = tuple(
+            CueProvenanceRecord(
+                episode_id=clause.episode_id,
+                clause_id=clause.clause_id,
+                original_performance_cue_id=original_cue_by_clause[
+                    clause.clause_id
+                ],
+                runtime_cue_id=runtime_cue_by_clause[clause.clause_id],
+                spoken_text=clause.spoken_text,
+            )
+            for clause in clauses
+        )
 
         runtime_cues = {
             cue.cue_id: cue
@@ -141,15 +168,6 @@ class PreparedDraftRun:
             raise ValueError(
                 "provenance runtime cue ids must exactly match the draft"
             )
-        original_cue_ids = {
-            item.original_performance_cue_id for item in normalized
-        }
-        if not original_cue_ids.issubset(
-            mapped_runtime_ids | RESERVED_RUNTIME_CUE_IDS
-        ):
-            raise ValueError(
-                "original performance cue ids must be traceable"
-            )
         grouped_text = {cue_id: [] for cue_id in runtime_cues}
         for item in normalized:
             grouped_text[item.runtime_cue_id].append(item.spoken_text)
@@ -161,22 +179,19 @@ class PreparedDraftRun:
                 "grouped provenance text must equal runtime cue narration"
             )
 
-        object.__setattr__(self, "_draft_json", draft.model_dump_json())
-        object.__setattr__(self, "_cue_provenance", normalized)
+        instance = object.__new__(cls)
         object.__setattr__(
-            self,
+            instance,
+            "_draft_json",
+            draft.model_dump_json(),
+        )
+        object.__setattr__(instance, "_cue_provenance", normalized)
+        object.__setattr__(
+            instance,
             "_expected_clause_ids",
             tuple(expected_clause_ids),
         )
-
-    @classmethod
-    def from_draft(
-        cls,
-        draft: LessonDraft,
-        cue_provenance: List[CueProvenanceRecord],
-        expected_clause_ids: Tuple[str, ...],
-    ) -> "PreparedDraftRun":
-        return cls(draft, cue_provenance, expected_clause_ids)
+        return instance
 
     @property
     def draft(self) -> LessonDraft:
@@ -315,7 +330,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
     allocated_ids = set()
     fixed_interactions = {}
     fixed_layers = {}
-    cue_provenance = []
+    runtime_cue_by_clause = {}
 
     def clause_section(clause_id: str) -> str:
         if clause_id in opening_ids:
@@ -385,16 +400,12 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
                 clause_ids,
                 cue_id,
             )
-            cue_provenance.extend(
-                CueProvenanceRecord(
-                    episode_id=clauses[clause_id].episode_id,
-                    clause_id=clause_id,
-                    original_performance_cue_id=score_cue.cue_id,
-                    runtime_cue_id=cue_id,
-                    spoken_text=clauses[clause_id].spoken_text,
-                )
-                for clause_id in clause_ids
-            )
+            for clause_id in clause_ids:
+                if clause_id in runtime_cue_by_clause:
+                    raise ValueError(
+                        "runtime cue assignment contains a duplicate clause"
+                    )
+                runtime_cue_by_clause[clause_id] = cue_id
             interaction = interactions_after_clause.get(clause_ids[-1])
             if section == "body":
                 section_cues["body"].append(
@@ -425,7 +436,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         section_cues["summary"],
         fixed_interactions,
         fixed_layers,
-        cue_provenance,
+        runtime_cue_by_clause,
     )
 
 
@@ -527,7 +538,7 @@ def prepared_lesson_to_draft_with_provenance(
         summary,
         fixed_interactions,
         fixed_layers,
-        cue_provenance,
+        runtime_cue_by_clause,
     ) = _runtime_sections(prepared)
     route_payload["teaching_route_fingerprint"] = teaching_route.fingerprint
     script = prepared.teaching_script
@@ -549,10 +560,10 @@ def prepared_lesson_to_draft_with_provenance(
         summary="".join(cue.spoken_text for cue in summary),
         transfer_item=_transfer_item(prepared),
     )
-    return PreparedDraftRun.from_draft(
+    return PreparedDraftRun.from_prepared_lesson(
         draft,
-        cue_provenance,
-        tuple(clause.clause_id for clause in script.clauses),
+        prepared,
+        runtime_cue_by_clause,
     )
 
 

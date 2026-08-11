@@ -669,106 +669,207 @@ def test_prepared_draft_run_is_defensive_and_provenance_is_immutable():
         run.cue_provenance[0].runtime_cue_id = "changed"
 
 
-def test_prepared_draft_run_constructor_normalizes_without_mutable_alias():
+def test_prepared_draft_factory_derives_records_without_mutable_alias():
     prepared = approved_prepared()
     original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
         source_problem(), prepared, route()
     )
-    records = list(original.cue_provenance)
-    expected_clause_ids = tuple(
-        clause.clause_id for clause in prepared.teaching_script.clauses
-    )
+    runtime_cue_by_clause = {
+        item.clause_id: item.runtime_cue_id
+        for item in original.cue_provenance
+    }
 
-    rebuilt = prepared_adapter.PreparedDraftRun(
+    rebuilt = prepared_adapter.PreparedDraftRun.from_prepared_lesson(
         original.draft,
-        records,
-        expected_clause_ids,
+        prepared,
+        runtime_cue_by_clause,
     )
-    records.pop()
+    runtime_cue_by_clause.clear()
     changed = rebuilt.draft
     changed.title = "外部修改"
 
-    assert type(rebuilt.cue_provenance[0]) is (
-        prepared_adapter.CueProvenanceRecord
-    )
-    assert rebuilt.cue_provenance[0] is not original.cue_provenance[0]
-    assert len(rebuilt.cue_provenance) == len(expected_clause_ids)
-    assert rebuilt.expected_clause_ids == expected_clause_ids
+    authoritative_clauses = prepared.teaching_script.clauses
+    authoritative_original = {
+        clause_id: cue.cue_id
+        for cue in prepared.performance_score.cues
+        for clause_id in cue.clause_ids
+    }
+    assert [item.clause_id for item in rebuilt.cue_provenance] == [
+        clause.clause_id for clause in authoritative_clauses
+    ]
+    assert [item.episode_id for item in rebuilt.cue_provenance] == [
+        clause.episode_id for clause in authoritative_clauses
+    ]
+    assert [item.spoken_text for item in rebuilt.cue_provenance] == [
+        clause.spoken_text for clause in authoritative_clauses
+    ]
+    assert [
+        item.original_performance_cue_id
+        for item in rebuilt.cue_provenance
+    ] == [
+        authoritative_original[clause.clause_id]
+        for clause in authoritative_clauses
+    ]
     assert rebuilt.draft.title != changed.title
 
 
-def test_prepared_draft_run_rejects_nonexact_or_nonimmutable_records():
-    prepared = approved_prepared()
-    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+def grouped_provenance_run():
+    payload = later_clause_action_payload("start_actions")
+    cue = next(
+        cue
+        for cue in payload["performance_score"]["cues"]
+        if cue["clause_ids"] == ["clause-3-prelude", "clause-3"]
+    )
+    cue["lead_actions"] = []
+    cue["start_actions"] = []
+    cue["end_actions"] = []
+    prepared = PreparedLesson.model_validate(payload)
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
         source_problem(), prepared, route()
     )
-    expected = tuple(
-        clause.clause_id for clause in prepared.teaching_script.clauses
-    )
-    forged = [item for item in original.cue_provenance]
-    forged[0] = forged[0].__dict__
-
-    with pytest.raises(TypeError, match="exact CueProvenanceRecord"):
-        prepared_adapter.PreparedDraftRun(original.draft, forged, expected)
-    with pytest.raises(TypeError, match="expected clause ids.*tuple"):
-        prepared_adapter.PreparedDraftRun(
-            original.draft,
-            original.cue_provenance,
-            list(expected),
-        )
+    return prepared, run
 
 
-@pytest.mark.parametrize("mutation", ("missing", "duplicate", "reordered"))
-def test_prepared_draft_run_rejects_incomplete_or_reordered_source_mapping(
-    mutation,
+@pytest.mark.parametrize(
+    "attack",
+    ("unchanged", "episode_id", "original_cue_id", "text_repartition"),
+)
+def test_prepared_draft_run_direct_constructor_cannot_inject_provenance(
+    attack,
 ):
     prepared = approved_prepared()
-    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
         source_problem(), prepared, route()
     )
+    records = list(run.cue_provenance)
+    if attack == "episode_id":
+        records[0] = replace(
+            records[0],
+            episode_id=records[-1].episode_id,
+        )
+    elif attack == "original_cue_id":
+        records[0] = replace(
+            records[0],
+            original_performance_cue_id=(
+                records[-1].original_performance_cue_id
+            ),
+        )
+    elif attack == "text_repartition":
+        prepared, run = grouped_provenance_run()
+        records = list(run.cue_provenance)
+        first_index = next(
+            index
+            for index, item in enumerate(records)
+            if item.clause_id == "clause-3-prelude"
+        )
+        second_index = first_index + 1
+        first = records[first_index]
+        second = records[second_index]
+        records[first_index] = replace(
+            first,
+            spoken_text=first.spoken_text + second.spoken_text[0],
+        )
+        records[second_index] = replace(
+            second,
+            spoken_text=second.spoken_text[1:],
+        )
     expected = tuple(
         clause.clause_id for clause in prepared.teaching_script.clauses
     )
-    records = list(original.cue_provenance)
-    if mutation == "missing":
-        records.pop()
-    elif mutation == "duplicate":
-        records[-1] = records[0]
-    else:
-        records[0], records[1] = records[1], records[0]
 
-    with pytest.raises(ValueError, match="complete and ordered"):
-        prepared_adapter.PreparedDraftRun(original.draft, records, expected)
+    with pytest.raises(TypeError):
+        prepared_adapter.PreparedDraftRun(run.draft, records, expected)
 
 
 @pytest.mark.parametrize(
     "mutation",
-    ("runtime_id", "original_id", "spoken_text"),
+    ("missing", "extra", "runtime_id"),
 )
-def test_prepared_draft_run_rejects_forged_runtime_mapping(mutation):
+def test_prepared_draft_factory_rejects_invalid_runtime_assignment(mutation):
     prepared = approved_prepared()
-    original = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
         source_problem(), prepared, route()
     )
-    expected = tuple(
-        clause.clause_id for clause in prepared.teaching_script.clauses
-    )
-    records = list(original.cue_provenance)
-    if mutation == "runtime_id":
-        records[0] = replace(records[0], runtime_cue_id="forged-cue")
-        message = "runtime cue ids"
-    elif mutation == "original_id":
-        records[0] = replace(
-            records[0],
-            original_performance_cue_id="forged-original-cue",
-        )
-        message = "original performance cue ids"
+    assignment = {
+        item.clause_id: item.runtime_cue_id for item in run.cue_provenance
+    }
+    if mutation == "missing":
+        assignment.pop(next(iter(assignment)))
+        message = "complete clause mapping"
+    elif mutation == "extra":
+        assignment["forged-clause"] = next(iter(assignment.values()))
+        message = "complete clause mapping"
     else:
-        records[0] = replace(records[0], spoken_text="伪造讲稿")
-        message = "provenance text"
+        assignment[next(iter(assignment))] = "forged-runtime-cue"
+        message = "runtime cue ids"
 
     with pytest.raises(ValueError, match=message):
-        prepared_adapter.PreparedDraftRun(original.draft, records, expected)
+        prepared_adapter.PreparedDraftRun.from_prepared_lesson(
+            run.draft,
+            prepared,
+            assignment,
+        )
+
+
+@pytest.mark.parametrize("membership", ("missing", "duplicate"))
+def test_prepared_draft_factory_rejects_invalid_performance_membership(
+    membership,
+):
+    prepared = approved_prepared()
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    payload = prepared.model_dump(mode="python")
+    if membership == "missing":
+        payload["performance_score"]["cues"].pop(0)
+    else:
+        duplicate_clause_id = payload["performance_score"]["cues"][0][
+            "clause_ids"
+        ][0]
+        payload["performance_score"]["cues"][1]["clause_ids"].append(
+            duplicate_clause_id
+        )
+    invalid = PreparedLesson.model_validate(payload)
+    assignment = {
+        item.clause_id: item.runtime_cue_id for item in run.cue_provenance
+    }
+
+    with pytest.raises(ValueError, match="performance cue membership"):
+        prepared_adapter.PreparedDraftRun.from_prepared_lesson(
+            run.draft,
+            invalid,
+            assignment,
+        )
+
+
+def test_prepared_draft_factory_rejects_grouped_runtime_text_mismatch():
+    payload = prepared_payload()
+    payload["teaching_script"]["clauses"][0]["spoken_text"] = (
+        "先观察题目中的目标。"
+    )
+    payload["teaching_script"]["clauses"][1]["spoken_text"] = (
+        "再说明为什么可以代入。"
+    )
+    prepared = PreparedLesson.model_validate(payload)
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    assignment = {
+        item.clause_id: item.runtime_cue_id for item in run.cue_provenance
+    }
+    first_id = prepared.teaching_script.clauses[0].clause_id
+    second_id = prepared.teaching_script.clauses[1].clause_id
+    assignment[first_id], assignment[second_id] = (
+        assignment[second_id],
+        assignment[first_id],
+    )
+
+    with pytest.raises(ValueError, match="grouped provenance text"):
+        prepared_adapter.PreparedDraftRun.from_prepared_lesson(
+            run.draft,
+            prepared,
+            assignment,
+        )
 
 
 def test_adapter_splits_a_contiguous_cue_crossing_adjacent_episodes():
