@@ -11,7 +11,10 @@ from pydantic import (
     model_validator,
 )
 
-from app.math_content import contains_math_markup as _contains_math_markup
+from app.math_content import (
+    contains_internal_control_syntax,
+    contains_math_markup as _contains_math_markup,
+)
 
 
 NonEmptyString = Annotated[
@@ -565,7 +568,9 @@ class NarrativeSyncCue(SchemaModel):
     @field_validator("spoken_text")
     @classmethod
     def reject_math_markup_in_spoken_text(cls, value: str) -> str:
-        if _contains_math_markup(value):
+        if _contains_math_markup(value) or contains_internal_control_syntax(
+            value
+        ):
             raise ValueError(
                 "spoken_text must be natural speech without math markup"
             )
@@ -712,7 +717,10 @@ def _canonicalize_legacy_moment_payload(
     spoken_text = canonical.pop("narration")
     if (
         isinstance(spoken_text, str)
-        and _contains_math_markup(spoken_text)
+        and (
+            _contains_math_markup(spoken_text)
+            or contains_internal_control_syntax(spoken_text)
+        )
     ):
         raise ValueError(_LEGACY_NARRATION_COMPATIBILITY_ERROR)
     legacy_actions = canonical.pop("board_actions", [])

@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from app.math_content import (
     contains_explicit_choice_answer_leak,
@@ -10,6 +11,7 @@ from app.math_content import (
     normalize_grounded_choice_option_label,
     normalize_reference_text,
 )
+from app.schemas import LessonMoment, NarrativeSyncCue
 
 
 @pytest.mark.parametrize(
@@ -68,6 +70,65 @@ def test_generated_display_validator_rejects_unbalanced_or_mixed_markup(value):
 def test_internal_target_and_highlight_syntax_is_rejected(value):
     assert contains_internal_control_syntax(value)
     assert not is_valid_generated_display_content(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        '<span class="is-highlighted">x</span>',
+        ".is-highlighted",
+        "#board-target",
+        "[data-highlight]",
+        "[[red]",
+        "[[",
+        "]]",
+        "{{highlight",
+        "<mark",
+    ),
+)
+def test_malformed_html_selector_and_highlight_fragments_are_internal_control_syntax(value):
+    assert contains_internal_control_syntax(value)
+    assert not is_valid_generated_display_content(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "x<2",
+        "0.25",
+        "观察[已知条件]",
+        "由（1）得到结论",
+        r"\(x<2\)",
+        r"\({{x}}+1\)",
+        r"\[m-n=\frac{1}{2}\]",
+    ),
+)
+def test_control_syntax_detector_preserves_ordinary_math_and_chinese(value):
+    assert not contains_internal_control_syntax(value)
+    assert is_valid_generated_display_content(value)
+
+
+def test_legacy_spoken_cue_uses_shared_internal_control_syntax_boundary():
+    with pytest.raises(ValidationError, match="natural speech"):
+        NarrativeSyncCue(
+            cue_id="cue-internal-control",
+            spoken_text='<span class="is-highlighted">重点</span>',
+        )
+
+
+def test_legacy_narration_conversion_keeps_compatibility_error_for_internal_control():
+    with pytest.raises(
+        ValidationError,
+        match="legacy narration is not compatible",
+    ):
+        LessonMoment.model_validate(
+            {
+                "purpose": "检查旧格式边界",
+                "narration": "[[highlight:board-1]]",
+                "board_actions": [],
+                "layer": "base",
+            }
+        )
 
 
 def test_grounded_choice_normalizer_collapses_bounded_katex_equivalents():

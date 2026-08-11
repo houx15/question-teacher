@@ -239,7 +239,7 @@ def interaction_plan_payload():
                 "incorrect_feedback_by_option": {"option-b": "目标只是关系。", "option-c": "先用根条件。"},
                 "hint": "想想根的定义。",
                 "resume_clause_id": "clause-2-resume",
-                "concealed_targets": ["must-3"],
+                "concealed_targets": [],
             }
         ],
         "transfer_item": transfer_payload(),
@@ -489,10 +489,63 @@ def test_interaction_plan_rejects_correct_answer_leakage_in_wrong_label_and_unkn
     payload["interactions"][0]["options"][1]["display_text"] = "错误项却写了代入已知根"
     invalid = InteractionPlan.model_validate(payload)
     assert_code("interaction_answer_leakage", lambda: validate_interaction_plan(invalid, trajectory, script))
+
+
+@pytest.mark.parametrize("visible_field", ("prompt", "hint", "wrong_option"))
+def test_interaction_plan_rejects_same_episode_concealed_semantic_content(visible_field):
+    _, trajectory, script, plan, *_ = models()
+    trajectory_value = trajectory.model_dump()
+    trajectory_value["episodes"][1]["must_teach"][0]["content"] = (
+        "尚未公开的检查条件"
+    )
+    trajectory = ReasoningTrajectory.model_validate(trajectory_value)
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["concealed_targets"] = ["must-2"]
+    concealed_content = "尚未公开的检查条件"
+    if visible_field == "wrong_option":
+        interaction["options"][1]["display_text"] = (
+            "错误项提前出现%s" % concealed_content
+        )
+    else:
+        interaction[visible_field] = "请判断：%s" % concealed_content
+    invalid = InteractionPlan.model_validate(payload)
+    assert_code(
+        "interaction_answer_leakage",
+        lambda: validate_interaction_plan(invalid, trajectory, script),
+    )
+
+
+def test_interaction_plan_concealed_registry_is_same_episode_and_valid_when_content_absent():
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    payload["interactions"][0]["concealed_targets"] = ["must-3"]
+    invalid = InteractionPlan.model_validate(payload)
+    assert_code(
+        "interaction_answer_leakage",
+        lambda: validate_interaction_plan(invalid, trajectory, script),
+    )
+    validate_interaction_plan(plan, trajectory, script)
     payload = plan.model_dump()
     payload["interactions"][0]["concealed_targets"] = ["future-id-missing"]
     invalid = InteractionPlan.model_validate(payload)
     assert_code("interaction_answer_leakage", lambda: validate_interaction_plan(invalid, trajectory, script))
+
+
+def test_interaction_plan_resolves_same_episode_clause_math_as_concealed_content():
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["concealed_targets"] = ["clause-2"]
+    validate_interaction_plan(
+        InteractionPlan.model_validate(payload), trajectory, script
+    )
+    interaction["prompt"] = "题面现在展示x=2n"
+    invalid = InteractionPlan.model_validate(payload)
+    assert_code(
+        "interaction_answer_leakage",
+        lambda: validate_interaction_plan(invalid, trajectory, script),
+    )
 
 
 def test_interaction_plan_rejects_katex_equivalent_interaction_and_transfer_labels():
@@ -642,6 +695,118 @@ def test_performance_score_rejects_unbalanced_or_unknown_overlay_transitions():
     ]
     invalid = PerformanceScore.model_validate(payload)
     assert_code("overlay_transition_invalid", lambda: validate_performance_score(invalid, [], script, plan))
+
+
+def overlay_score_payload():
+    payload = score_payload()
+    payload["board_objects"][2]["layer"] = "comparison"
+    payload["overlay_transitions"] = [
+        {
+            "transition_id": "enter-comparison",
+            "after_clause_id": "clause-2-resume",
+            "action": "enter",
+            "layer": "comparison",
+        },
+        {
+            "transition_id": "return-comparison",
+            "after_clause_id": "clause-3",
+            "action": "return",
+            "layer": "comparison",
+        },
+    ]
+    payload["cues"][3]["start_actions"].append(
+        {
+            "clause_id": "clause-3",
+            "action": {
+                "surface": "board",
+                "type": "focus",
+                "target": "board-3",
+            },
+        }
+    )
+    return payload
+
+
+def test_performance_score_accepts_overlay_write_use_return_then_base_resume():
+    _, _, script, plan, *_ = models()
+    validate_performance_score(
+        PerformanceScore.model_validate(overlay_score_payload()),
+        [],
+        script,
+        plan,
+    )
+
+
+@pytest.mark.parametrize("leak_kind", ("focus", "source", "relation"))
+def test_overlay_object_cannot_leak_into_base_lifecycle_after_return(leak_kind):
+    _, _, script, plan, *_ = models()
+    payload = overlay_score_payload()
+    base_cue = payload["cues"][4]
+    if leak_kind == "focus":
+        base_cue["start_actions"] = [
+            {
+                "clause_id": "clause-4",
+                "action": {
+                    "surface": "board",
+                    "type": "focus",
+                    "target": "board-3",
+                },
+            }
+        ]
+    elif leak_kind == "source":
+        base_cue["start_actions"][0]["action"].update(
+            type="transform",
+            source="board-3",
+        )
+    else:
+        base_cue["start_actions"].append(
+            {
+                "clause_id": "clause-4",
+                "action": {
+                    "surface": "board",
+                    "type": "annotate",
+                    "target": "board-4",
+                    "annotation": "arrow",
+                    "relation_target": "board-3",
+                },
+            }
+        )
+    invalid = PerformanceScore.model_validate(payload)
+    assert_code(
+        "visual_target_invalid",
+        lambda: validate_performance_score(invalid, [], script, plan),
+    )
+
+
+def test_overlay_transition_must_align_to_cue_boundary_and_cannot_nest():
+    _, _, script, plan, score, *_ = models()
+    payload = score.model_dump()
+    first = payload["cues"].pop(0)
+    second = payload["cues"].pop(0)
+    first["clause_ids"].extend(second["clause_ids"])
+    first["start_actions"].extend(second["start_actions"])
+    payload["cues"].insert(0, first)
+    payload["overlay_transitions"] = [
+        {"transition_id": "enter-1", "after_clause_id": "clause-1", "action": "enter", "layer": "comparison"},
+        {"transition_id": "return-1", "after_clause_id": "clause-2", "action": "return", "layer": "comparison"},
+    ]
+    invalid = PerformanceScore.model_validate(payload)
+    assert_code(
+        "overlay_transition_invalid",
+        lambda: validate_performance_score(invalid, [], script, plan),
+    )
+    payload = score.model_dump()
+    payload["overlay_transitions"] = [
+        {"transition_id": "enter-1", "after_clause_id": "clause-1", "action": "enter", "layer": "comparison"},
+        {"transition_id": "enter-2", "after_clause_id": "clause-1", "action": "enter", "layer": "micro_explanation"},
+        {"transition_id": "return-2", "after_clause_id": "clause-2", "action": "return", "layer": "micro_explanation"},
+        {"transition_id": "return-1", "after_clause_id": "clause-3", "action": "return", "layer": "comparison"},
+    ]
+    invalid = PerformanceScore.model_validate(payload)
+    assert_code(
+        "overlay_transition_invalid",
+        lambda: validate_performance_score(invalid, [], script, plan),
+    )
     payload = score.model_dump()
     payload["overlay_transitions"] = [
         {"transition_id": "enter-1", "after_clause_id": "clause-1", "action": "enter", "layer": "comparison"},
@@ -671,6 +836,66 @@ def test_simulation_report_requires_exact_episode_coverage_and_no_private_answer
     payload["interaction_results"] = ["student recalled canonical answer substitute-root"]
     invalid = SimulationReport.model_validate(payload)
     assert_code("simulation_private_answer_invalid", lambda: validate_simulation_report(invalid, trajectory, plan))
+
+
+@pytest.mark.parametrize(
+    "private_value",
+    (
+        "p-q=1/2",
+        "transfer-a",
+        r"\(p-q=\frac{1}{2}\)",
+    ),
+)
+def test_simulation_report_rejects_transfer_private_answer_material(private_value):
+    _, trajectory, _, plan, _, report, _ = models()
+    payload = report.model_dump()
+    payload["interaction_results"] = ["raw transfer result: %s" % private_value]
+    invalid = SimulationReport.model_validate(payload)
+    assert_code(
+        "simulation_private_answer_invalid",
+        lambda: validate_simulation_report(invalid, trajectory, plan),
+    )
+
+
+def test_simulation_report_accepts_nonleaking_incorrect_option_observation():
+    _, trajectory, _, plan, _, report, _ = models()
+    payload = report.model_dump()
+    payload["interaction_results"] = [
+        "learner selected transfer-b and explained the mistake"
+    ]
+    validate_simulation_report(
+        SimulationReport.model_validate(payload), trajectory, plan
+    )
+
+
+@pytest.mark.parametrize(
+    "markup",
+    (
+        '<span class="is-highlighted">重点</span>',
+        ".is-highlighted",
+        "#board-target",
+        "[data-highlight]",
+        "[[red]",
+        "{{highlight",
+        "<mark",
+    ),
+)
+def test_spoken_and_board_content_reject_internal_control_fragments(markup):
+    _, trajectory, script, plan, score, *_ = models()
+    script_payload_value = script.model_dump()
+    script_payload_value["clauses"][0]["spoken_text"] = markup
+    invalid_script = TeachingScript.model_validate(script_payload_value)
+    assert_code(
+        "spoken_markup_invalid",
+        lambda: validate_teaching_script(invalid_script, trajectory),
+    )
+    score_payload_value = score.model_dump()
+    score_payload_value["board_objects"][0]["content"] = markup
+    invalid_score = PerformanceScore.model_validate(score_payload_value)
+    assert_code(
+        "board_formula_invalid",
+        lambda: validate_performance_score(invalid_score, [], script, plan),
+    )
 
 
 def test_review_decision_rechecks_invalid_constructed_approval():

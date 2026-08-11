@@ -7,10 +7,13 @@ _INLINE_MATH_SEGMENT = re.compile(r"\\\((.*?)\\\)")
 _BLOCK_MATH_SEGMENT = re.compile(r"\\\[(.*?)\\\]")
 _INTERNAL_CONTROL_SYNTAX = re.compile(
     r"(?:"
-    r"\[\[[^\]]+\]\]|"
-    r"\{\{[^}]+\}\}|"
-    r"<\/?mark\b|"
-    r"data-target\s*="
+    r"\[\[|\]\]|"
+    r"\{\{\s*(?:highlight|target|focus|emphasis|board)\b|"
+    r"<\/?(?:span|mark|div|em|strong)\b[^>]*>?|"
+    r"\b(?:class|style|data-[A-Za-z0-9_-]+)\s*=|"
+    r"\.(?:is-highlighted|is-active|focus-target)\b|"
+    r"#(?:board|problem|target|cue)[A-Za-z0-9_-]*\b|"
+    r"\[data-[A-Za-z0-9_-]+\]"
     r")",
     re.IGNORECASE,
 )

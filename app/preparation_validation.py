@@ -250,6 +250,52 @@ def _leaks_correct_answer(interaction: object) -> bool:
     return False
 
 
+def _concealed_registry(
+    episode_id: str,
+    trajectory: ReasoningTrajectory,
+    script: TeachingScript,
+) -> dict:
+    episode = next(
+        item for item in trajectory.episodes if item.episode_id == episode_id
+    )
+    registry = {
+        item.must_teach_id: [item.content]
+        for item in episode.must_teach
+    }
+    for clause in script.clauses:
+        if clause.episode_id != episode_id:
+            continue
+        registry[clause.clause_id] = [
+            clause.spoken_text,
+            *clause.math_references,
+        ]
+    return registry
+
+
+def _leaks_concealed_content(
+    interaction: object,
+    concealed_registry: dict,
+) -> bool:
+    visible_parts = [interaction.prompt, interaction.hint]
+    visible_parts.extend(
+        item.display_text
+        for item in interaction.options
+        if item.option_id != interaction.correct_option_id
+    )
+    normalized_visible = [
+        normalize_answer_leak_text(item) for item in visible_parts
+    ]
+    for target_id in interaction.concealed_targets:
+        for content in concealed_registry[target_id]:
+            normalized_content = normalize_answer_leak_text(content)
+            if normalized_content and any(
+                normalized_content in visible
+                for visible in normalized_visible
+            ):
+                return True
+    return False
+
+
 def validate_interaction_plan(
     plan: InteractionPlan,
     trajectory: ReasoningTrajectory,
@@ -263,15 +309,7 @@ def validate_interaction_plan(
     clause_positions = {
         item.clause_id: index for index, item in enumerate(script.clauses)
     }
-    semantic_ids = set(episode_ids) | set(clauses)
-    semantic_ids.update(
-        item.must_teach_id
-        for episode in trajectory.episodes
-        for item in episode.must_teach
-    )
     for interaction in plan.interactions:
-        semantic_ids.add(interaction.interaction_id)
-        semantic_ids.update(item.option_id for item in interaction.options)
         after = clauses.get(interaction.after_clause_id)
         resume = clauses.get(interaction.resume_clause_id)
         if (
@@ -304,11 +342,23 @@ def validate_interaction_plan(
                 interaction.interaction_id,
                 "Interaction option contains invalid display markup.",
             )
+        concealed_registry = _concealed_registry(
+            interaction.episode_id,
+            trajectory,
+            script,
+        )
         if (
             interaction.correct_option_id in interaction.concealed_targets
             or interaction.resume_clause_id in interaction.concealed_targets
-            or any(item not in semantic_ids for item in interaction.concealed_targets)
+            or any(
+                item not in concealed_registry
+                for item in interaction.concealed_targets
+            )
             or _leaks_correct_answer(interaction)
+            or _leaks_concealed_content(
+                interaction,
+                concealed_registry,
+            )
         ):
             _fail(
                 "interaction_answer_leakage",
@@ -450,6 +500,113 @@ class _ScoreMoment:
     layer: str = "base"
 
 
+def _score_moments(
+    score: PerformanceScore,
+    script_positions: dict,
+) -> List[_ScoreMoment]:
+    cue_end_ids = {cue.clause_ids[-1] for cue in score.cues}
+    transitions_by_clause = {}
+    previous_position = -1
+    for transition in score.overlay_transitions:
+        position = script_positions.get(transition.after_clause_id)
+        if (
+            position is None
+            or position < previous_position
+            or transition.after_clause_id not in cue_end_ids
+        ):
+            _fail(
+                "overlay_transition_invalid",
+                transition.transition_id,
+                "Overlay transition must reference an ordered cue boundary.",
+            )
+        previous_position = position
+        transitions_by_clause.setdefault(
+            transition.after_clause_id, []
+        ).append(transition)
+
+    moments = []
+    active_layer = "base"
+    current_cues = []
+    for cue in score.cues:
+        current_cues.append(cue)
+        transitions = transitions_by_clause.get(cue.clause_ids[-1], [])
+        if not transitions:
+            continue
+        moments.append(
+            _ScoreMoment(tuple(current_cues), active_layer)
+        )
+        current_cues = []
+        for transition in transitions:
+            if transition.action == "enter":
+                if active_layer != "base":
+                    _fail(
+                        "overlay_transition_invalid",
+                        transition.transition_id,
+                        "Nested overlay layers are not supported.",
+                    )
+                active_layer = transition.layer
+            elif active_layer != transition.layer:
+                _fail(
+                    "overlay_transition_invalid",
+                    transition.transition_id,
+                    "Overlay return does not match the active layer.",
+                )
+            else:
+                active_layer = "base"
+    if active_layer != "base":
+        _fail(
+            "overlay_transition_invalid",
+            "performance_score",
+            "Overlay transition does not return to the base sequence.",
+        )
+    if current_cues:
+        moments.append(_ScoreMoment(tuple(current_cues), active_layer))
+    return moments
+
+
+def _validate_score_layers(
+    moments: Sequence[_ScoreMoment],
+    board_objects: dict,
+) -> None:
+    for moment in moments:
+        allowed_reference_layers = {"base", moment.layer}
+        for cue in moment.sync_cues:
+            for bound in (
+                *cue.lead_actions,
+                *cue.start_actions,
+                *cue.end_actions,
+            ):
+                action = bound.action
+                if action.surface != "board":
+                    continue
+                referenced_ids = [action.target]
+                if action.source is not None:
+                    referenced_ids.append(action.source)
+                if action.relation_target is not None:
+                    referenced_ids.append(action.relation_target)
+                referenced_layers = {
+                    board_objects[item].layer
+                    for item in referenced_ids
+                    if item in board_objects
+                }
+                if not referenced_layers.issubset(allowed_reference_layers):
+                    _fail(
+                        "visual_target_invalid",
+                        bound.clause_id,
+                        "Visual action crosses a returned overlay lifecycle.",
+                    )
+                if (
+                    action.type in {"write", "transform"}
+                    and action.target in board_objects
+                    and board_objects[action.target].layer != moment.layer
+                ):
+                    _fail(
+                        "overlay_transition_invalid",
+                        bound.clause_id,
+                        "Overlay segment continues a different board layer.",
+                    )
+
+
 def _validate_problem_targets(problem_targets: ProblemTargets) -> None:
     if type(problem_targets) not in (list, tuple) or any(
         type(item) is not ProblemFocusTarget for item in problem_targets
@@ -533,9 +690,11 @@ def validate_performance_score(
                     bound.clause_id,
                     "Board write content does not match its declared object.",
                 )
+    score_moments = _score_moments(score, script_positions)
+    _validate_score_layers(score_moments, board_objects)
     try:
         validate_visual_action_references(
-            [_ScoreMoment(score.cues)],
+            score_moments,
             problem_targets,
             set(board_objects),
         )
@@ -606,54 +765,6 @@ def validate_performance_score(
                     "Label annotation exactly repeats the sole visible target content.",
                 )
 
-    transitions_by_position = {}
-    previous_position = -1
-    for transition in score.overlay_transitions:
-        position = script_positions.get(transition.after_clause_id)
-        if position is None or position < previous_position:
-            _fail(
-                "overlay_transition_invalid",
-                transition.transition_id,
-                "Overlay transition references an unknown or out-of-order clause.",
-            )
-        previous_position = position
-        transitions_by_position.setdefault(position, []).append(transition)
-    actions_by_position = {position: [] for position in range(len(script_ids))}
-    for cue in score.cues:
-        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions):
-            actions_by_position[script_positions[bound.clause_id]].append(
-                bound.action
-            )
-
-    stack: List[str] = []
-    for position in range(len(script_ids)):
-        expected_layer = stack[-1] if stack else "base"
-        for action in actions_by_position[position]:
-            if action.surface != "board" or action.target not in board_objects:
-                continue
-            if board_objects[action.target].layer != expected_layer:
-                _fail(
-                    "overlay_transition_invalid",
-                    script_ids[position],
-                    "Board action continues a different layer before overlay return.",
-                )
-        for transition in transitions_by_position.get(position, []):
-            if transition.action == "enter":
-                stack.append(transition.layer)
-            elif not stack or stack.pop() != transition.layer:
-                _fail(
-                    "overlay_transition_invalid",
-                    transition.transition_id,
-                    "Overlay transitions are not deterministically nested.",
-                )
-    if stack:
-        _fail(
-            "overlay_transition_invalid",
-            "performance_score",
-            "Overlay transition does not return to the base sequence.",
-        )
-
-
 def validate_simulation_report(
     report: SimulationReport,
     trajectory: ReasoningTrajectory,
@@ -685,6 +796,20 @@ def validate_simulation_report(
                 interaction.correct_feedback,
             }
         )
+    transfer = plan.transfer_item
+    transfer_correct = next(
+        item
+        for item in transfer.options
+        if item.option_id == transfer.correct_option_id
+    )
+    private_tokens.update(
+        {
+            transfer.expected_answer,
+            transfer.correct_option_id,
+            transfer_correct.canonical_answer,
+            transfer_correct.label,
+        }
+    )
     normalized_private = {
         normalize_answer_leak_text(item) for item in private_tokens
     }
