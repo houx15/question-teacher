@@ -105,20 +105,7 @@ _REPAIR_KEYS = (
     "retained_artifacts",
 )
 _GENERATED_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_TEACHING_ROUTE_REQUIRED_KEYS = {
-    "verification_mode",
-    "consistency_status",
-    "method_name",
-    "final_conclusion",
-    "assumptions",
-    "steps",
-    "check_evidence",
-}
-_TEACHING_ROUTE_OPTIONAL_KEYS = {"symbolic_context"}
-_TEACHING_ROUTE_KEYS = (
-    _TEACHING_ROUTE_REQUIRED_KEYS | _TEACHING_ROUTE_OPTIONAL_KEYS
-)
-_SENSITIVE_METADATA_KEY_TOKENS = {
+_FORBIDDEN_CONFIG_KEY_TOKENS = {
     "auth",
     "authorization",
     "bearer",
@@ -136,25 +123,6 @@ _SENSITIVE_METADATA_KEY_TOKENS = {
     "vendor",
     "workspace",
 }
-_SENSITIVE_STRING_PATTERNS = (
-    re.compile(r"IGNORE_ALL_RULES", re.IGNORECASE),
-    re.compile(r"\b(?:https?|file)://", re.IGNORECASE),
-    re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
-    re.compile(
-        r"\b(?:auth|authorization|token|api[-_ ]?key|secret|credential)\s*[:=]",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:provider|vendor|model|engine|endpoint)\s*[:=]",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:openai|anthropic|claude(?:-[A-Za-z0-9.-]+)?|gpt-[A-Za-z0-9.-]+)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"(?:^|\s)[A-Za-z]:[\\/]\S*"),
-    re.compile(r"(?:^|\s)/(?!/)(?:[^\s/]+(?:/[^\s/]*)*)"),
-)
 _CAPABILITY_ENUMS = {
     "interaction_kinds": {"choice"},
     "surfaces": {"problem", "board"},
@@ -192,9 +160,6 @@ _PREPARED_ARTIFACT_TYPES = {
 def _json_data(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _json_data(value.model_dump(mode="json"))
-    to_prompt_payload = getattr(value, "to_prompt_payload", None)
-    if callable(to_prompt_payload):
-        return _json_data(to_prompt_payload())
     if isinstance(value, Enum):
         return _json_data(value.value)
     if isinstance(value, Mapping):
@@ -222,7 +187,7 @@ def _metadata_key_tokens(key: str) -> Any:
     }
 
 
-def _guard_nonraw_payload(
+def _guard_structural_keys(
     value: Any,
     label: str,
     path: str = "$",
@@ -232,7 +197,7 @@ def _guard_nonraw_payload(
             item_path = "%s.%s" % (path, key)
             if key == "reference_solution_text":
                 raise ValueError(
-                    "%s contains sensitive non-raw metadata at %s"
+                    "%s contains forbidden configuration key at %s"
                     % (label, item_path)
                 )
             normalized_key = key.lower().replace("-", "_")
@@ -240,27 +205,19 @@ def _guard_nonraw_payload(
             if (
                 "api_key" in normalized_key
                 or "apikey" in normalized_key
-                or key_tokens & _SENSITIVE_METADATA_KEY_TOKENS
+                or key_tokens & _FORBIDDEN_CONFIG_KEY_TOKENS
             ):
                 raise ValueError(
-                    "%s contains sensitive non-raw metadata at %s"
+                    "%s contains forbidden configuration key at %s"
                     % (label, item_path)
                 )
-            _guard_nonraw_payload(item, label, item_path)
+            _guard_structural_keys(item, label, item_path)
         return
     if isinstance(value, list):
         for index, item in enumerate(value):
-            _guard_nonraw_payload(
+            _guard_structural_keys(
                 item, label, "%s[%d]" % (path, index)
             )
-        return
-    if isinstance(value, str) and any(
-        pattern.search(value) for pattern in _SENSITIVE_STRING_PATTERNS
-    ):
-        raise ValueError(
-            "%s contains sensitive non-raw metadata at %s"
-            % (label, path)
-        )
 
 
 def _artifact_payload(
@@ -273,9 +230,7 @@ def _artifact_payload(
             "%s must be an exact %s model"
             % (label, expected_type.__name__)
         )
-    payload = value.model_dump(mode="json")
-    _guard_nonraw_payload(payload, label)
-    return payload
+    return value.model_dump(mode="json")
 
 
 def _problem_projection(problem: Any, include_reference_solution: bool) -> Dict[str, Any]:
@@ -294,6 +249,7 @@ def _problem_projection(problem: Any, include_reference_solution: bool) -> Dict[
 
 def _problem_targets_projection(problem_targets: Any) -> Any:
     raw = _json_data(problem_targets)
+    _guard_structural_keys(raw, "problem_targets")
     if isinstance(raw, dict):
         for aggregate_key in ("problem_targets", "focus_targets", "problem_focus_targets"):
             if aggregate_key in raw:
@@ -309,7 +265,7 @@ def _problem_targets_projection(problem_targets: Any) -> Any:
         if not isinstance(item, dict):
             raise TypeError("each problem target must serialize to a JSON object")
         projected.append({key: item[key] for key in allowed if key in item})
-    _guard_nonraw_payload(projected, "problem_targets")
+    _guard_structural_keys(projected, "problem_targets")
     return projected
 
 
@@ -350,7 +306,7 @@ def _capabilities_projection(capabilities: Mapping[str, Any]) -> Dict[str, Any]:
                 "capability %s must be an integer from %d to %d"
                 % (key, minimum, maximum)
             )
-    _guard_nonraw_payload(raw, "capabilities")
+    _guard_structural_keys(raw, "capabilities")
     return raw
 
 
@@ -384,34 +340,13 @@ def _prepared_artifacts_projection(
 
 
 def _teaching_route_projection(teaching_route: Any) -> Dict[str, Any]:
-    if type(teaching_route) is FrozenTeachingRoute:
-        source = teaching_route.to_prompt_payload()
-    elif isinstance(teaching_route, Mapping):
-        source = teaching_route
-    else:
+    if type(teaching_route) is not FrozenTeachingRoute:
         raise TypeError(
-            "teaching_route must be an exact FrozenTeachingRoute or a Mapping"
+            "teaching_route must be an exact FrozenTeachingRoute"
         )
-    if not isinstance(source, Mapping):
-        raise TypeError("teaching_route payload must be a mapping")
-    if any(not isinstance(key, str) for key in source):
-        raise TypeError("teaching_route keys must be strings")
-    provided_keys = set(source)
-    unknown = provided_keys - _TEACHING_ROUTE_KEYS
-    if unknown:
-        raise ValueError(
-            "unknown teaching_route keys: %s"
-            % ", ".join(sorted(unknown))
-        )
-    missing = _TEACHING_ROUTE_REQUIRED_KEYS - provided_keys
-    if missing:
-        raise ValueError(
-            "missing teaching_route keys: %s"
-            % ", ".join(sorted(missing))
-        )
-    payload = _mapping_payload(source, "teaching_route")
-    _guard_nonraw_payload(payload, "teaching_route")
-    return payload
+    return _mapping_payload(
+        teaching_route.to_prompt_payload(), "teaching_route"
+    )
 
 
 def _nonblank_string_list(value: Any, label: str) -> Any:
@@ -495,7 +430,7 @@ def _repair_projection(repair: Optional[Mapping[str, Any]]) -> Optional[Dict[str
             repair["retained_artifacts"]
         ),
     }
-    _guard_nonraw_payload(payload, "repair_request")
+    _guard_structural_keys(payload, "repair_request")
     return payload
 
 
