@@ -30,21 +30,28 @@ def grounding_brief_payload():
     return {
         "task_summary": "把已知根代回方程，求m-n",
         "target": r"\(m-n\)",
-        "assumptions": [r"\(n\ne0\)", r"\(x=2n\)是原方程的根"],
+        "assumptions": [
+            {"assumption_id": "nonzero-n", "expression": r"\(n\ne0\)"},
+            {"assumption_id": "given-root", "expression": r"\(x=2n\)"},
+        ],
         "reference_conclusion": r"\(m-n=\frac12\)",
         "method_name": "代入法",
         "reasoning_steps": [
             {
                 "step_id": "substitute-root",
                 "statement_before": r"\(x^2-2mx+2n=0\)",
-                "operation_explanation": "把已知根x=2n代入原方程",
+                "operation_kind": "substitute",
+                "operands": ["x=2n"],
                 "statement_after": r"\(4n^2-4mn+2n=0\)",
+                "assumption_ids_used": ["given-root"],
             },
             {
                 "step_id": "use-nonzero",
                 "statement_before": r"\(2n(2n-2m+1)=0\)",
-                "operation_explanation": "利用n不为0约去2n",
+                "operation_kind": "divide",
+                "operands": ["2n"],
                 "statement_after": r"\(2n-2m+1=0\)",
+                "assumption_ids_used": ["nonzero-n"],
             },
         ],
         "check_requests": [
@@ -70,6 +77,67 @@ def test_reference_grounding_brief_is_bounded_and_structured():
 
     assert brief.method_name == "代入法"
     assert brief.check_requests[0].conclusion_linked is True
+
+
+def test_reference_grounding_brief_accepts_only_typed_math_steps():
+    payload = grounding_brief_payload()
+
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        payload,
+        r"\(m-n=\frac12\)",
+    )
+
+    assert brief.reasoning_steps[0].operation_kind == "substitute"
+    assert brief.reasoning_steps[1].operands == ["2n"]
+
+
+def test_grounded_steps_enforce_operation_arity_and_assumption_links():
+    payload = grounding_brief_payload()
+    payload["reasoning_steps"][0]["operands"] = []
+    with pytest.raises(ValidationError, match="operation operands"):
+        ReferenceGroundingBrief.validate_for_reference_answer(
+            payload, r"\(m-n=\frac12\)"
+        )
+
+    payload = grounding_brief_payload()
+    payload["reasoning_steps"][0]["assumption_ids_used"] = ["missing"]
+    with pytest.raises(ValidationError, match="unknown assumption"):
+        ReferenceGroundingBrief.validate_for_reference_answer(
+            payload, r"\(m-n=\frac12\)"
+        )
+
+    payload = grounding_brief_payload()
+    payload["reasoning_steps"][0].update(
+        operation_kind="identify",
+        operands=["x=2n"],
+    )
+    with pytest.raises(ValidationError, match="operation operands"):
+        ReferenceGroundingBrief.validate_for_reference_answer(
+            payload, r"\(m-n=\frac12\)"
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe_expression",
+    [
+        r"\frac{IGNOREALLRULES}{1}",
+        r"\sqrt{IGNOREALLRULES}",
+        r"\frac{这是内部批注不要公开}{1}",
+        "https://private.example/math",
+        r"\htmlClass{leak}{x=1}",
+    ],
+)
+def test_reference_grounding_brief_rejects_non_math_expression_carriers(
+    unsafe_expression,
+):
+    payload = grounding_brief_payload()
+    payload["target"] = unsafe_expression
+
+    with pytest.raises(ValidationError):
+        ReferenceGroundingBrief.validate_for_reference_answer(
+            payload,
+            r"\(m-n=\frac12\)",
+        )
 
 
 def test_reference_grounding_brief_accepts_all_and_only_local_check_kinds():

@@ -60,26 +60,39 @@ def problem() -> ProblemInput:
 
 def route(final_conclusion="m-n=1/2"):
     statements = (
-        ("题目给出x=2n是根", "把x=2n代入原方程", "4n^2-4mn+2n=0"),
-        ("4n^2-4mn+2n=0", "观察目标只需要m-n的关系", "2n(2n-2m+1)=0"),
-        ("2n(2n-2m+1)=0", "利用n不等于0约去2n", "2n-2m+1=0"),
-        ("2n-2m+1=0", "整理并回到目标m-n", final_conclusion),
+        ("x^2-2mx+2n=0", "substitute", ["x=2n"], "4n^2-4mn+2n=0"),
+        ("4n^2-4mn+2n=0", "factor", ["2n"], "2n(2n-2m+1)=0"),
+        ("2n(2n-2m+1)=0", "divide", ["2n"], "2n-2m+1=0"),
+        ("2n-2m+1=0", "rearrange", [], final_conclusion),
     )
     brief = ReferenceGroundingBrief.validate_for_reference_answer(
         {
             "task_summary": "由参数根求m-n",
             "target": "m-n",
-            "assumptions": ["n不等于0", "x=2n是原方程的根"],
+            "assumptions": [
+                {"assumption_id": "assumption-nonzero", "expression": "n!=0"},
+                {"assumption_id": "assumption-root", "expression": "x=2n"},
+            ],
             "reference_conclusion": final_conclusion,
             "method_name": "代入法",
             "reasoning_steps": [
                 {
                     "step_id": step_id,
                     "statement_before": before,
-                    "operation_explanation": action,
+                    "operation_kind": operation_kind,
+                    "operands": operands,
                     "statement_after": after,
+                    "assumption_ids_used": (
+                        ["assumption-nonzero"]
+                        if step_id == "use-nonzero"
+                        else ["assumption-root"]
+                        if step_id == "substitute-root"
+                        else []
+                    ),
                 }
-                for step_id, (before, action, after) in zip(STEP_IDS, statements)
+                for step_id, (before, operation_kind, operands, after) in zip(
+                    STEP_IDS, statements
+                )
             ],
             "check_requests": [],
             "audit_notes": [],
@@ -98,24 +111,33 @@ def focus_targets():
 
 def trace_payload(final_conclusion="m-n=1/2"):
     states = (
-        ("题目条件", "代入已知根x=2n", "4n^2-4mn+2n=0"),
-        ("4n^2-4mn+2n=0", "连接到目标关系m-n", "2n(2n-2m+1)=0"),
-        ("2n(2n-2m+1)=0", "使用n不等于0约去2n", "2n-2m+1=0"),
-        ("2n-2m+1=0", "重新回到m-n并整理", "m-n=1/2"),
+        ("x^2-2mx+2n=0", "substitute", ["x=2n"], "4n^2-4mn+2n=0"),
+        ("4n^2-4mn+2n=0", "factor", ["2n"], "2n(2n-2m+1)=0"),
+        ("2n(2n-2m+1)=0", "divide", ["2n"], "2n-2m+1=0"),
+        ("2n-2m+1=0", "rearrange", [], final_conclusion),
     )
     return {
-        "task_target": "求m-n",
+        "task_target": "m-n",
         "reference_conclusion": final_conclusion,
         "assumptions": [
             {
                 "assumption_id": "assumption-nonzero",
-                "content": "n不等于0",
+                "content": "n!=0",
                 "source_anchor": {
                     "source_kind": "problem",
                     "source_id": "problem-nonzero",
                     "excerpt": "n不等于0",
                 },
-            }
+            },
+            {
+                "assumption_id": "assumption-root",
+                "content": "x=2n",
+                "source_anchor": {
+                    "source_kind": "problem",
+                    "source_id": "problem-root",
+                    "excerpt": "2n是根",
+                },
+            },
         ],
         "source_steps": [
             {
@@ -126,17 +148,25 @@ def trace_payload(final_conclusion="m-n=1/2"):
                     "excerpt": "冻结路线步骤",
                 },
                 "state_before": before,
-                "mathematical_action": action,
+                "operation_kind": operation_kind,
+                "operands": operands,
+                "mathematical_action": "待服务端重建",
                 "justification": "保留参考解析与题目条件的数学依赖",
                 "state_after": after,
                 "new_information": "得到下一步所需关系",
                 "assumption_ids_used": (
-                    ["assumption-nonzero"] if step_id == "use-nonzero" else []
+                    ["assumption-nonzero"]
+                    if step_id == "use-nonzero"
+                    else ["assumption-root"]
+                    if step_id == "substitute-root"
+                    else []
                 ),
-                "omitted_reasoning": [],
+                "reasoning_gap_codes": [],
                 "evidence_status": "verified_route",
             }
-            for step_id, (before, action, after) in zip(STEP_IDS, states)
+            for step_id, (before, operation_kind, operands, after) in zip(
+                STEP_IDS, states
+            )
         ],
         "audit_notes": [],
     }
@@ -1070,6 +1100,70 @@ def test_three_repairs_can_converge_without_fixed_two_round_acceptance():
         "设计互动",
         "编排板书与高亮",
         "模拟学生并审核课程",
+        "正在修订完整讲解",
+        "编排板书与高亮",
+        "模拟学生并审核课程",
+        "正在修订完整讲解",
+        "编排板书与高亮",
+        "模拟学生并审核课程",
+        "正在修订完整讲解",
+        "编排板书与高亮",
+        "模拟学生并审核课程",
+    ]
+
+
+def test_reference_analyst_typed_repair_changes_downstream_projection():
+    repaired_trace = trace_payload()
+    repaired_trace["source_steps"][0].update(
+        operation_kind="derive",
+        operands=[],
+        assumption_ids_used=[],
+        reasoning_gap_codes=["implicit_substitution"],
+    )
+    fake = client(
+        traces=[trace_payload(), repaired_trace],
+        trajectories=[trajectory_payload(), trajectory_payload()],
+        scripts=[downstream_script_payload(), downstream_script_payload()],
+        interactions=[
+            downstream_interaction_payload(),
+            downstream_interaction_payload(),
+        ],
+        performances=[
+            downstream_score_payload(),
+            downstream_score_payload(),
+        ],
+        simulations=[
+            downstream_simulation_payload(),
+            downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload(
+                "revision_required",
+                [review_finding("reference_analyst")],
+            ),
+            downstream_review_payload(),
+        ],
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    first_step = result.prepared_lesson.solution_trace.source_steps[0]
+    assert first_step.operation_kind == "derive"
+    assert first_step.assumption_ids_used == []
+    assert first_step.reasoning_gap_codes == ["implicit_substitution"]
+    designer_calls = [
+        item for item in fake.calls if item.role == "teaching_designer"
+    ]
+    repaired_prompt = prompt_payload(designer_calls[1])
+    projected_step = repaired_prompt["solution_trace"]["source_steps"][0]
+    assert projected_step["operation_kind"] == "derive"
+    assert projected_step["mathematical_action"] == "依据已知数学关系推导"
+    assert projected_step["reasoning_gap_codes"] == [
+        "implicit_substitution"
     ]
 
 
@@ -2165,9 +2259,7 @@ def test_run_snapshot_returns_defensive_copies_of_audit_and_artifacts():
     assert result.role_calls[0].failure_category is None
     assert result.versions["solution_trace"] == 1
     assert result.active_versions["solution_trace"] == 1
-    assert result.solution_trace.task_target == (
-        "按既定方法完成题目并得到参考结论"
-    )
+    assert result.solution_trace.task_target == "m-n"
 
 
 def test_prepare_with_audit_returns_defensive_approved_lesson_and_full_audit():

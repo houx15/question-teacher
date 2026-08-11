@@ -475,9 +475,7 @@ def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream(
         bundle.generation_record.prepared_lesson.solution_trace.source_steps[
             0
         ].mathematical_action
-        == preparation_route().to_prompt_payload()["steps"][0][
-            "operation_explanation"
-        ]
+        == "代入已知数学量：x=2n"
     )
 
 

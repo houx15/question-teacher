@@ -1,6 +1,7 @@
 import inspect
 
 import pytest
+from pydantic import ValidationError
 
 from app.claim_checker import ClaimChecker, ClaimStatus
 from app.schemas import GroundingCheckRequest
@@ -227,6 +228,10 @@ def test_nested_pure_numeric_power_is_rejected_before_evaluation(
     ],
 )
 def test_checker_rejects_unsafe_or_unbounded_expressions(hostile):
+    if hostile in {"__import__('os')", "x.__class__"}:
+        with pytest.raises(ValidationError):
+            check_payload(expression=hostile, expected="0")
+        return
     result = ClaimChecker().check(
         check_payload(
             expression=hostile,
@@ -248,6 +253,10 @@ def test_checker_rejects_unsafe_or_unbounded_expressions(hostile):
     ],
 )
 def test_checker_rejects_each_resource_limit(unbounded):
+    if unbounded == "1e999999":
+        with pytest.raises(ValidationError):
+            check_payload(expression=unbounded, expected="0")
+        return
     result = ClaimChecker().check(
         check_payload(expression=unbounded, expected="0")
     )
@@ -322,6 +331,11 @@ def test_checker_applies_parser_bounds_to_every_expression(field, value):
         payload["substitutions"]["x"] = value
     else:
         payload[field] = value
+
+    if value == "__import__('os')":
+        with pytest.raises(ValidationError):
+            check_payload(**payload)
+        return
 
     result = ClaimChecker().check(check_payload(**payload))
 

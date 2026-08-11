@@ -444,6 +444,7 @@ class LessonPreparationPipeline:
             signature = blocking_signature(state.review)
             if signature == previous_signature:
                 fresh_context_id = "review-context-%d" % (repair_count + 2)
+                await self._emit(on_stage, "模拟学生并审核课程")
                 await self._review_lesson(state, fresh_context_id)
                 if (
                     state.review.status != "approved"
@@ -463,6 +464,7 @@ class LessonPreparationPipeline:
                 context,
             )
             repair_count += 1
+            await self._emit(on_stage, "模拟学生并审核课程")
             await self._simulate_student(state)
             await self._review_lesson(state, review_context_id)
 
@@ -943,6 +945,7 @@ class LessonPreparationPipeline:
         ]
         if not routed:
             raise RuntimeError("repair route has no material finding")
+        await self._emit(context.on_stage, "正在修订完整讲解")
         repair = self._repair_request(role, state, routed)
         finding_ids = [item.finding_id for item in routed]
         state.review = None
@@ -961,19 +964,19 @@ class LessonPreparationPipeline:
                 context.problem,
                 context.teaching_route,
                 context.problem_focus_targets,
-                None,
+                context.on_stage,
                 repair,
                 finding_ids,
             )
             await self._create_reasoning_trajectory(
-                state, context.problem, None
+                state, context.problem, context.on_stage
             )
-            await self._create_teaching_script(state, None)
-            await self._create_interaction_plan(state, None)
+            await self._create_teaching_script(state, context.on_stage)
+            await self._create_interaction_plan(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
-                None,
+                context.on_stage,
             )
         elif role == "teaching_designer":
             self._deactivate_artifacts(
@@ -985,16 +988,16 @@ class LessonPreparationPipeline:
             await self._create_reasoning_trajectory(
                 state,
                 context.problem,
-                None,
+                context.on_stage,
                 repair,
                 finding_ids,
             )
-            await self._create_teaching_script(state, None)
-            await self._create_interaction_plan(state, None)
+            await self._create_teaching_script(state, context.on_stage)
+            await self._create_interaction_plan(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
-                None,
+                context.on_stage,
             )
         elif role == "script_teacher":
             self._deactivate_artifacts(
@@ -1004,34 +1007,34 @@ class LessonPreparationPipeline:
             )
             await self._create_teaching_script(
                 state,
-                None,
+                context.on_stage,
                 repair,
                 finding_ids,
             )
-            await self._create_interaction_plan(state, None)
+            await self._create_interaction_plan(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
-                None,
+                context.on_stage,
             )
         elif role == "interaction_designer":
             self._deactivate_artifacts(state, "performance_score")
             await self._create_interaction_plan(
                 state,
-                None,
+                context.on_stage,
                 repair,
                 finding_ids,
             )
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
-                None,
+                context.on_stage,
             )
         elif role == "classroom_director":
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
-                None,
+                context.on_stage,
                 repair,
                 finding_ids,
             )

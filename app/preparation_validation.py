@@ -118,6 +118,14 @@ def validate_solution_trace(
     _require_exact(teaching_route, FrozenTeachingRoute, "teaching_route")
     route_payload = teaching_route.to_prompt_payload()
     if normalize_cross_artifact_math_identity(
+        trace.task_target
+    ) != normalize_cross_artifact_math_identity(route_payload["target"]):
+        _fail(
+            "trace_target_mismatch",
+            "solution_trace",
+            "Solution trace target does not match the frozen teaching route.",
+        )
+    if normalize_cross_artifact_math_identity(
         trace.reference_conclusion
     ) != normalize_cross_artifact_math_identity(
         teaching_route.final_conclusion
@@ -128,8 +136,33 @@ def validate_solution_trace(
             "Solution trace conclusion does not match the frozen teaching route.",
         )
 
-    assumption_ids = {item.assumption_id for item in trace.assumptions}
-    route_step_ids = {item["step_id"] for item in route_payload["steps"]}
+    route_assumptions = {
+        item["assumption_id"]: item["expression"]
+        for item in route_payload["assumptions"]
+    }
+    trace_assumptions = {
+        item.assumption_id: item.content for item in trace.assumptions
+    }
+    if set(trace_assumptions) != set(route_assumptions) or any(
+        normalize_cross_artifact_math_identity(trace_assumptions[item_id])
+        != normalize_cross_artifact_math_identity(expression)
+        for item_id, expression in route_assumptions.items()
+    ):
+        _fail(
+            "trace_assumption_mismatch",
+            "solution_trace",
+            "Solution trace assumptions must match the frozen route.",
+        )
+    assumption_ids = set(trace_assumptions)
+    route_steps = route_payload["steps"]
+    route_step_ids = {item["step_id"] for item in route_steps}
+    trace_step_ids = [item.source_step_id for item in trace.source_steps]
+    if trace_step_ids != [item["step_id"] for item in route_steps]:
+        _fail(
+            "trace_step_order_mismatch",
+            "solution_trace",
+            "Solution trace steps must exactly match frozen route order.",
+        )
     anchors = [item.source_anchor for item in trace.assumptions]
     anchors.extend(item.source_anchor for item in trace.source_steps)
     for anchor in anchors:
@@ -145,7 +178,22 @@ def validate_solution_trace(
                 anchor.source_id,
                 "Source anchor is inconsistent with its declared source kind.",
             )
-    for step in trace.source_steps:
+    for step, route_step in zip(trace.source_steps, route_steps):
+        if (
+            normalize_cross_artifact_math_identity(step.state_before)
+            != normalize_cross_artifact_math_identity(
+                route_step["statement_before"]
+            )
+            or normalize_cross_artifact_math_identity(step.state_after)
+            != normalize_cross_artifact_math_identity(
+                route_step["statement_after"]
+            )
+        ):
+            _fail(
+                "trace_state_mismatch",
+                step.source_step_id,
+                "Solution trace state does not match its frozen route step.",
+            )
         missing = set(step.assumption_ids_used) - assumption_ids
         if missing:
             _fail(

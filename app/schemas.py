@@ -16,6 +16,11 @@ from app.math_content import (
     contains_internal_control_syntax,
     contains_math_markup as _contains_math_markup,
 )
+from app.math_expression import (
+    MathOperationKind,
+    StrictMathExpression,
+    validate_operation_operands,
+)
 
 
 NonEmptyString = Annotated[
@@ -302,11 +307,29 @@ def _normalize_reference_text(value: str) -> str:
     return normalized
 
 
+class GroundedAssumption(SchemaModel):
+    assumption_id: GeneratedId
+    expression: StrictMathExpression
+
+
 class GroundedReasoningStep(SchemaModel):
     step_id: GeneratedId
-    statement_before: GeneratedMathAnswer
-    operation_explanation: GeneratedFeedbackText
-    statement_after: GeneratedMathAnswer
+    statement_before: StrictMathExpression
+    operation_kind: MathOperationKind
+    operands: List[StrictMathExpression] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    statement_after: StrictMathExpression
+    assumption_ids_used: List[GeneratedId] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+
+    @model_validator(mode="after")
+    def validate_operand_arity(self) -> "GroundedReasoningStep":
+        validate_operation_operands(self.operation_kind, self.operands)
+        return self
 
 
 class GroundingCheckRequest(SchemaModel):
@@ -317,11 +340,11 @@ class GroundingCheckRequest(SchemaModel):
         "nonzero_division",
         "back_substitution",
     ]
-    expression: GeneratedMathAnswer
-    expected: GeneratedMathAnswer
+    expression: StrictMathExpression
+    expected: StrictMathExpression
     substitutions: Dict[
         SingleLetterSymbol,
-        GeneratedMathAnswer,
+        StrictMathExpression,
     ] = Field(default_factory=dict, max_length=4)
     nonzero_symbols: List[SingleLetterSymbol] = Field(
         default_factory=list,
@@ -332,9 +355,9 @@ class GroundingCheckRequest(SchemaModel):
 
 class ReferenceGroundingBrief(SchemaModel):
     task_summary: GeneratedFeedbackText
-    target: GeneratedMathAnswer
-    assumptions: List[GeneratedMathAnswer] = Field(max_length=8)
-    reference_conclusion: GeneratedMathAnswer
+    target: StrictMathExpression
+    assumptions: List[GroundedAssumption] = Field(max_length=8)
+    reference_conclusion: StrictMathExpression
     method_name: MethodName
     reasoning_steps: List[GroundedReasoningStep] = Field(
         min_length=1,
@@ -411,6 +434,17 @@ class ReferenceGroundingBrief(SchemaModel):
 
     @model_validator(mode="after")
     def validate_check_request_ids(self) -> "ReferenceGroundingBrief":
+        assumption_ids = [
+            assumption.assumption_id for assumption in self.assumptions
+        ]
+        if len(assumption_ids) != len(set(assumption_ids)):
+            raise ValueError("grounded assumption ids must be unique")
+        known_assumptions = set(assumption_ids)
+        for step in self.reasoning_steps:
+            if not set(step.assumption_ids_used) <= known_assumptions:
+                raise ValueError(
+                    "grounded step references an unknown assumption"
+                )
         check_ids = [
             request.check_id for request in self.check_requests
         ]

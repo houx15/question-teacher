@@ -198,6 +198,7 @@ def symbolic_route_and_steps():
         mode=TeachingRouteMode.SYMBOLIC_VERIFIED,
         consistency=TeachingRouteConsistency.CONSISTENT,
         method_name="代入法",
+        target_expression=grounded.target_expression,
         final_conclusion=grounded.final_conclusion,
         assumptions=payload["assumptions"],
         steps=payload["steps"],

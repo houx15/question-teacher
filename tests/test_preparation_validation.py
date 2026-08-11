@@ -41,9 +41,9 @@ STEP_IDS = (
     "return-target",
 )
 STATES = (
-    "x=2n is a root",
+    "x^2-2mx+2n=0",
     "x=2n",
-    "target m-n",
+    "m-n",
     "4n^2-4mn+2n=0",
     "2n(2n-2m+1)=0",
     "2n-2m+1=0",
@@ -56,18 +56,39 @@ def route(final_conclusion="m-n=1/2"):
         {
             "task_summary": "由参数根求m-n",
             "target": "m-n",
-            "assumptions": ["n!=0", "x=2n是原方程的根"],
+            "assumptions": [
+                {"assumption_id": "assumption-nonzero", "expression": "n!=0"},
+                {"assumption_id": "assumption-root", "expression": "x=2n"},
+            ],
             "reference_conclusion": final_conclusion,
             "method_name": "代入法",
             "reasoning_steps": [
                 {
                     "step_id": step_id,
-                    "statement_before": "题目条件" if index == 0 else STATES[index - 1],
-                    "operation_explanation": "保留这一步的数学依赖",
+                    "statement_before": (
+                        "x^2-2mx+2n=0"
+                        if index == 0
+                        else STATES[index - 1]
+                    ),
+                    "operation_kind": (
+                        "identify" if index in {0, 2, 4}
+                        else "substitute" if index == 1
+                        else "expand" if index == 3
+                        else "divide" if index == 5
+                        else "rearrange"
+                    ),
+                    "operands": (["2n"] if index in {1, 5} else []),
                     "statement_after": (
                         final_conclusion
                         if index == len(STEP_IDS) - 1
                         else state
+                    ),
+                    "assumption_ids_used": (
+                        ["assumption-nonzero"]
+                        if step_id == "use-nonzero"
+                        else ["assumption-root"]
+                        if step_id == "substitute-root"
+                        else []
                     ),
                 }
                 for index, (step_id, state) in enumerate(zip(STEP_IDS, STATES))
@@ -82,7 +103,7 @@ def route(final_conclusion="m-n=1/2"):
 
 def trace_payload():
     return {
-        "task_target": "求关系m-n",
+        "task_target": "m-n",
         "reference_conclusion": r"\(m-n=\frac{1}{2}\)",
         "assumptions": [
             {
@@ -93,7 +114,16 @@ def trace_payload():
                     "source_id": "problem",
                     "excerpt": "n不等于0",
                 },
-            }
+            },
+            {
+                "assumption_id": "assumption-root",
+                "content": "x=2n",
+                "source_anchor": {
+                    "source_kind": "problem",
+                    "source_id": "problem-root",
+                    "excerpt": "2n是根",
+                },
+            },
         ],
         "source_steps": [
             {
@@ -103,7 +133,19 @@ def trace_payload():
                     "source_id": step_id,
                     "excerpt": "冻结路线步骤",
                 },
-                "state_before": "题目条件" if index == 0 else STATES[index - 1],
+                "state_before": (
+                    "x^2-2mx+2n=0"
+                    if index == 0
+                    else STATES[index - 1]
+                ),
+                "operation_kind": (
+                    "identify" if index in {0, 2, 4}
+                    else "substitute" if index == 1
+                    else "expand" if index == 3
+                    else "divide" if index == 5
+                    else "rearrange"
+                ),
+                "operands": (["2n"] if index in {1, 5} else []),
                 "mathematical_action": (
                     "识别根条件" if step_id == "is-root"
                     else "代入x=2n" if step_id == "substitute-root"
@@ -117,9 +159,13 @@ def trace_payload():
                 "state_after": state,
                 "new_information": "得到下一步所需信息",
                 "assumption_ids_used": (
-                    ["assumption-nonzero"] if step_id == "use-nonzero" else []
+                    ["assumption-nonzero"]
+                    if step_id == "use-nonzero"
+                    else ["assumption-root"]
+                    if step_id == "substitute-root"
+                    else []
                 ),
-                "omitted_reasoning": [],
+                "reasoning_gap_codes": [],
                 "evidence_status": "verified_route",
             }
             for index, (step_id, state) in enumerate(zip(STEP_IDS, STATES))
@@ -408,8 +454,9 @@ def test_solution_trace_does_not_collapse_set_grouping_into_digits():
             "reasoning_steps": [
                 {
                     "step_id": "is-root",
-                    "statement_before": "题目条件",
-                    "operation_explanation": "保留集合分隔符",
+                    "statement_before": "x=12",
+                    "operation_kind": "compare",
+                    "operands": ["x={1,2}"],
                     "statement_after": "x=12",
                 }
             ],
@@ -419,6 +466,7 @@ def test_solution_trace_does_not_collapse_set_grouping_into_digits():
         "x=12",
     )
     payload = trace_payload()
+    payload["task_target"] = "x"
     payload["reference_conclusion"] = "x={1,2}"
     invalid = SolutionTrace.model_validate(payload)
     assert_code(
@@ -438,6 +486,7 @@ def test_solution_trace_accepts_presentation_only_conclusion_variants():
     validate_solution_trace(SolutionTrace.model_validate(payload), route())
 
     payload["reference_conclusion"] = r"m-n=\frac{-1}{2}"
+    payload["source_steps"][-1]["state_after"] = "m-n=-1/2"
     validate_solution_trace(
         SolutionTrace.model_validate(payload),
         route("m-n=-1/2"),

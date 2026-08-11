@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable, Optional, Protocol
@@ -8,6 +9,12 @@ from app.claim_checker import (
     ClaimChecker,
     ClaimCheckResult,
     ClaimStatus,
+)
+from app.math_expression import (
+    StrictMathExpressionError,
+    deterministic_method_name,
+    validate_operation_operands,
+    validate_strict_math_expression,
 )
 from app.schemas import (
     GroundingCheckRequest,
@@ -49,6 +56,7 @@ class FrozenTeachingRoute:
     mode: TeachingRouteMode
     consistency: TeachingRouteConsistency
     method_name: str
+    target_expression: str
     final_conclusion: str
     assumptions_json: str
     steps_json: str
@@ -67,6 +75,7 @@ class FrozenTeachingRoute:
                 mode=self.mode,
                 consistency=self.consistency,
                 method_name=self.method_name,
+                target_expression=self.target_expression,
                 final_conclusion=self.final_conclusion,
                 assumptions=assumptions,
                 steps=steps,
@@ -93,6 +102,7 @@ class FrozenTeachingRoute:
             "verification_mode": self.mode.value,
             "consistency_status": self.consistency.value,
             "method_name": self.method_name,
+            "target": self.target_expression,
             "final_conclusion": self.final_conclusion,
             "assumptions": assumptions,
             "steps": steps,
@@ -145,9 +155,15 @@ def freeze_grounded_route(
     return _freeze_route(
         mode=mode,
         consistency=consistency,
-        method_name=grounding_brief.method_name,
+        method_name=deterministic_method_name(
+            [step.operation_kind for step in grounding_brief.reasoning_steps]
+        ),
+        target_expression=grounding_brief.target,
         final_conclusion=grounding_brief.reference_conclusion,
-        assumptions=list(grounding_brief.assumptions),
+        assumptions=[
+            assumption.model_dump(mode="python")
+            for assumption in grounding_brief.assumptions
+        ],
         steps=steps,
         check_evidence=check_evidence,
     )
@@ -161,11 +177,26 @@ def freeze_symbolic_route(
     independent_solutions: Optional[list] = None,
 ) -> FrozenTeachingRoute:
     route = verified_route.thaw()
+    operation_kinds = {
+        "simplify": "simplify",
+        "add_both_sides": "add",
+        "subtract_both_sides": "subtract",
+        "multiply_both_sides": "multiply",
+        "divide_both_sides": "divide",
+        "expand": "expand",
+        "factor": "factor",
+        "combine_like_terms": "combine_like_terms",
+        "take_square_root_both_sides": "take_square_root",
+        "split_plus_minus": "split_cases",
+        "complete_the_square": "complete_square",
+        "quadratic_formula": "quadratic_formula",
+    }
     steps = [
         {
             "step_id": f"symbolic-step-{index}",
             "statement_before": _join_states(step.state_before),
-            "operation_explanation": step.reason,
+            "operation_kind": operation_kinds[step.operation],
+            "operands": list(step.operands),
             "statement_after": _join_states(step.state_after),
             "evidence_status": "checked",
         }
@@ -175,6 +206,7 @@ def freeze_symbolic_route(
         mode=TeachingRouteMode.SYMBOLIC_VERIFIED,
         consistency=TeachingRouteConsistency.CONSISTENT,
         method_name=method_name or verified_route.method_family,
+        target_expression=_infer_symbolic_target(route),
         final_conclusion=_join_states(
             route.math_steps[-1].state_after
         ),
@@ -198,10 +230,63 @@ def _freeze_route(
     final_conclusion: str,
     assumptions: list,
     steps: list,
+    target_expression: Optional[str] = None,
     check_evidence: Optional[list] = None,
     symbolic_math_route_json: Optional[str] = None,
     symbolic_context: Optional[dict] = None,
 ) -> FrozenTeachingRoute:
+    target = target_expression or final_conclusion
+    try:
+        target = validate_strict_math_expression(target)
+        final_conclusion = validate_strict_math_expression(final_conclusion)
+        assumptions = [
+            {
+                "assumption_id": item["assumption_id"],
+                "expression": validate_strict_math_expression(
+                    item["expression"]
+                ),
+            }
+            for item in assumptions
+        ]
+        steps = [
+            {
+                **step,
+                "statement_before": validate_strict_math_expression(
+                    step["statement_before"]
+                ),
+                "operands": [
+                    validate_strict_math_expression(item)
+                    for item in step.get("operands", [])
+                ],
+                "statement_after": validate_strict_math_expression(
+                    step["statement_after"]
+                ),
+                "assumption_ids_used": list(
+                    step.get("assumption_ids_used", [])
+                ),
+            }
+            for step in steps
+        ]
+        for step in steps:
+            validate_operation_operands(
+                step["operation_kind"], step["operands"]
+            )
+        assumption_ids = [
+            item["assumption_id"] for item in assumptions
+        ]
+        if len(assumption_ids) != len(set(assumption_ids)):
+            raise ValueError("duplicate grounded assumption ids")
+        known_assumption_ids = set(assumption_ids)
+        if any(
+            not set(step["assumption_ids_used"])
+            <= known_assumption_ids
+            for step in steps
+        ):
+            raise ValueError("unknown grounded assumption id")
+    except (KeyError, StrictMathExpressionError, ValueError):
+        raise TeachingRouteIntegrityError(
+            "冻结教学路线包含无效数学结构。"
+        ) from None
     normalized_check_evidence = check_evidence or []
     assumptions_json = _canonical_json(assumptions)
     steps_json = _canonical_json(steps)
@@ -216,6 +301,7 @@ def _freeze_route(
             mode=mode,
             consistency=consistency,
             method_name=method_name,
+            target_expression=target,
             final_conclusion=final_conclusion,
             assumptions=json.loads(assumptions_json),
             steps=json.loads(steps_json),
@@ -231,6 +317,7 @@ def _freeze_route(
         mode=mode,
         consistency=consistency,
         method_name=method_name,
+        target_expression=target,
         final_conclusion=final_conclusion,
         assumptions_json=assumptions_json,
         steps_json=steps_json,
@@ -247,6 +334,7 @@ def _route_content(
     mode: TeachingRouteMode,
     consistency: TeachingRouteConsistency,
     method_name: str,
+    target_expression: str,
     final_conclusion: str,
     assumptions: list,
     steps: list,
@@ -259,6 +347,7 @@ def _route_content(
         "consistency_status": consistency.value,
         "final_conclusion": final_conclusion,
         "method_name": method_name,
+        "target": target_expression,
         "steps": steps,
         "check_evidence": check_evidence,
         "symbolic_math_route_json": symbolic_math_route_json,
@@ -338,3 +427,18 @@ def _normalize_check_evidence(
 
 def _join_states(states: Iterable[str]) -> str:
     return "；".join(states)
+
+
+def _infer_symbolic_target(route: MathRouteDraft) -> str:
+    symbols = {
+        match.group()
+        for step in route.math_steps
+        for state in (*step.state_before, *step.state_after)
+        for match in re.finditer(
+            r"(?<![A-Za-z])[A-Za-z](?![A-Za-z])",
+            state,
+        )
+    }
+    if len(symbols) == 1:
+        return next(iter(symbols))
+    return _join_states(route.math_steps[-1].state_after)

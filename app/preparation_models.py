@@ -8,6 +8,12 @@ from pydantic import (
     model_validator,
 )
 
+from app.math_expression import (
+    MathOperationKind,
+    ReasoningGapCode,
+    StrictMathExpression,
+    validate_operation_operands,
+)
 from app.pedagogy_rubric import ReviewCriterionId
 from app.schemas import (
     CueSpokenText,
@@ -74,29 +80,39 @@ class SourceAnchor(SchemaModel):
 class SolutionTraceStep(SchemaModel):
     source_step_id: GeneratedId
     source_anchor: SourceAnchor
-    state_before: NonEmptyString
+    state_before: StrictMathExpression
+    operation_kind: MathOperationKind
+    operands: List[StrictMathExpression] = Field(
+        default_factory=list,
+        max_length=8,
+    )
     mathematical_action: NonEmptyString
     justification: NonEmptyString
-    state_after: NonEmptyString
+    state_after: StrictMathExpression
     new_information: NonEmptyString
     assumption_ids_used: List[GeneratedId] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
-    omitted_reasoning: List[NonEmptyString] = Field(
+    reasoning_gap_codes: List[ReasoningGapCode] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
     evidence_status: EvidenceStatus
 
+    @model_validator(mode="after")
+    def validate_operand_arity(self) -> "SolutionTraceStep":
+        validate_operation_operands(self.operation_kind, self.operands)
+        return self
+
 
 class TraceAssumption(SchemaModel):
     assumption_id: GeneratedId
-    content: NonEmptyString
+    content: StrictMathExpression
     source_anchor: SourceAnchor
 
 
 class SolutionTrace(SchemaModel):
-    task_target: NonEmptyString
-    reference_conclusion: NonEmptyString
+    task_target: StrictMathExpression
+    reference_conclusion: StrictMathExpression
     assumptions: List[TraceAssumption] = Field(
         default_factory=list, max_length=MAX_PREPARATION_ITEMS
     )

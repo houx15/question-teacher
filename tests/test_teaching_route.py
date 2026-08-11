@@ -27,8 +27,8 @@ def grounding_brief(
             "task_summary": "把已知根代回方程，求m-n",
             "target": r"\(m-n\)",
             "assumptions": [
-                r"\(n\ne0\)",
-                r"\(x=2n\)是原方程的根",
+                {"assumption_id": "nonzero-n", "expression": r"\(n\ne0\)"},
+                {"assumption_id": "given-root", "expression": r"\(x=2n\)"},
             ],
             "reference_conclusion": REFERENCE_ANSWER,
             "method_name": "代入法",
@@ -36,14 +36,18 @@ def grounding_brief(
                 {
                     "step_id": "substitute-root",
                     "statement_before": r"\(x^2-2mx+2n=0\)",
-                    "operation_explanation": "把已知根x=2n代入原方程",
+                    "operation_kind": "substitute",
+                    "operands": ["x=2n"],
                     "statement_after": r"\(4n^2-4mn+2n=0\)",
+                    "assumption_ids_used": ["given-root"],
                 },
                 {
                     "step_id": "use-nonzero",
                     "statement_before": r"\(2n(2n-2m+1)=0\)",
-                    "operation_explanation": "利用n不为0约去2n",
+                    "operation_kind": "divide",
+                    "operands": ["2n"],
                     "statement_after": r"\(2n-2m+1=0\)",
+                    "assumption_ids_used": ["nonzero-n"],
                 },
             ],
             "check_requests": check_requests or [],
@@ -132,8 +136,8 @@ def test_grounded_route_preserves_assumptions_and_conclusion():
     assert route.method_name == "代入法"
     assert route.final_conclusion == REFERENCE_ANSWER
     assert payload["assumptions"] == [
-        r"\(n\ne0\)",
-        r"\(x=2n\)是原方程的根",
+        {"assumption_id": "nonzero-n", "expression": r"\(n\ne0\)"},
+        {"assumption_id": "given-root", "expression": r"\(x=2n\)"},
     ]
     assert payload["steps"][0]["evidence_status"] == "reference_only"
     assert payload["check_evidence"] == [
@@ -146,6 +150,33 @@ def test_grounded_route_preserves_assumptions_and_conclusion():
         }
     ]
     assert route.fingerprint
+
+
+def test_grounder_free_prose_is_not_frozen_but_typed_changes_are():
+    first = grounding_brief()
+    free_prose_change = first.model_copy(
+        update={
+            "task_summary": "任意的私有引用摘要",
+            "method_name": "任意的模型方法名",
+            "audit_notes": ["任意的审计备注"],
+        }
+    )
+    changed_step = first.reasoning_steps[0].model_copy(
+        update={"operation_kind": "derive", "operands": []}
+    )
+    typed_change = first.model_copy(
+        update={
+            "reasoning_steps": [changed_step, *first.reasoning_steps[1:]]
+        }
+    )
+
+    baseline = freeze_grounded_route(first, [])
+    assert freeze_grounded_route(free_prose_change, []).fingerprint == (
+        baseline.fingerprint
+    )
+    assert freeze_grounded_route(typed_change, []).fingerprint != (
+        baseline.fingerprint
+    )
 
 
 def test_unchecked_grounded_route_is_reference_grounded():
@@ -287,6 +318,7 @@ def test_symbolic_route_adapts_verified_math_route():
     assert route.mode == TeachingRouteMode.SYMBOLIC_VERIFIED
     assert route.consistency == TeachingRouteConsistency.CONSISTENT
     assert route.method_name == "factor"
+    assert payload["target"] == "x"
     assert route.final_conclusion == "(x-2)(x-3)=0"
     assert payload["assumptions"] == []
     assert payload["steps"][0]["evidence_status"] == "checked"

@@ -27,8 +27,9 @@ def source_anchor(source_id="source-1"):
 def trace_step(step_id="step-1"):
     return {
         "source_step_id": step_id, "source_anchor": source_anchor(step_id),
-        "state_before": "x加一等于三", "mathematical_action": "两边同时减一",
-        "justification": "等式两边同减相等数仍相等", "state_after": "x等于二",
+        "state_before": "x+1=3", "operation_kind": "subtract",
+        "operands": ["1"], "mathematical_action": "两边同时减一",
+        "justification": "等式两边同减相等数仍相等", "state_after": "x=2",
         "new_information": "未知数的值已确定", "evidence_status": "derived",
     }
 
@@ -90,7 +91,7 @@ def teaching_script():
 
 def prepared_lesson():
     return {
-        "rubric_version": "v1", "solution_trace": {"task_target": "求x", "reference_conclusion": "x等于二", "source_steps": [trace_step()]},
+        "rubric_version": "v1", "solution_trace": {"task_target": "x", "reference_conclusion": "x=2", "source_steps": [trace_step()]},
         "reasoning_trajectory": {"trajectory_type": "planned", "lesson_purpose": "理解等式性质", "episodes": [episode()], "method_summary": "同减", "error_summary": "避免单边变形"},
         "teaching_script": teaching_script(), "interaction_plan": {"interactions": [], "transfer_item": transfer_item()},
         "performance_score": {"cues": [{"cue_id": "cue-1", "clause_ids": ["open-1"]}]},
@@ -144,8 +145,8 @@ def test_generated_ids_are_valid_and_every_local_id_collection_is_unique():
         PreparedLesson.model_validate(payload)
     payload = prepared_lesson()
     payload["solution_trace"]["assumptions"] = [
-        {"assumption_id": "assumption-1", "content": "n不为零", "source_anchor": source_anchor("a")},
-        {"assumption_id": "assumption-1", "content": "x是根", "source_anchor": source_anchor("b")},
+        {"assumption_id": "assumption-1", "content": "n!=0", "source_anchor": source_anchor("a")},
+        {"assumption_id": "assumption-1", "content": "x=2n", "source_anchor": source_anchor("b")},
     ]
     with pytest.raises(ValidationError, match="assumption ids"):
         PreparedLesson.model_validate(payload)
