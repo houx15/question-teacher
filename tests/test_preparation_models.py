@@ -371,6 +371,29 @@ def test_prepared_lesson_builder_validates():
     assert PreparedLesson.model_validate(prepared_lesson()).rubric_version == "v1"
 
 
+def test_simulation_revision_can_record_the_student_simulator_role():
+    revision = ArtifactRevision.model_validate(
+        {
+            "artifact_type": "simulation_report",
+            "version": 1,
+            "responsible_role": "student_simulator",
+        }
+    )
+
+    assert revision.responsible_role == "student_simulator"
+
+
+def test_artifact_revision_cannot_attribute_authoring_to_the_reviewer():
+    with pytest.raises(ValidationError):
+        ArtifactRevision.model_validate(
+            {
+                "artifact_type": "simulation_report",
+                "version": 1,
+                "responsible_role": "lesson_reviewer",
+            }
+        )
+
+
 def test_role_call_output_pair_and_nonnegative_token_usage():
     payload = {"role": "lesson_reviewer", "output_artifact_type": "solution_trace", "duration_ms": 0, "retry_count": 0}
     with pytest.raises(ValidationError, match="output type and version"):

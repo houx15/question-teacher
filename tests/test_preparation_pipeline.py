@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+import app.preparation_pipeline as preparation_pipeline
 from app.config import Settings
 from app.llm_client import (
     ModelCompletion,
@@ -296,24 +297,102 @@ def downstream_score_payload():
     }
 
 
+def downstream_simulation_payload():
+    return {
+        "episode_results": [
+            {
+                "episode_id": "episode-%d" % (index + 1),
+                "learner_profile": "初学者",
+                "can_identify_attention_target": True,
+                "can_explain_decision": True,
+                "can_execute_action": True,
+                "can_use_result_to_continue": True,
+                "evidence": ["能说出当前重点、理由、操作和下一步。"],
+            }
+            for index in range(5)
+        ],
+        "interaction_results": [],
+        "end_of_lesson_recall": "先代入根，再用非零条件，最后回到m-n。",
+        "blocking_findings": [],
+    }
+
+
+def downstream_review_payload(status="approved", findings=None):
+    return {
+        "status": status,
+        "findings": list(findings or []),
+        "retained_artifacts": [],
+        "approval_summary": (
+            "核心门槛通过" if status == "approved" else "需要定向修订"
+        ),
+    }
+
+
+def review_finding(role, criterion="必须说明当前决定理由"):
+    artifact_by_role = {
+        "reference_analyst": ("solution_trace", "substitute-root"),
+        "teaching_designer": ("reasoning_trajectory", "episode-1"),
+        "script_teacher": ("teaching_script", "clause-open"),
+        "interaction_designer": ("interaction_plan", "interaction_plan"),
+        "classroom_director": ("performance_score", "cue-clause-open"),
+    }
+    artifact_type, artifact_id = artifact_by_role[role]
+    return {
+        "finding_id": "finding-%s-%d" % (role, len(criterion)),
+        "severity": "material",
+        "artifact_type": artifact_type,
+        "artifact_id": artifact_id,
+        "criterion": criterion,
+        "evidence": "%s 缺少学生可追踪的理由。" % artifact_id,
+        "responsible_role": role,
+        "requested_change": "补充当前决定的理由和转移。",
+        "invalidated_downstream_artifacts": [],
+    }
+
+
+def prompt_payload(recorded_call):
+    body = recorded_call.user.split("<UNTRUSTED_SOURCE_DATA>\n", 1)[1]
+    return json.loads(body.split("\n</UNTRUSTED_SOURCE_DATA>", 1)[0])
+
+
 def client(
     trace=None,
     trajectory=None,
     script=None,
     interaction=None,
     performance=None,
+    traces=None,
+    trajectories=None,
+    scripts=None,
+    interactions=None,
+    performances=None,
+    simulations=None,
+    reviews=None,
 ):
     return PreparationFakeClient(
         {
-            "reference_analyst": [trace or trace_payload()],
-            "teaching_designer": [trajectory or trajectory_payload()],
-            "script_teacher": [script or downstream_script_payload()],
-            "interaction_designer": [
-                interaction or downstream_interaction_payload()
-            ],
-            "classroom_director": [
-                performance or downstream_score_payload()
-            ],
+            "reference_analyst": list(
+                traces or [trace or trace_payload()]
+            ),
+            "teaching_designer": list(
+                trajectories or [trajectory or trajectory_payload()]
+            ),
+            "script_teacher": list(
+                scripts or [script or downstream_script_payload()]
+            ),
+            "interaction_designer": list(
+                interactions
+                or [interaction or downstream_interaction_payload()]
+            ),
+            "classroom_director": list(
+                performances or [performance or downstream_score_payload()]
+            ),
+            "student_simulator": list(
+                simulations or [downstream_simulation_payload()]
+            ),
+            "lesson_reviewer": list(
+                reviews or [downstream_review_payload()]
+            ),
         }
     )
 
@@ -326,25 +405,27 @@ def run_early(pipeline, on_stage=None):
     )
 
 
-def test_public_prepare_cannot_return_a_partial_prepared_lesson():
-    with pytest.raises(NotImplementedError, match="simulation and review"):
-        asyncio.run(
-            LessonPreparationPipeline(client()).prepare(
-                problem(), route(), focus_targets()
-            )
+def test_public_prepare_returns_only_an_approved_complete_prepared_lesson():
+    result = asyncio.run(
+        LessonPreparationPipeline(client()).prepare(
+            problem(), route(), focus_targets()
         )
+    )
+
+    assert type(result) is PreparedLesson
+    assert result.review.status == "approved"
+    assert len(result.simulation_report.episode_results) == 5
 
 
 def test_script_interaction_and_performance_stages_run_in_dependency_order():
     fake = client()
     stages = []
 
-    with pytest.raises(NotImplementedError, match="simulation and review"):
-        asyncio.run(
-            LessonPreparationPipeline(fake).prepare(
-                problem(), route(), focus_targets(), on_stage=stages.append
-            )
+    asyncio.run(
+        LessonPreparationPipeline(fake).prepare(
+            problem(), route(), focus_targets(), on_stage=stages.append
         )
+    )
 
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
@@ -352,6 +433,8 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
         "script_teacher",
         "interaction_designer",
         "classroom_director",
+        "student_simulator",
+        "lesson_reviewer",
     ]
     assert stages == [
         "整理参考解析",
@@ -359,7 +442,360 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
         "编写讲稿",
         "设计互动",
         "编排板书与高亮",
+        "模拟学生并审核课程",
     ]
+
+
+@pytest.mark.parametrize(
+    ("responsible_role", "expected_versions"),
+    [
+        (
+            "reference_analyst",
+            {
+                "solution_trace": 2,
+                "reasoning_trajectory": 2,
+                "teaching_script": 2,
+                "interaction_plan": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+        (
+            "teaching_designer",
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 2,
+                "teaching_script": 2,
+                "interaction_plan": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+        (
+            "script_teacher",
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_script": 2,
+                "interaction_plan": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+        (
+            "interaction_designer",
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_script": 1,
+                "interaction_plan": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+        (
+            "classroom_director",
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_script": 1,
+                "interaction_plan": 1,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+    ],
+)
+def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
+    responsible_role, expected_versions
+):
+    finding = review_finding(responsible_role)
+    fake = client(
+        traces=[trace_payload(), trace_payload()],
+        trajectories=[trajectory_payload(), trajectory_payload()],
+        scripts=[downstream_script_payload(), downstream_script_payload()],
+        interactions=[
+            downstream_interaction_payload(),
+            downstream_interaction_payload(),
+        ],
+        performances=[downstream_score_payload(), downstream_score_payload()],
+        simulations=[
+            downstream_simulation_payload(),
+            downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload("revision_required", [finding]),
+            downstream_review_payload(),
+        ],
+    )
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    assert run.audit.versions == expected_versions
+    assert run.prepared_lesson.repair_count == 1
+    assert run.prepared_lesson.artifact_history == run.audit.history
+    assert [call.role for call in fake.calls].count("student_simulator") == 2
+    assert [call.role for call in fake.calls].count("lesson_reviewer") == 2
+    repair_call = [
+        call for call in fake.calls if call.role == responsible_role
+    ][1]
+    repair = prompt_payload(repair_call)["repair_request"]
+    artifact_order = [
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_script",
+        "interaction_plan",
+        "performance_score",
+    ]
+    assert set(repair["retained_artifacts"]) == set(
+        artifact_order[: artifact_order.index(finding["artifact_type"]) + 1]
+    )
+    assert repair["finding_ids"] == [finding["finding_id"]]
+    repaired_revision = next(
+        revision
+        for revision in reversed(run.audit.history)
+        if revision.responsible_role == responsible_role
+    )
+    assert repaired_revision.finding_ids == [finding["finding_id"]]
+
+
+def test_repair_prompt_contains_current_and_upstream_but_no_downstream_artifacts():
+    finding = review_finding("script_teacher")
+    fake = client(
+        scripts=[downstream_script_payload(), downstream_script_payload()],
+        interactions=[
+            downstream_interaction_payload(),
+            downstream_interaction_payload(),
+        ],
+        performances=[downstream_score_payload(), downstream_score_payload()],
+        simulations=[
+            downstream_simulation_payload(),
+            downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload("revision_required", [finding]),
+            downstream_review_payload(),
+        ],
+    )
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    repair_call = [
+        call for call in fake.calls if call.role == "script_teacher"
+    ][1]
+    repair = prompt_payload(repair_call)["repair_request"]
+    assert set(repair["retained_artifacts"]) == {
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_script",
+    }
+    assert "interaction_plan" not in repair_call.user
+    assert "performance_score" not in repair_call.user
+    repaired_call_record = [
+        call for call in run.audit.role_calls if call.role == "script_teacher"
+    ][1]
+    assert repaired_call_record.input_artifact_versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+        "teaching_script": 1,
+    }
+
+
+def test_multiple_material_findings_repair_from_earliest_responsible_role():
+    findings = [
+        review_finding("classroom_director", "视觉重点错位"),
+        review_finding("script_teacher", "决定理由缺失"),
+    ]
+    assert preparation_pipeline.earliest_responsible_role(
+        [
+            preparation_pipeline.ReviewFinding.model_validate(item)
+            for item in findings
+        ]
+    ) == "script_teacher"
+    fake = client(
+        scripts=[downstream_script_payload(), downstream_script_payload()],
+        interactions=[
+            downstream_interaction_payload(),
+            downstream_interaction_payload(),
+        ],
+        performances=[downstream_score_payload(), downstream_score_payload()],
+        simulations=[
+            downstream_simulation_payload(),
+            downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload("revision_required", findings),
+            downstream_review_payload(),
+        ],
+    )
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    assert run.audit.versions["solution_trace"] == 1
+    assert run.audit.versions["reasoning_trajectory"] == 1
+    assert run.audit.versions["teaching_script"] == 2
+    repair_call = [
+        call for call in fake.calls if call.role == "script_teacher"
+    ][1]
+    assert prompt_payload(repair_call)["repair_request"]["finding_ids"] == [
+        findings[1]["finding_id"]
+    ]
+
+
+def test_polish_only_review_approves_without_a_repair_cycle():
+    polish = review_finding("script_teacher", "表达可更精炼")
+    polish["severity"] = "polish"
+    fake = client(
+        reviews=[downstream_review_payload("approved", [polish])]
+    )
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    assert run.prepared_lesson.review.status == "approved"
+    assert run.prepared_lesson.repair_count == 0
+    assert [call.role for call in fake.calls].count("script_teacher") == 1
+
+
+def test_three_repairs_can_converge_without_fixed_two_round_acceptance():
+    reviews = [
+        downstream_review_payload(
+            "revision_required",
+            [review_finding("classroom_director", "criterion-%d" % index)],
+        )
+        for index in range(3)
+    ] + [downstream_review_payload()]
+    fake = client(
+        performances=[downstream_score_payload() for _ in range(4)],
+        simulations=[downstream_simulation_payload() for _ in range(4)],
+        reviews=reviews,
+    )
+    stages = []
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets(), on_stage=stages.append
+        )
+    )
+
+    assert run.prepared_lesson.review.status == "approved"
+    assert run.prepared_lesson.repair_count == 3
+    assert run.audit.versions["performance_score"] == 4
+    assert stages == [
+        "整理参考解析",
+        "设计解题思维轨迹",
+        "编写讲稿",
+        "设计互动",
+        "编排板书与高亮",
+        "模拟学生并审核课程",
+    ]
+
+
+def test_eight_unresolved_repairs_fail_safely_without_prepared_lesson():
+    reviews = [
+        downstream_review_payload(
+            "revision_required",
+            [review_finding("classroom_director", "budget-%d" % index)],
+        )
+        for index in range(9)
+    ]
+    fake = client(
+        performances=[downstream_score_payload() for _ in range(9)],
+        simulations=[downstream_simulation_payload() for _ in range(9)],
+        reviews=reviews,
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "review_not_converged"
+    assert captured.value.role == "lesson_reviewer"
+    assert captured.value.detail == "课程审核未收敛。"
+    assert captured.value.audit.versions["performance_score"] == 9
+    assert [call.role for call in fake.calls].count("lesson_reviewer") == 9
+
+
+def test_repeated_signature_uses_fresh_context_then_fails_immediately():
+    first = review_finding("classroom_director")
+    second = dict(first, finding_id="finding-second", evidence="措辞不同")
+    third = dict(first, finding_id="finding-third", requested_change="措辞不同")
+    fake = client(
+        performances=[downstream_score_payload(), downstream_score_payload()],
+        simulations=[
+            downstream_simulation_payload(),
+            downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload("revision_required", [first]),
+            downstream_review_payload("revision_required", [second]),
+            downstream_review_payload("revision_required", [third]),
+        ],
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "review_not_converged"
+    reviewer_calls = [
+        call for call in fake.calls if call.role == "lesson_reviewer"
+    ]
+    contexts = [prompt_payload(call)["reviewer_context_id"] for call in reviewer_calls]
+    assert contexts[0] == contexts[1]
+    assert contexts[2] != contexts[1]
+    assert [call.role for call in fake.calls].count("classroom_director") == 2
+
+
+def test_failed_review_never_enters_repair_or_returns_a_lesson():
+    finding = review_finding("script_teacher")
+    fake = client(
+        reviews=[downstream_review_payload("failed", [finding])]
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "review_not_converged"
+    assert [call.role for call in fake.calls].count("script_teacher") == 1
+
+
+def test_unknown_repair_role_is_rejected_before_state_mutation():
+    pipeline = LessonPreparationPipeline(client())
+    state = PreparationState()
+    before = state.__dict__.copy()
+    context_type = preparation_pipeline.PreparationContext
+    context = context_type(problem(), route(), focus_targets(), None)
+
+    with pytest.raises(RuntimeError, match="unknown responsible role"):
+        asyncio.run(pipeline._repair_from("unknown", state, [], context))
+
+    assert state.__dict__ == before
 
 
 def test_oversized_valid_upstream_prompt_fails_safely_with_current_audit():
@@ -407,16 +843,17 @@ def test_zero_interactions_and_cues_without_highlights_are_accepted():
         performance=downstream_score_payload(),
     )
 
-    with pytest.raises(NotImplementedError, match="simulation and review"):
-        asyncio.run(
-            LessonPreparationPipeline(fake).prepare(
-                problem(), route(), focus_targets()
-            )
+    asyncio.run(
+        LessonPreparationPipeline(fake).prepare(
+            problem(), route(), focus_targets()
         )
+    )
 
-    assert [call.role for call in fake.calls][-2:] == [
+    assert [call.role for call in fake.calls][-4:] == [
         "interaction_designer",
         "classroom_director",
+        "student_simulator",
+        "lesson_reviewer",
     ]
 
 
@@ -608,12 +1045,11 @@ def test_board_object_can_be_emphasized_and_faded_after_introduction():
         }
     ]
 
-    with pytest.raises(NotImplementedError, match="simulation and review"):
-        asyncio.run(
-            LessonPreparationPipeline(
-                client(script=script, performance=valid)
-            ).prepare(problem(), route(), focus_targets())
-        )
+    asyncio.run(
+        LessonPreparationPipeline(
+            client(script=script, performance=valid)
+        ).prepare(problem(), route(), focus_targets())
+    )
 
 
 def test_multiple_interactions_in_one_episode_fail_before_performance_stage():

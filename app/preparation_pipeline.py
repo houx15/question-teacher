@@ -18,6 +18,7 @@ from typing import (
 
 from pydantic import BaseModel, ValidationError
 
+from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.llm_client import (
     ModelCompletion,
     ModelResponseError,
@@ -30,6 +31,8 @@ from app.preparation_models import (
     MAX_ROLE_CALL_TOKEN_COUNTER,
     PerformanceScore,
     PreparedLesson,
+    ResponsibleRole,
+    ReviewFinding,
     ROLE_CALL_TOKEN_USAGE_KEYS,
     ReasoningTrajectory,
     RoleCallRecord,
@@ -40,20 +43,28 @@ from app.preparation_models import (
 from app.preparation_prompts import (
     CLASSROOM_DIRECTOR_SYSTEM,
     INTERACTION_DESIGNER_SYSTEM,
+    LESSON_REVIEWER_SYSTEM,
     SCRIPT_TEACHER_SYSTEM,
     SOLUTION_TRACE_SYSTEM,
+    STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
     interaction_plan_prompt,
     performance_score_prompt,
     reasoning_trajectory_prompt,
+    lesson_review_prompt,
     solution_trace_prompt,
+    student_simulation_prompt,
     teaching_script_prompt,
 )
 from app.preparation_validation import (
     PreparationValidationError,
+    blocking_signature,
     validate_interaction_plan,
     validate_performance_score,
     validate_reasoning_trajectory,
+    validate_prepared_lesson,
+    validate_review_decision,
+    validate_simulation_report,
     validate_solution_trace,
     validate_teaching_script,
 )
@@ -81,6 +92,27 @@ DEFAULT_PREPARATION_CAPABILITIES = {
     "max_interactions": 3,
     "max_options_per_interaction": 4,
 }
+ROLE_ORDER = {
+    "reference_analyst": 0,
+    "teaching_designer": 1,
+    "script_teacher": 2,
+    "interaction_designer": 3,
+    "classroom_director": 4,
+}
+
+
+def earliest_responsible_role(
+    findings: List[ReviewFinding],
+) -> ResponsibleRole:
+    material = [
+        finding for finding in findings if finding.severity != "polish"
+    ]
+    if not material:
+        raise RuntimeError("no material review finding to route")
+    return min(
+        material,
+        key=lambda finding: ROLE_ORDER[finding.responsible_role],
+    ).responsible_role
 
 
 class PreparationFailure(RuntimeError):
@@ -109,6 +141,14 @@ class PreparationState:
     versions: Dict[str, int] = field(default_factory=dict)
     history: List[ArtifactRevision] = field(default_factory=list)
     role_calls: List[RoleCallRecord] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparationContext:
+    problem: ProblemInput
+    teaching_route: FrozenTeachingRoute
+    problem_focus_targets: List[ProblemFocusTarget]
+    on_stage: Optional[StageCallback]
 
 
 @dataclass(frozen=True)
@@ -354,8 +394,13 @@ class LessonPreparationPipeline:
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback],
     ) -> PreparedLesson:
-        """Run Task 5 artifacts, retaining an honest Task 6 boundary."""
-        del problem, teaching_route
+        """Build, simulate, review, and converge one request-scoped lesson."""
+        context = PreparationContext(
+            problem=problem,
+            teaching_route=teaching_route,
+            problem_focus_targets=list(problem_focus_targets),
+            on_stage=on_stage,
+        )
         await self._create_teaching_script(state, on_stage)
         await self._create_interaction_plan(state, on_stage)
         await self._create_performance_score(
@@ -363,8 +408,85 @@ class LessonPreparationPipeline:
             problem_focus_targets,
             on_stage,
         )
-        raise NotImplementedError(
-            "simulation and review stages are not implemented in Task 5"
+        await self._emit(on_stage, "模拟学生并审核课程")
+        await self._simulate_student(state)
+        review_context_id = "review-context-1"
+        await self._review_lesson(state, review_context_id)
+
+        repair_count = 0
+        previous_signature: Optional[str] = None
+        while state.review is not None and state.review.status != "approved":
+            if state.review.status == "failed":
+                self._raise_not_converged()
+            signature = blocking_signature(state.review)
+            if signature == previous_signature:
+                fresh_context_id = "review-context-%d" % (repair_count + 2)
+                await self._review_lesson(state, fresh_context_id)
+                if (
+                    state.review.status != "approved"
+                    and blocking_signature(state.review) == signature
+                ):
+                    self._raise_not_converged()
+                previous_signature = None
+                continue
+            if repair_count >= self.MAX_REPAIR_CYCLES:
+                self._raise_not_converged()
+            previous_signature = signature
+            role = earliest_responsible_role(state.review.findings)
+            await self._repair_from(
+                role,
+                state,
+                state.review.findings,
+                context,
+            )
+            repair_count += 1
+            await self._simulate_student(state)
+            await self._review_lesson(state, review_context_id)
+
+        if state.review is None or state.review.status != "approved":
+            self._raise_not_converged()
+        required = (
+            state.solution_trace,
+            state.reasoning_trajectory,
+            state.teaching_script,
+            state.interaction_plan,
+            state.performance_score,
+            state.simulation_report,
+        )
+        if any(item is None for item in required):
+            raise RuntimeError("approved preparation state is incomplete")
+        prepared = PreparedLesson(
+            rubric_version=PEDAGOGY_RUBRIC_VERSION,
+            solution_trace=state.solution_trace,
+            reasoning_trajectory=state.reasoning_trajectory,
+            teaching_script=state.teaching_script,
+            interaction_plan=state.interaction_plan,
+            performance_score=state.performance_score,
+            simulation_report=state.simulation_report,
+            review=state.review,
+            repair_count=repair_count,
+            artifact_history=list(state.history),
+        )
+        try:
+            validate_prepared_lesson(
+                prepared,
+                teaching_route,
+                problem_focus_targets,
+            )
+        except PreparationValidationError:
+            raise PreparationFailure(
+                category="review_not_converged",
+                role="lesson_reviewer",
+                detail="课程审核未收敛。",
+            ) from None
+        return prepared
+
+    @staticmethod
+    def _raise_not_converged() -> None:
+        raise PreparationFailure(
+            category="review_not_converged",
+            role="lesson_reviewer",
+            detail="课程审核未收敛。",
         )
 
     async def _create_solution_trace(
@@ -374,6 +496,8 @@ class LessonPreparationPipeline:
         teaching_route: FrozenTeachingRoute,
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback],
+        repair: Optional[Dict[str, object]] = None,
+        finding_ids: Optional[List[str]] = None,
     ) -> SolutionTrace:
         self._require_active_state(state)
         await self._emit(on_stage, "整理参考解析")
@@ -384,6 +508,7 @@ class LessonPreparationPipeline:
             problem,
             teaching_route,
             problem_focus_targets,
+            repair,
         )
         trace = await self._complete_model(
             "reference_analyst",
@@ -409,6 +534,7 @@ class LessonPreparationPipeline:
             artifact_type="solution_trace",
             responsible_role="reference_analyst",
             artifact=trace,
+            finding_ids=finding_ids,
         )
         return trace
 
@@ -417,6 +543,8 @@ class LessonPreparationPipeline:
         state: PreparationState,
         problem: ProblemInput,
         on_stage: Optional[StageCallback],
+        repair: Optional[Dict[str, object]] = None,
+        finding_ids: Optional[List[str]] = None,
     ) -> ReasoningTrajectory:
         self._require_active_state(state)
         if state.solution_trace is None:
@@ -429,6 +557,7 @@ class LessonPreparationPipeline:
             problem,
             state.solution_trace,
             self.capabilities,
+            repair,
         )
         trajectory = await self._complete_model(
             "teaching_designer",
@@ -454,6 +583,7 @@ class LessonPreparationPipeline:
             artifact_type="reasoning_trajectory",
             responsible_role="teaching_designer",
             artifact=trajectory,
+            finding_ids=finding_ids,
         )
         return trajectory
 
@@ -461,6 +591,8 @@ class LessonPreparationPipeline:
         self,
         state: PreparationState,
         on_stage: Optional[StageCallback],
+        repair: Optional[Dict[str, object]] = None,
+        finding_ids: Optional[List[str]] = None,
     ) -> TeachingScript:
         self._require_active_state(state)
         if state.reasoning_trajectory is None:
@@ -476,6 +608,7 @@ class LessonPreparationPipeline:
                 "script_teacher",
                 teaching_script_prompt,
                 state.reasoning_trajectory,
+                repair,
             ),
             TeachingScript,
         )
@@ -497,6 +630,7 @@ class LessonPreparationPipeline:
             artifact_type="teaching_script",
             responsible_role="script_teacher",
             artifact=script,
+            finding_ids=finding_ids,
         )
         return script
 
@@ -504,6 +638,8 @@ class LessonPreparationPipeline:
         self,
         state: PreparationState,
         on_stage: Optional[StageCallback],
+        repair: Optional[Dict[str, object]] = None,
+        finding_ids: Optional[List[str]] = None,
     ) -> InteractionPlan:
         self._require_active_state(state)
         if state.reasoning_trajectory is None or state.teaching_script is None:
@@ -517,6 +653,7 @@ class LessonPreparationPipeline:
             interaction_plan_prompt,
             state.reasoning_trajectory,
             state.teaching_script,
+            repair,
         )
         plan = await self._complete_model(
             "interaction_designer",
@@ -546,6 +683,7 @@ class LessonPreparationPipeline:
             artifact_type="interaction_plan",
             responsible_role="interaction_designer",
             artifact=plan,
+            finding_ids=finding_ids,
         )
         return plan
 
@@ -554,6 +692,8 @@ class LessonPreparationPipeline:
         state: PreparationState,
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback],
+        repair: Optional[Dict[str, object]] = None,
+        finding_ids: Optional[List[str]] = None,
     ) -> PerformanceScore:
         self._require_active_state(state)
         if state.teaching_script is None or state.interaction_plan is None:
@@ -569,6 +709,7 @@ class LessonPreparationPipeline:
             state.teaching_script,
             state.interaction_plan,
             self.capabilities,
+            repair,
         )
         score = await self._complete_model(
             "classroom_director",
@@ -599,8 +740,257 @@ class LessonPreparationPipeline:
             artifact_type="performance_score",
             responsible_role="classroom_director",
             artifact=score,
+            finding_ids=finding_ids,
         )
         return score
+
+    async def _simulate_student(
+        self,
+        state: PreparationState,
+    ) -> SimulationReport:
+        self._require_active_state(state)
+        if (
+            state.reasoning_trajectory is None
+            or state.teaching_script is None
+            or state.interaction_plan is None
+            or state.performance_score is None
+        ):
+            raise RuntimeError(
+                "all classroom artifacts must exist before simulation"
+            )
+        report = await self._complete_model(
+            "student_simulator",
+            STUDENT_SIMULATOR_SYSTEM,
+            self._build_prompt(
+                state,
+                "student_simulator",
+                student_simulation_prompt,
+                state.reasoning_trajectory,
+                state.teaching_script,
+                state.interaction_plan,
+                state.performance_score,
+            ),
+            SimulationReport,
+        )
+        try:
+            validate_simulation_report(
+                report,
+                state.reasoning_trajectory,
+                state.interaction_plan,
+            )
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "student_simulator",
+                "simulation_failed",
+            )
+            raise PreparationFailure(
+                category="simulation_failed",
+                role="student_simulator",
+                detail="学生模拟未通过确定性校验。",
+            ) from None
+        self._accept_artifact(
+            state,
+            artifact_type="simulation_report",
+            responsible_role="student_simulator",
+            artifact=report,
+        )
+        return report
+
+    async def _review_lesson(
+        self,
+        state: PreparationState,
+        reviewer_context_id: str,
+    ) -> LessonReviewDecision:
+        self._require_active_state(state)
+        if any(
+            item is None
+            for item in (
+                state.solution_trace,
+                state.reasoning_trajectory,
+                state.teaching_script,
+                state.interaction_plan,
+                state.performance_score,
+                state.simulation_report,
+            )
+        ):
+            raise RuntimeError("all prepared artifacts must exist before review")
+        decision = await self._complete_model(
+            "lesson_reviewer",
+            LESSON_REVIEWER_SYSTEM,
+            self._build_prompt(
+                state,
+                "lesson_reviewer",
+                lesson_review_prompt,
+                {
+                    "solution_trace": state.solution_trace,
+                    "reasoning_trajectory": state.reasoning_trajectory,
+                    "teaching_script": state.teaching_script,
+                    "interaction_plan": state.interaction_plan,
+                    "performance_score": state.performance_score,
+                },
+                state.simulation_report,
+                reviewer_context_id,
+            ),
+            LessonReviewDecision,
+        )
+        try:
+            validate_review_decision(
+                decision,
+                state.solution_trace,
+                state.reasoning_trajectory,
+                state.teaching_script,
+                state.interaction_plan,
+                state.performance_score,
+                state.simulation_report,
+            )
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "lesson_reviewer",
+                "review_not_converged",
+            )
+            self._raise_not_converged()
+        self._set_last_call_finding_ids(
+            state,
+            "lesson_reviewer",
+            [item.finding_id for item in decision.findings],
+        )
+        state.review = decision
+        return decision
+
+    async def _repair_from(
+        self,
+        role: ResponsibleRole,
+        state: PreparationState,
+        findings: List[ReviewFinding],
+        context: PreparationContext,
+    ) -> None:
+        if role not in ROLE_ORDER:
+            raise RuntimeError("unknown responsible role")
+        self._require_active_state(state)
+        routed = [
+            finding
+            for finding in findings
+            if finding.severity != "polish"
+            and finding.responsible_role == role
+        ]
+        if not routed:
+            raise RuntimeError("repair route has no material finding")
+        repair = self._repair_request(role, state, routed)
+        finding_ids = [item.finding_id for item in routed]
+        state.review = None
+        state.simulation_report = None
+
+        if role == "reference_analyst":
+            state.reasoning_trajectory = None
+            state.teaching_script = None
+            state.interaction_plan = None
+            state.performance_score = None
+            await self._create_solution_trace(
+                state,
+                context.problem,
+                context.teaching_route,
+                context.problem_focus_targets,
+                None,
+                repair,
+                finding_ids,
+            )
+            await self._create_reasoning_trajectory(
+                state, context.problem, None
+            )
+            await self._create_teaching_script(state, None)
+            await self._create_interaction_plan(state, None)
+            await self._create_performance_score(
+                state,
+                context.problem_focus_targets,
+                None,
+            )
+        elif role == "teaching_designer":
+            state.teaching_script = None
+            state.interaction_plan = None
+            state.performance_score = None
+            await self._create_reasoning_trajectory(
+                state,
+                context.problem,
+                None,
+                repair,
+                finding_ids,
+            )
+            await self._create_teaching_script(state, None)
+            await self._create_interaction_plan(state, None)
+            await self._create_performance_score(
+                state,
+                context.problem_focus_targets,
+                None,
+            )
+        elif role == "script_teacher":
+            state.interaction_plan = None
+            state.performance_score = None
+            await self._create_teaching_script(
+                state,
+                None,
+                repair,
+                finding_ids,
+            )
+            await self._create_interaction_plan(state, None)
+            await self._create_performance_score(
+                state,
+                context.problem_focus_targets,
+                None,
+            )
+        elif role == "interaction_designer":
+            state.performance_score = None
+            await self._create_interaction_plan(
+                state,
+                None,
+                repair,
+                finding_ids,
+            )
+            await self._create_performance_score(
+                state,
+                context.problem_focus_targets,
+                None,
+            )
+        elif role == "classroom_director":
+            await self._create_performance_score(
+                state,
+                context.problem_focus_targets,
+                None,
+                repair,
+                finding_ids,
+            )
+
+    @staticmethod
+    def _repair_request(
+        role: ResponsibleRole,
+        state: PreparationState,
+        findings: List[ReviewFinding],
+    ) -> Dict[str, object]:
+        artifact_types = [
+            "solution_trace",
+            "reasoning_trajectory",
+            "teaching_script",
+            "interaction_plan",
+            "performance_score",
+        ]
+        role_index = ROLE_ORDER[role]
+        responsible_type = artifact_types[role_index]
+        retained = {}
+        for artifact_type in artifact_types[: role_index + 1]:
+            artifact = getattr(state, artifact_type)
+            if artifact is None:
+                raise RuntimeError("repair source artifact is missing")
+            retained[artifact_type] = artifact
+        return {
+            "finding_ids": [item.finding_id for item in findings],
+            "evidence": [item.evidence for item in findings],
+            "requested_changes": [
+                item.requested_change for item in findings
+            ],
+            "current_artifact_version": state.versions[responsible_type],
+            "retained_artifacts": retained,
+        }
 
     def _build_prompt(
         self,
@@ -740,6 +1130,7 @@ class LessonPreparationPipeline:
         artifact_type: str,
         responsible_role: str,
         artifact: BaseModel,
+        finding_ids: Optional[List[str]] = None,
     ) -> None:
         if artifact_type not in {
             "solution_trace",
@@ -760,13 +1151,14 @@ class LessonPreparationPipeline:
             artifact_type=artifact_type,
             version=version,
             responsible_role=responsible_role,
-            finding_ids=[],
+            finding_ids=list(finding_ids or []),
         )
         updated_record_payload = record.model_dump(mode="python")
         updated_record_payload.update(
             {
                 "output_artifact_type": artifact_type,
                 "output_artifact_version": version,
+                "review_finding_ids": list(finding_ids or []),
             }
         )
         updated_record = RoleCallRecord.model_validate(updated_record_payload)
@@ -780,6 +1172,23 @@ class LessonPreparationPipeline:
         setattr(state, artifact_type, artifact)
         state.versions = versions
         state.history = history
+        state.role_calls = role_calls
+
+    @staticmethod
+    def _set_last_call_finding_ids(
+        state: PreparationState,
+        role: str,
+        finding_ids: List[str],
+    ) -> None:
+        if not state.role_calls:
+            raise RuntimeError("review has no model call record")
+        record = state.role_calls[-1]
+        if record.role != role or record.failure_category is not None:
+            raise RuntimeError("model call record does not match review")
+        payload = record.model_dump(mode="python")
+        payload["review_finding_ids"] = list(finding_ids)
+        role_calls = list(state.role_calls)
+        role_calls[-1] = RoleCallRecord.model_validate(payload)
         state.role_calls = role_calls
 
     @staticmethod
@@ -810,10 +1219,15 @@ class LessonPreparationPipeline:
         token_usage: Optional[Dict[str, int]],
     ) -> None:
         duration_ms = max(0, int((time.monotonic() - started) * 1000))
+        available_versions = {
+            artifact_type: version
+            for artifact_type, version in state.versions.items()
+            if getattr(state, artifact_type) is not None
+        }
         state.role_calls.append(
             RoleCallRecord(
                 role=role,
-                input_artifact_versions=dict(state.versions),
+                input_artifact_versions=available_versions,
                 duration_ms=duration_ms,
                 retry_count=retry_count,
                 failure_category=failure_category,

@@ -1411,3 +1411,139 @@ def test_prepared_lesson_rejects_misaligned_rubric_version():
         "rubric_version_invalid",
         lambda: validate_prepared_lesson(prepared, route(), []),
     )
+
+
+def test_review_requires_each_finding_to_cite_an_existing_artifact_id():
+    trace, trajectory, script, plan, score, report, _ = models()
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-missing-artifact",
+                    "severity": "material",
+                    "artifact_type": "teaching_script",
+                    "artifact_id": "clause-does-not-exist",
+                    "criterion": "决定理由",
+                    "evidence": "审核声称该句缺失理由",
+                    "responsible_role": "script_teacher",
+                    "requested_change": "补充理由",
+                }
+            ],
+            "approval_summary": "需修订",
+        }
+    )
+
+    assert_code(
+        "review_evidence_invalid",
+        lambda: validate_review_decision(
+            decision, trace, trajectory, script, plan, score, report
+        ),
+    )
+
+
+def test_review_can_cite_a_concrete_nested_source_anchor_id():
+    trace, trajectory, script, plan, score, report, _ = models()
+    anchor_id = trace.assumptions[0].source_anchor.source_id
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-source-anchor",
+                    "severity": "material",
+                    "artifact_type": "solution_trace",
+                    "artifact_id": anchor_id,
+                    "criterion": "条件引用",
+                    "evidence": "%s 的条件用途未说明" % anchor_id,
+                    "responsible_role": "reference_analyst",
+                    "requested_change": "标明条件的数学用途",
+                }
+            ],
+            "approval_summary": "需修订",
+        }
+    )
+
+    validate_review_decision(
+        decision, trace, trajectory, script, plan, score, report
+    )
+
+
+def test_review_cannot_assign_a_role_later_than_the_cited_artifact_owner():
+    trace, trajectory, script, plan, score, report, _ = models()
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-late-role",
+                    "severity": "material",
+                    "artifact_type": "teaching_script",
+                    "artifact_id": "clause-1",
+                    "criterion": "决定理由",
+                    "evidence": "clause-1 缺少决定理由",
+                    "responsible_role": "classroom_director",
+                    "requested_change": "补充理由",
+                }
+            ],
+            "approval_summary": "需修订",
+        }
+    )
+
+    assert_code(
+        "review_responsibility_invalid",
+        lambda: validate_review_decision(
+            decision, trace, trajectory, script, plan, score, report
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "failed_ability",
+    (
+        "can_identify_attention_target",
+        "can_explain_decision",
+        "can_execute_action",
+        "can_use_result_to_continue",
+    ),
+)
+def test_review_cannot_approve_when_a_non_compensable_novice_gate_fails(
+    failed_ability,
+):
+    trace, trajectory, script, plan, score, report, decision = models()
+    report.episode_results[0] = report.episode_results[0].model_copy(
+        update={failed_ability: False}
+    )
+
+    assert_code(
+        "review_non_compensable_gate_invalid",
+        lambda: validate_review_decision(
+            decision, trace, trajectory, script, plan, score, report
+        ),
+    )
+
+
+def test_prepared_lesson_requires_an_approved_review_even_if_artifacts_validate():
+    payload = prepared_payload()
+    payload["review"] = {
+        "status": "revision_required",
+        "findings": [
+            {
+                "finding_id": "finding-script",
+                "severity": "material",
+                "artifact_type": "teaching_script",
+                "artifact_id": "clause-1",
+                "criterion": "决定理由",
+                "evidence": "clause-1 没有说明理由",
+                "responsible_role": "script_teacher",
+                "requested_change": "补充理由",
+            }
+        ],
+        "approval_summary": "需修订",
+    }
+    prepared = PreparedLesson.model_validate(payload)
+
+    assert_code(
+        "review_approval_invalid",
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )

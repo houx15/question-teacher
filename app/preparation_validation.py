@@ -40,6 +40,21 @@ ActionKey = Tuple[str, str]
 MAX_PERFORMANCE_CLAUSES = MAX_PREPARATION_ITEMS
 MAX_PERFORMANCE_ACTIONS = 2048
 MAX_PERFORMANCE_MATH_REFERENCES = 2048
+_REVIEW_ROLE_ORDER = {
+    "reference_analyst": 0,
+    "teaching_designer": 1,
+    "script_teacher": 2,
+    "interaction_designer": 3,
+    "classroom_director": 4,
+}
+_ARTIFACT_OWNER_ORDER = {
+    "solution_trace": 0,
+    "reasoning_trajectory": 1,
+    "teaching_script": 2,
+    "interaction_plan": 3,
+    "performance_score": 4,
+    "simulation_report": 4,
+}
 
 
 class PreparationValidationError(ValueError):
@@ -987,7 +1002,15 @@ def validate_simulation_report(
             )
 
 
-def validate_review_decision(decision: LessonReviewDecision) -> None:
+def validate_review_decision(
+    decision: LessonReviewDecision,
+    trace: Optional[SolutionTrace] = None,
+    trajectory: Optional[ReasoningTrajectory] = None,
+    script: Optional[TeachingScript] = None,
+    plan: Optional[InteractionPlan] = None,
+    score: Optional[PerformanceScore] = None,
+    report: Optional[SimulationReport] = None,
+) -> None:
     _require_exact(decision, LessonReviewDecision, "decision")
     if decision.status == "approved" and any(
         item.severity in {"blocking", "material"}
@@ -997,6 +1020,93 @@ def validate_review_decision(decision: LessonReviewDecision) -> None:
             "review_approval_invalid",
             "review",
             "Approved review contains a blocking or material finding.",
+        )
+    supplied = (trace, trajectory, script, plan, score, report)
+    if all(item is None for item in supplied):
+        return
+    if any(item is None for item in supplied):
+        raise TypeError("review validation requires all prepared artifacts")
+    _require_exact(trace, SolutionTrace, "trace")
+    _require_exact(trajectory, ReasoningTrajectory, "trajectory")
+    _require_exact(script, TeachingScript, "script")
+    _require_exact(plan, InteractionPlan, "plan")
+    _require_exact(score, PerformanceScore, "score")
+    _require_exact(report, SimulationReport, "report")
+
+    artifact_ids = {
+        "solution_trace": {
+            "solution_trace",
+            *(item.assumption_id for item in trace.assumptions),
+            *(item.source_anchor.source_id for item in trace.assumptions),
+            *(item.source_step_id for item in trace.source_steps),
+            *(item.source_anchor.source_id for item in trace.source_steps),
+        },
+        "reasoning_trajectory": {
+            "reasoning_trajectory",
+            *(item.episode_id for item in trajectory.episodes),
+            *(
+                must_teach.must_teach_id
+                for episode in trajectory.episodes
+                for must_teach in episode.must_teach
+            ),
+        },
+        "teaching_script": {
+            "teaching_script",
+            *(item.clause_id for item in script.clauses),
+        },
+        "interaction_plan": {
+            "interaction_plan",
+            "transfer_item",
+            *(item.interaction_id for item in plan.interactions),
+            *(
+                option.option_id
+                for interaction in plan.interactions
+                for option in interaction.options
+            ),
+            *(item.option_id for item in plan.transfer_item.options),
+        },
+        "performance_score": {
+            "performance_score",
+            *(item.cue_id for item in score.cues),
+            *(item.board_object_id for item in score.board_objects),
+            *(item.transition_id for item in score.overlay_transitions),
+        },
+        "simulation_report": {
+            "simulation_report",
+            *(item.episode_id for item in report.episode_results),
+        },
+    }
+    for finding in decision.findings:
+        if finding.artifact_id not in artifact_ids[finding.artifact_type]:
+            _fail(
+                "review_evidence_invalid",
+                finding.finding_id,
+                "Review finding must cite an existing concrete artifact ID.",
+            )
+        if (
+            _REVIEW_ROLE_ORDER[finding.responsible_role]
+            > _ARTIFACT_OWNER_ORDER[finding.artifact_type]
+        ):
+            _fail(
+                "review_responsibility_invalid",
+                finding.finding_id,
+                "Review finding must route to the earliest responsible role.",
+            )
+
+    novice_gate_failed = bool(report.blocking_findings) or any(
+        not (
+            result.can_identify_attention_target
+            and result.can_explain_decision
+            and result.can_execute_action
+            and result.can_use_result_to_continue
+        )
+        for result in report.episode_results
+    )
+    if decision.status == "approved" and novice_gate_failed:
+        _fail(
+            "review_non_compensable_gate_invalid",
+            "review",
+            "Review cannot approve when a non-compensable novice gate fails.",
         )
 
 
@@ -1063,4 +1173,18 @@ def validate_prepared_lesson(
         prepared.reasoning_trajectory,
         prepared.interaction_plan,
     )
-    validate_review_decision(prepared.review)
+    validate_review_decision(
+        prepared.review,
+        prepared.solution_trace,
+        prepared.reasoning_trajectory,
+        prepared.teaching_script,
+        prepared.interaction_plan,
+        prepared.performance_score,
+        prepared.simulation_report,
+    )
+    if prepared.review.status != "approved":
+        _fail(
+            "review_approval_invalid",
+            "review",
+            "Prepared lesson requires an approved review.",
+        )

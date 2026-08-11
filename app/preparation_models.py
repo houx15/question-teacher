@@ -23,6 +23,7 @@ DiagnosticKind = Literal["conception", "execution"]
 ArtifactType = Literal["solution_trace", "reasoning_trajectory", "teaching_script", "interaction_plan", "performance_score", "simulation_report"]
 ResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director"]
 RoleName = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator", "lesson_reviewer"]
+ArtifactResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator"]
 ROLE_CALL_TOKEN_USAGE_KEYS = frozenset(
     {
         "prompt_tokens",
@@ -375,7 +376,7 @@ class LessonReviewDecision(SchemaModel):
 class ArtifactRevision(SchemaModel):
     artifact_type: ArtifactType
     version: PositiveInt
-    responsible_role: ResponsibleRole
+    responsible_role: ArtifactResponsibleRole
     finding_ids: List[GeneratedId] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
