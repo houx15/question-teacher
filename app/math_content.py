@@ -9,7 +9,7 @@ _INTERNAL_CONTROL_SYNTAX = re.compile(
     r"(?:"
     r"\[\[|\]\]|"
     r"\{\{\s*(?:highlight|target|focus|emphasis|board)\b|"
-    r"\\(?:htmlClass|htmlStyle|htmlData|href|url|includegraphics)\b|"
+    r"\\(?:htmlClass|htmlId|htmlStyle|htmlData|href|url|includegraphics)\b|"
     r"<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*?)?\s*\/?>|"
     r"<\/?(?:span|mark|div|em|strong)\b[^>]*>?|"
     r"\b(?:class|style|data-[A-Za-z0-9_-]+)\s*=|"

@@ -92,21 +92,33 @@ def test_malformed_html_selector_and_highlight_fragments_are_internal_control_sy
 
 
 @pytest.mark.parametrize(
+    "command",
+    (
+        "url",
+        "href",
+        "includegraphics",
+        "htmlClass",
+        "htmlId",
+        "htmlStyle",
+        "htmlData",
+    ),
+)
+def test_full_katex_trust_command_group_is_internal_control_syntax(command):
+    value = r"\(\%s{payload}{x}\)" % command
+    assert contains_internal_control_syntax(value)
+    assert not is_valid_generated_display_content(value)
+
+
+@pytest.mark.parametrize(
     "value",
     (
-        r"\(\htmlClass{is-highlighted}{x}\)",
-        r"\[\htmlStyle{color:red}{x}\]",
-        r"\(\htmlData{target=board-1}{x}\)",
-        r"\(\href{https://example.com}{x}\)",
-        r"\(\url{https://example.com}\)",
-        r"\(\includegraphics{lesson.png}\)",
         '<img src="lesson.png">',
         '<img src="lesson.png" />',
         '<DIV class="lesson">content</DIV>',
         '<section data-target="board-1"   >content</section   >',
     ),
 )
-def test_dom_url_math_commands_and_generic_html_tags_are_internal_control_syntax(value):
+def test_generic_html_tags_are_internal_control_syntax(value):
     assert contains_internal_control_syntax(value)
     assert not is_valid_generated_display_content(value)
 
@@ -144,6 +156,7 @@ def test_legacy_spoken_cue_uses_shared_internal_control_syntax_boundary():
     "spoken_text",
     (
         r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\(\htmlId{board-target}{x}\)",
         r"\[\htmlStyle{color:red}{x}\]",
         r"\(\htmlData{target=board-1}{x}\)",
         '<img src="lesson.png">',

@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from app.math_content import contains_internal_control_syntax
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.preparation_models import (
     InteractionPlan,
@@ -902,6 +903,7 @@ def test_spoken_and_board_content_reject_internal_control_fragments(markup):
     "markup",
     (
         r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\(\htmlId{board-target}{x}\)",
         r"\[\htmlStyle{color:red}{x}\]",
         r"\(\htmlData{target=board-1}{x}\)",
         r"\(\href{https://example.com}{x}\)",
@@ -927,6 +929,7 @@ def test_board_content_rejects_dom_url_commands_and_generic_html(markup):
     "markup",
     (
         r"\(\htmlClass{is-highlighted}{x}\)",
+        r"\(\htmlId{board-target}{x}\)",
         r"\[\htmlStyle{color:red}{x}\]",
         r"\(\htmlData{target=board-1}{x}\)",
         '<img src="lesson.png">',
@@ -934,7 +937,8 @@ def test_board_content_rejects_dom_url_commands_and_generic_html(markup):
         '<section data-target="board-1">重点</section>',
     ),
 )
-def test_teaching_script_rejects_generic_html_tags(markup):
+def test_teaching_script_rejects_shared_internal_controls(markup):
+    assert contains_internal_control_syntax(markup)
     _, trajectory, script, *_ = models()
     payload = script.model_dump()
     payload["clauses"][0]["spoken_text"] = markup
