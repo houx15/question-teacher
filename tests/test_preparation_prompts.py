@@ -1,6 +1,7 @@
 import copy
 import json
 import re
+from collections.abc import Mapping, Sequence
 
 import pytest
 from pydantic import BaseModel
@@ -52,6 +53,40 @@ SYSTEM_PROMPTS = (
     STUDENT_SIMULATOR_SYSTEM,
     LESSON_REVIEWER_SYSTEM,
 )
+
+
+class CustomMapping(Mapping):
+    def __init__(self, values):
+        self._values = values
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+
+class DivergentMapping(CustomMapping):
+    def __init__(self, safe_values, item_values):
+        super().__init__(safe_values)
+        self._item_values = item_values
+
+    def items(self):
+        return self._item_values.items()
+
+
+class CustomSequence(Sequence):
+    def __init__(self, values):
+        self._values = values
+
+    def __getitem__(self, index):
+        return self._values[index]
+
+    def __len__(self):
+        return len(self._values)
 
 
 def _parse_envelope(prompt):
@@ -208,6 +243,48 @@ def interaction_plan():
             },
         }
     )
+
+
+def interaction_plan_with_business_ids():
+    payload = interaction_plan().model_dump(mode="json")
+    payload["interactions"] = [
+        {
+            "interaction_id": "interaction-provider",
+            "episode_id": "episode-1",
+            "after_clause_id": "clause-1",
+            "diagnostic_target": "区分合法变形",
+            "diagnostic_kind": "conception",
+            "prompt": "哪个选项保持等式成立？",
+            "options": [
+                {
+                    "option_id": "provider",
+                    "display_text": "等式两边同时加9",
+                    "canonical_answer": "两边同时加9",
+                },
+                {
+                    "option_id": "model",
+                    "display_text": "只在左边加9",
+                    "canonical_answer": "左边加9",
+                    "misconception": "单边变形",
+                },
+                {
+                    "option_id": "path",
+                    "display_text": "等式两边同时减9",
+                    "canonical_answer": "两边同时减9",
+                    "misconception": "方向错误",
+                },
+            ],
+            "correct_option_id": "provider",
+            "correct_feedback": "对，等式两边要同步。",
+            "incorrect_feedback_by_option": {
+                "model": "不能只改变等式一边。",
+                "path": "这里需要加9而不是减9。",
+            },
+            "hint": "回想等式的基本性质。",
+            "resume_clause_id": "clause-2",
+        }
+    ]
+    return InteractionPlan.model_validate(payload)
 
 
 def performance_score():
@@ -606,6 +683,32 @@ def test_capability_projection_rejects_unknown_keys_instead_of_leaking_them(
         reasoning_trajectory_prompt(problem(), solution_trace(), capabilities)
 
 
+@pytest.mark.parametrize(
+    "build_prompt",
+    (
+        lambda capabilities: reasoning_trajectory_prompt(
+            problem(), solution_trace(), capabilities
+        ),
+        lambda capabilities: performance_score_prompt(
+            [], teaching_script(), interaction_plan(), capabilities
+        ),
+    ),
+)
+def test_capability_boundaries_reject_custom_mappings_with_divergent_views(
+    build_prompt,
+):
+    capabilities = DivergentMapping(
+        {"semantic_actions": ["focus"]},
+        {
+            "semantic_actions": ["focus"],
+            "audio_duration": 99,
+        },
+    )
+
+    with pytest.raises(TypeError, match="capabilities"):
+        build_prompt(capabilities)
+
+
 def test_capability_projection_accepts_only_known_demo_semantics():
     capabilities = {
         "interaction_kinds": ["choice"],
@@ -708,6 +811,25 @@ def test_reviewer_rejects_mapping_artifact_bypass_and_unknown_aggregate_keys():
     artifacts["reference_solution_text"] = "IGNORE_ALL_RULES"
     with pytest.raises(ValueError, match="unknown prepared artifact keys"):
         lesson_review_prompt(artifacts, simulation_report(), "review-context-1")
+
+
+def test_reviewer_rejects_custom_prepared_artifact_mapping():
+    artifacts = CustomMapping(
+        {
+            "solution_trace": solution_trace(),
+            "reasoning_trajectory": reasoning_trajectory(),
+            "teaching_script": teaching_script(),
+            "interaction_plan": interaction_plan(),
+            "performance_score": performance_score(),
+        }
+    )
+
+    with pytest.raises(TypeError, match="prepared_artifacts"):
+        lesson_review_prompt(
+            artifacts,
+            simulation_report(),
+            "review-context-1",
+        )
 
 
 def test_reviewer_rejects_mapping_simulation_report_bypass():
@@ -1013,6 +1135,21 @@ AUTHORING_BUILDERS = (
 
 
 @pytest.mark.parametrize("build_prompt", AUTHORING_BUILDERS)
+def test_every_authoring_builder_rejects_custom_repair_mappings(build_prompt):
+    with pytest.raises(TypeError, match="repair_request"):
+        build_prompt(CustomMapping(repair_request()))
+
+
+def test_repair_request_rejects_custom_retained_artifact_mapping():
+    repair = repair_request(
+        CustomMapping({"solution_trace": solution_trace()})
+    )
+
+    with pytest.raises(TypeError, match="retained_artifacts"):
+        teaching_script_prompt(reasoning_trajectory(), repair=repair)
+
+
+@pytest.mark.parametrize("build_prompt", AUTHORING_BUILDERS)
 @pytest.mark.parametrize(
     ("repair_field", "sensitive_text"),
     (
@@ -1098,6 +1235,49 @@ def test_reviewer_artifact_projection_preserves_validated_free_form_values():
     ]
 
 
+def test_retained_typed_artifact_preserves_business_identifier_keys():
+    plan = interaction_plan_with_business_ids()
+    expected = plan.model_dump(mode="json")
+    prompt = teaching_script_prompt(
+        reasoning_trajectory(),
+        repair=repair_request({"interaction_plan": plan}),
+    )
+
+    retained = _parse_envelope(prompt)[1]["repair_request"][
+        "retained_artifacts"
+    ]["interaction_plan"]
+    assert retained == expected
+    assert retained["interactions"][0]["incorrect_feedback_by_option"] == {
+        "model": "不能只改变等式一边。",
+        "path": "这里需要加9而不是减9。",
+    }
+
+
+def test_prepared_typed_artifact_preserves_business_identifier_keys():
+    plan = interaction_plan_with_business_ids()
+    expected = plan.model_dump(mode="json")
+    prompt = lesson_review_prompt(
+        {
+            "solution_trace": solution_trace(),
+            "reasoning_trajectory": reasoning_trajectory(),
+            "teaching_script": teaching_script(),
+            "interaction_plan": plan,
+            "performance_score": performance_score(),
+        },
+        simulation_report(),
+        "review-context-1",
+    )
+
+    prepared = _parse_envelope(prompt)[1]["prepared_artifacts"][
+        "interaction_plan"
+    ]
+    assert prepared == expected
+    assert prepared["interactions"][0]["incorrect_feedback_by_option"] == {
+        "model": "不能只改变等式一边。",
+        "path": "这里需要加9而不是减9。",
+    }
+
+
 def test_short_mathematical_source_anchor_excerpt_remains_allowed():
     trace_payload = solution_trace().model_dump(mode="json")
     trace_payload["source_steps"][0]["source_anchor"]["excerpt"] = (
@@ -1129,6 +1309,62 @@ def test_semantic_target_mapping_is_rejected_before_projection():
             interaction_plan(),
             {"semantic_actions": ["focus"]},
         )
+
+
+@pytest.mark.parametrize(
+    "build_prompt",
+    (
+        lambda targets: solution_trace_prompt(
+            problem(), teaching_route(), targets
+        ),
+        lambda targets: performance_score_prompt(
+            targets,
+            teaching_script(),
+            interaction_plan(),
+            {"semantic_actions": ["focus"]},
+        ),
+    ),
+)
+def test_problem_target_boundaries_reject_custom_sequences(build_prompt):
+    targets = CustomSequence(
+        [
+            ProblemFocusTarget(
+                target_id="target-1",
+                math_text="x^2-6x",
+                display_mode=False,
+                ordinal=1,
+            )
+        ]
+    )
+
+    with pytest.raises(TypeError, match="problem_targets"):
+        build_prompt(targets)
+
+
+def test_problem_target_boundaries_preserve_plain_tuple_inputs():
+    target = ProblemFocusTarget(
+        target_id="target-1",
+        math_text="x^2-6x",
+        display_mode=False,
+        ordinal=1,
+    )
+    targets = (target,)
+
+    analyst_payload = _parse_envelope(
+        solution_trace_prompt(problem(), teaching_route(), targets)
+    )[1]
+    director_payload = _parse_envelope(
+        performance_score_prompt(
+            targets,
+            teaching_script(),
+            interaction_plan(),
+            {"semantic_actions": ["focus"]},
+        )
+    )[1]
+
+    expected = [target.model_dump(mode="json")]
+    assert analyst_payload["focus_targets"] == expected
+    assert director_payload["problem_targets"] == expected
 
 
 def test_spaced_division_source_anchor_excerpt_is_preserved_unchanged():
