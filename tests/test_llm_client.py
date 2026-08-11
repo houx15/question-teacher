@@ -66,6 +66,43 @@ def test_complete_json_posts_chat_completion_and_returns_object():
     assert result == {"answer": 42, "ok": True}
 
 
+def test_complete_json_with_metadata_returns_payload_and_usage_in_one_request():
+    request_count = 0
+
+    def handler(request):
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"answer":7}'}}],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 3,
+                    "total_tokens": 11,
+                },
+            },
+        )
+
+    client = OpenAICompatibleClient(
+        configured_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    completion = asyncio.run(
+        client.complete_json_with_metadata("system", "user")
+    )
+
+    asyncio.run(client.close())
+    assert request_count == 1
+    assert completion.payload == {"answer": 7}
+    assert completion.token_usage == {
+        "prompt_tokens": 8,
+        "completion_tokens": 3,
+        "total_tokens": 11,
+    }
+
+
 @pytest.mark.parametrize(
     "content",
     [

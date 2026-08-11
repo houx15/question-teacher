@@ -104,6 +104,20 @@ class OpenAICompatibleClient:
         system_prompt: str,
         user_prompt: str,
     ) -> Dict[str, Any]:
+        completion = await self.complete_json_with_metadata(
+            system_prompt,
+            user_prompt,
+        )
+        payload = completion.payload
+        if type(payload) is not dict:
+            raise AssertionError("JSON completion payload must be an object")
+        return payload
+
+    async def complete_json_with_metadata(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> ModelCompletion:
         self._validate_configuration()
         payload = {
             "model": self._settings.openai_model,
@@ -148,13 +162,14 @@ class OpenAICompatibleClient:
             ) from None
 
         try:
-            return self.parse_json_content(content)
+            parsed = self.parse_json_content(content)
         except ModelStructureError as error:
             raise ModelStructureError(
                 error.code,
                 str(error),
                 token_usage=usage,
             ) from None
+        return ModelCompletion(payload=parsed, token_usage=usage)
 
     async def close(self) -> None:
         await self._client.aclose()

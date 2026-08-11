@@ -1,10 +1,19 @@
 import asyncio
+import inspect
 import json
 
+import httpx
 import pytest
 
-from app.llm_client import ModelCompletion, ModelResponseError, ModelStructureError
+from app.config import Settings
+from app.llm_client import (
+    ModelCompletion,
+    ModelResponseError,
+    ModelStructureError,
+    OpenAICompatibleClient,
+)
 from app.preparation_models import (
+    PreparedLesson,
     ReasoningTrajectory,
     RoleCallRecord,
     SolutionTrace,
@@ -21,6 +30,7 @@ from tests.preparation_fakes import (
     PreparationFakeResponse,
     role_for_system,
 )
+from tests.test_preparation_models import prepared_lesson as prepared_lesson_payload
 
 
 STEP_IDS = (
@@ -209,6 +219,12 @@ def test_public_prepare_cannot_return_a_partial_prepared_lesson():
         )
 
 
+def test_prepare_return_annotation_remains_prepared_lesson():
+    signature = inspect.signature(LessonPreparationPipeline.prepare)
+
+    assert signature.return_annotation is PreparedLesson
+
+
 def test_trace_and_trajectory_stages_run_in_dependency_order():
     fake = client()
     stages = []
@@ -324,6 +340,47 @@ def test_invalid_json_response_gets_the_same_single_structure_retry():
         "prompt_tokens": 10,
         "total_tokens": 10,
     }
+
+
+def test_real_openai_client_metadata_usage_reaches_pipeline_records():
+    responses = [
+        (trace_payload(), {"prompt_tokens": 10, "total_tokens": 10}),
+        (trajectory_payload(), {"prompt_tokens": 20, "total_tokens": 20}),
+    ]
+    request_count = 0
+
+    def handler(request):
+        nonlocal request_count
+        request_count += 1
+        payload, usage = responses.pop(0)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(payload)}}
+                ],
+                "usage": usage,
+            },
+        )
+
+    settings = Settings(
+        openai_base_url="https://model.example/v1",
+        openai_api_key="test-secret-key",
+        openai_model="demo-model",
+    )
+    client_with_metadata = OpenAICompatibleClient(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = run_early(LessonPreparationPipeline(client_with_metadata))
+    asyncio.run(client_with_metadata.close())
+
+    assert request_count == 2
+    assert [record.token_usage for record in result.role_calls] == [
+        {"prompt_tokens": 10, "total_tokens": 10},
+        {"prompt_tokens": 20, "total_tokens": 20},
+    ]
 
 
 def test_provider_failure_is_not_misclassified_or_structure_retried():
@@ -507,13 +564,13 @@ def test_concurrent_preparations_do_not_share_active_state():
             self.analyst_arrivals = 0
             self.both_analysts_started = asyncio.Event()
 
-        async def complete_json(self, system, user):
+        async def complete_json_with_metadata(self, system, user):
             if "参考材料分析员" in system:
                 self.analyst_arrivals += 1
                 if self.analyst_arrivals == 2:
                     self.both_analysts_started.set()
                 await self.both_analysts_started.wait()
-            return await super().complete_json(system, user)
+            return await super().complete_json_with_metadata(system, user)
 
     async def scenario():
         pipeline = LessonPreparationPipeline(InterleavingClient())
@@ -702,6 +759,228 @@ def test_run_snapshot_returns_defensive_copies_of_audit_and_artifacts():
     assert result.role_calls[0].failure_category is None
     assert result.versions["solution_trace"] == 1
     assert result.solution_trace.task_target == "求m-n"
+
+
+def test_prepare_with_audit_returns_defensive_approved_lesson_and_full_audit():
+    class SuccessfulPipeline(LessonPreparationPipeline):
+        async def _continue_preparation(
+            self,
+            state,
+            problem_value,
+            teaching_route,
+            problem_focus_targets,
+            on_stage,
+        ):
+            del teaching_route, problem_focus_targets, on_stage
+            state.role_calls.append(
+                RoleCallRecord(
+                    role="script_teacher",
+                    input_artifact_versions=dict(state.versions),
+                    duration_ms=1,
+                    retry_count=0,
+                    token_usage={"prompt_tokens": 31, "total_tokens": 31},
+                )
+            )
+            payload = prepared_lesson_payload()
+            payload["review"]["approval_summary"] = (
+                "approved-" + problem_value.problem_text[-1]
+            )
+            return PreparedLesson.model_validate(payload)
+
+    pipeline = SuccessfulPipeline(client())
+    source = problem().model_copy(
+        update={"problem_text": problem().problem_text + "A"}
+    )
+
+    run = asyncio.run(
+        pipeline.prepare_with_audit(source, route(), focus_targets())
+    )
+    returned = run.prepared_lesson
+    returned.review.approval_summary = "tampered"
+    returned_calls = run.audit.role_calls
+    returned_calls[-1].failure_category = "tampered"
+
+    assert run.prepared_lesson.review.approval_summary == "approved-A"
+    assert run.audit.role_calls[-1].role == "script_teacher"
+    assert run.audit.role_calls[-1].failure_category is None
+    assert len(run.audit.role_calls) == 3
+
+
+def test_concurrent_full_runs_keep_distinct_lessons_and_downstream_records():
+    class ReversedClient:
+        def __init__(self):
+            self.release_a = asyncio.Event()
+            self.finished = []
+
+        async def complete_json_with_metadata(self, system, user):
+            role = role_for_system(system)
+            is_a = "FULL-A" in user
+            if is_a and role == "reference_analyst":
+                await self.release_a.wait()
+            if role == "reference_analyst":
+                conclusion = "m-n=1/2" if is_a else "m-n=3/2"
+                usage = 41 if is_a else 51
+                return ModelCompletion(
+                    trace_payload(final_conclusion=conclusion),
+                    {"prompt_tokens": usage, "total_tokens": usage},
+                )
+            usage = 42 if is_a else 52
+            if not is_a:
+                self.finished.append("B")
+                self.release_a.set()
+            else:
+                self.finished.append("A")
+            return ModelCompletion(
+                trajectory_payload(),
+                {"prompt_tokens": usage, "total_tokens": usage},
+            )
+
+    class SuccessfulPipeline(LessonPreparationPipeline):
+        async def _continue_preparation(
+            self,
+            state,
+            source_problem,
+            *args,
+        ):
+            del args
+            is_a = source_problem.problem_text.endswith("FULL-A")
+            usage = 43 if is_a else 53
+            state.role_calls.append(
+                RoleCallRecord(
+                    role="script_teacher",
+                    input_artifact_versions=dict(state.versions),
+                    duration_ms=1,
+                    retry_count=0,
+                    token_usage={
+                        "prompt_tokens": usage,
+                        "total_tokens": usage,
+                    },
+                )
+            )
+            payload = prepared_lesson_payload()
+            payload["review"]["approval_summary"] = (
+                "full-A" if is_a else "full-B"
+            )
+            return PreparedLesson.model_validate(payload)
+
+    async def scenario():
+        client_value = ReversedClient()
+        pipeline = SuccessfulPipeline(client_value)
+        problem_a = problem().model_copy(
+            update={"problem_text": problem().problem_text + "FULL-A"}
+        )
+        problem_b = problem().model_copy(
+            update={
+                "problem_text": problem().problem_text + "FULL-B",
+                "reference_answer": "m-n=3/2",
+            }
+        )
+        runs = await asyncio.gather(
+            pipeline.prepare_with_audit(
+                problem_a, route("m-n=1/2"), focus_targets()
+            ),
+            pipeline.prepare_with_audit(
+                problem_b, route("m-n=3/2"), focus_targets()
+            ),
+        )
+        return client_value, runs
+
+    client_value, (run_a, run_b) = asyncio.run(scenario())
+
+    assert client_value.finished == ["B", "A"]
+    assert run_a.prepared_lesson.review.approval_summary == "full-A"
+    assert run_b.prepared_lesson.review.approval_summary == "full-B"
+    assert [
+        call.token_usage["prompt_tokens"] for call in run_a.audit.role_calls
+    ] == [41, 42, 43]
+    assert [
+        call.token_usage["prompt_tokens"] for call in run_b.audit.role_calls
+    ] == [51, 52, 53]
+
+
+def test_prepare_compatibility_method_returns_only_defensive_prepared_lesson():
+    class SuccessfulPipeline(LessonPreparationPipeline):
+        async def _continue_preparation(self, state, *args):
+            del state, args
+            return PreparedLesson.model_validate(prepared_lesson_payload())
+
+    pipeline = SuccessfulPipeline(client())
+
+    lesson = asyncio.run(
+        pipeline.prepare(problem(), route(), focus_targets())
+    )
+
+    assert type(lesson) is PreparedLesson
+    assert not hasattr(lesson, "audit")
+
+
+def test_downstream_preparation_failure_receives_current_request_audit():
+    class FailingPipeline(LessonPreparationPipeline):
+        async def _continue_preparation(self, state, *args):
+            del args
+            state.role_calls.append(
+                RoleCallRecord(
+                    role="script_teacher",
+                    input_artifact_versions=dict(state.versions),
+                    duration_ms=1,
+                    retry_count=0,
+                    failure_category="invalid_structure",
+                )
+            )
+            raise PreparationFailure(
+                "invalid_structure",
+                "script_teacher",
+                "模型输出结构无效。",
+            )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            FailingPipeline(client()).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.audit is not None
+    assert captured.value.audit.versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+    assert [call.role for call in captured.value.audit.role_calls] == [
+        "reference_analyst",
+        "teaching_designer",
+        "script_teacher",
+    ]
+
+
+def test_cumulative_usage_overflow_drops_the_entire_usage_record():
+    maximum = 1_000_000_000
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [
+                PreparationFakeResponse(
+                    {},
+                    {
+                        "prompt_tokens": maximum,
+                        "completion_tokens": 2,
+                        "total_tokens": maximum,
+                    },
+                ),
+                PreparationFakeResponse(
+                    trace_payload(),
+                    {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 3,
+                        "total_tokens": 1,
+                    },
+                ),
+            ],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    result = run_early(LessonPreparationPipeline(fake))
+
+    assert result.role_calls[0].token_usage is None
 
 
 def test_accept_artifact_checks_record_before_mutating_state():

@@ -190,6 +190,35 @@ class PreparationRunSnapshot:
         return self.audit.role_calls
 
 
+@dataclass(frozen=True)
+class PreparedLessonRun:
+    """Approved lesson and audit captured from the same preparation request."""
+
+    _prepared_lesson_json: str
+    audit: PreparationAuditSnapshot
+
+    @classmethod
+    def from_state(
+        cls,
+        prepared_lesson: PreparedLesson,
+        state: PreparationState,
+    ) -> "PreparedLessonRun":
+        if type(prepared_lesson) is not PreparedLesson:
+            raise TypeError("prepared lesson must be an exact PreparedLesson")
+        if prepared_lesson.review.status != "approved":
+            raise RuntimeError("prepared lesson run requires approval")
+        return cls(
+            _prepared_lesson_json=prepared_lesson.model_dump_json(),
+            audit=PreparationAuditSnapshot.from_state(state),
+        )
+
+    @property
+    def prepared_lesson(self) -> PreparedLesson:
+        return PreparedLesson.model_validate_json(
+            self._prepared_lesson_json
+        )
+
+
 class LessonPreparationPipeline:
     MAX_STRUCTURE_ATTEMPTS = 2
     MAX_REPAIR_CYCLES = 8
@@ -217,21 +246,45 @@ class LessonPreparationPipeline:
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback] = None,
     ) -> PreparedLesson:
-        state = await self._prepare_early_state(
+        run = await self.prepare_with_audit(
             problem,
             teaching_route,
             problem_focus_targets,
             on_stage,
         )
+        return run.prepared_lesson
+
+    async def prepare_with_audit(
+        self,
+        problem: ProblemInput,
+        teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: List[ProblemFocusTarget],
+        on_stage: Optional[StageCallback] = None,
+    ) -> PreparedLessonRun:
+        state = PreparationState()
         state_token = self._active_state.set(state)
         try:
-            return await self._continue_preparation(
+            await self._populate_early_state(
                 state,
                 problem,
                 teaching_route,
                 problem_focus_targets,
                 on_stage,
             )
+            prepared_lesson = await self._continue_preparation(
+                state,
+                problem,
+                teaching_route,
+                problem_focus_targets,
+                on_stage,
+            )
+            return PreparedLessonRun.from_state(prepared_lesson, state)
+        except PreparationFailure as failure:
+            if failure.audit is None:
+                failure._attach_audit(
+                    PreparationAuditSnapshot.from_state(state)
+                )
+            raise
         finally:
             self._active_state.reset(state_token)
 
@@ -243,42 +296,46 @@ class LessonPreparationPipeline:
         on_stage: Optional[StageCallback] = None,
     ) -> PreparationRunSnapshot:
         """Run Task 4 only and return a defensive, request-scoped snapshot."""
-        state = await self._prepare_early_state(
-            problem,
-            teaching_route,
-            problem_focus_targets,
-            on_stage,
-        )
-        return PreparationRunSnapshot.from_state(state)
-
-    async def _prepare_early_state(
-        self,
-        problem: ProblemInput,
-        teaching_route: FrozenTeachingRoute,
-        problem_focus_targets: List[ProblemFocusTarget],
-        on_stage: Optional[StageCallback],
-    ) -> PreparationState:
         state = PreparationState()
         state_token = self._active_state.set(state)
         try:
-            await self._create_solution_trace(
+            await self._populate_early_state(
                 state,
                 problem,
                 teaching_route,
                 problem_focus_targets,
                 on_stage,
             )
-            await self._create_reasoning_trajectory(
-                state,
-                problem,
-                on_stage,
-            )
-            return state
+            return PreparationRunSnapshot.from_state(state)
         except PreparationFailure as failure:
-            failure._attach_audit(PreparationAuditSnapshot.from_state(state))
+            if failure.audit is None:
+                failure._attach_audit(
+                    PreparationAuditSnapshot.from_state(state)
+                )
             raise
         finally:
             self._active_state.reset(state_token)
+
+    async def _populate_early_state(
+        self,
+        state: PreparationState,
+        problem: ProblemInput,
+        teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: List[ProblemFocusTarget],
+        on_stage: Optional[StageCallback],
+    ) -> None:
+        await self._create_solution_trace(
+            state,
+            problem,
+            teaching_route,
+            problem_focus_targets,
+            on_stage,
+        )
+        await self._create_reasoning_trajectory(
+            state,
+            problem,
+            on_stage,
+        )
 
     async def _continue_preparation(
         self,
@@ -388,7 +445,7 @@ class LessonPreparationPipeline:
         state = self._current_state()
         started = time.monotonic()
         retry_count = 0
-        token_usage: Dict[str, int] = {}
+        token_usage: Optional[Dict[str, int]] = {}
         for attempt in range(self.MAX_STRUCTURE_ATTEMPTS):
             attempt_prompt = prompt
             if attempt:
@@ -398,10 +455,18 @@ class LessonPreparationPipeline:
                     + "请仅返回符合 Schema 的 JSON 对象。"
                 )
             try:
-                completion = await self.client.complete_json(
-                    system,
-                    attempt_prompt,
+                metadata_method = getattr(
+                    self.client,
+                    "complete_json_with_metadata",
+                    None,
                 )
+                if callable(metadata_method):
+                    completion = await metadata_method(system, attempt_prompt)
+                else:
+                    completion = await self.client.complete_json(
+                        system,
+                        attempt_prompt,
+                    )
                 if isinstance(completion, ModelCompletion):
                     payload = completion.payload
                     token_usage = self._merge_token_usage(
@@ -565,29 +630,31 @@ class LessonPreparationPipeline:
 
     @staticmethod
     def _merge_token_usage(
-        accumulated: Dict[str, int],
+        accumulated: Optional[Dict[str, int]],
         supplied: Optional[Dict[str, int]],
-    ) -> Dict[str, int]:
+    ) -> Optional[Dict[str, int]]:
+        if accumulated is None:
+            return None
         merged = dict(accumulated)
         if type(supplied) is not dict:
             return merged
         for key, value in supplied.items():
-            if (
-                key not in ROLE_CALL_TOKEN_USAGE_KEYS
-                or type(value) is not int
-                or not 0 <= value <= MAX_ROLE_CALL_TOKEN_COUNTER
-            ):
+            if key not in ROLE_CALL_TOKEN_USAGE_KEYS:
                 continue
+            if type(value) is not int or value < 0:
+                continue
+            if value > MAX_ROLE_CALL_TOKEN_COUNTER:
+                return None
             total = merged.get(key, 0) + value
             if total <= MAX_ROLE_CALL_TOKEN_COUNTER:
                 merged[key] = total
             else:
-                merged.pop(key, None)
+                return None
         return merged
 
     @staticmethod
     def _optional_token_usage(
-        usage: Dict[str, int],
+        usage: Optional[Dict[str, int]],
     ) -> Optional[Dict[str, int]]:
         return dict(usage) if usage else None
 

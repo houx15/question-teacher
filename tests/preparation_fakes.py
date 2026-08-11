@@ -52,7 +52,12 @@ class PreparationFakeClient:
             for role, responses in responses_by_role.items()
         }
         self.calls: List[RecordedCall] = []
-    async def complete_json(self, system: str, user: str) -> object:
+
+    async def complete_json_with_metadata(
+        self,
+        system: str,
+        user: str,
+    ) -> object:
         role = role_for_system(system)
         self.calls.append(RecordedCall(role=role, system=system, user=user))
         try:
@@ -67,3 +72,9 @@ class PreparationFakeClient:
                 token_usage=copy.deepcopy(response.token_usage),
             )
         return copy.deepcopy(response)
+
+    async def complete_json(self, system: str, user: str) -> object:
+        completion = await self.complete_json_with_metadata(system, user)
+        if isinstance(completion, ModelCompletion):
+            return copy.deepcopy(completion.payload)
+        return completion
