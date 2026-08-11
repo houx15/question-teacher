@@ -62,8 +62,16 @@ def route(final_conclusion="m-n=1/2"):
             "task_summary": "由参数根求m-n",
             "target": "m-n",
             "assumptions": [
-                {"assumption_id": "assumption-nonzero", "expression": "n!=0"},
-                {"assumption_id": "assumption-root", "expression": "x=2n"},
+                {
+                    "assumption_id": "assumption-nonzero",
+                    "expression": "n!=0",
+                    "source_kind": "problem",
+                },
+                {
+                    "assumption_id": "assumption-root",
+                    "expression": "x=2n",
+                    "source_kind": "problem",
+                },
             ],
             "reference_conclusion": final_conclusion,
             "method_name": "代入法",
@@ -171,7 +179,7 @@ def trace_payload():
                     else []
                 ),
                 "reasoning_gap_codes": [],
-                "evidence_status": "verified_route",
+                "evidence_status": "reference_only",
             }
             for index, (step_id, state) in enumerate(zip(STEP_IDS, STATES))
         ],
@@ -481,7 +489,7 @@ def test_text_only_geometry_trace_and_route_cross_boundary_safely():
             "reference_conclusion": r"\angle A=60^\circ",
             "assumptions": [
                 {
-                    "assumption_id": "equal-sides",
+                    "assumption_id": "ground-assumption-001",
                     "content": "AB=AC",
                     "source_anchor": {
                         "source_kind": "problem",
@@ -492,10 +500,10 @@ def test_text_only_geometry_trace_and_route_cross_boundary_safely():
             ],
             "source_steps": [
                 {
-                    "source_step_id": "geometry-step",
+                    "source_step_id": "ground-step-001",
                     "source_anchor": {
                         "source_kind": "verified_route",
-                        "source_id": "geometry-step",
+                        "source_id": "ground-step-001",
                         "excerpt": "已验证路线结构依据",
                     },
                     "state_before": "AB=AC",
@@ -505,9 +513,9 @@ def test_text_only_geometry_trace_and_route_cross_boundary_safely():
                     "justification": "几何条件支持",
                     "state_after": r"\angle A=60^\circ",
                     "new_information": r"\angle A=60^\circ",
-                    "assumption_ids_used": ["equal-sides"],
+                    "assumption_ids_used": ["ground-assumption-001"],
                     "reasoning_gap_codes": [],
-                    "evidence_status": "verified_route",
+                    "evidence_status": "reference_only",
                 }
             ],
             "audit_notes": [],

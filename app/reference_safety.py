@@ -1,6 +1,7 @@
 """Server-owned boundary for untrusted reference-solution prose."""
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable, Mapping, Sequence, Tuple
 
@@ -8,12 +9,12 @@ from pydantic import BaseModel
 
 from app.math_expression import (
     StrictMathText,
+    geometry_identifiers,
     is_strict_math_expression,
-    long_numeric_literals,
-    math_identifiers,
     render_typed_math_action,
     render_typed_math_justification,
 )
+from app.math_content import contains_cross_artifact_math_identity
 from app.preparation_models import SolutionTrace
 from app.schemas import ProblemInput, ReferenceGroundingBrief
 from app.teaching_route import FrozenTeachingRoute
@@ -31,21 +32,27 @@ _ASCII_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
 _SKELETON_MATH_COMMANDS = frozenset(
     {
         "angle",
+        "because",
         "circ",
         "cong",
         "cos",
         "dfrac",
         "frac",
         "mathbb",
+        "odot",
         "overline",
+        "overrightarrow",
         "parallel",
         "perp",
         "sim",
         "sin",
         "sqrt",
         "tan",
+        "therefore",
         "tfrac",
         "triangle",
+        "vec",
+        "widehat",
     }
 )
 _CONTROL_SKELETON_TERMS = (
@@ -60,6 +67,11 @@ _CONTROL_SKELETON_TERMS = (
     "token",
 )
 _MIN_SHORT_SKELETON_LENGTH = 6
+_MAX_NOVEL_DIGITS_PER_EXPRESSION = 9
+_UNICODE_DIGIT_TRANSLATION = str.maketrans(
+    "⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉",
+    "01234567890123456789",
+)
 _STRUCTURAL_FIELDS = frozenset(
     {
         "action",
@@ -171,6 +183,110 @@ def _short_skeleton(value: str) -> str:
     return ""
 
 
+def _canonical_math_skeleton(value: str) -> str:
+    without_commands = re.sub(r"\\[A-Za-z]+", "", value)
+    normalized = without_commands.translate(_UNICODE_DIGIT_TRANSLATION)
+    return "".join(
+        char.casefold()
+        for char in normalized
+        if char.isascii() and char.isalnum()
+    )
+
+
+def _sensitive_math_candidates(value: str) -> Counter:
+    candidates = Counter()
+    matches = list(_ASCII_ALNUM_RUN.finditer(value))
+    for match in matches:
+        token = match.group().casefold()
+        if token.isdigit() and len(token) >= 6:
+            candidates["digits:" + token] += 1
+        elif (
+            len(token) >= 6
+            and any(char.isalpha() for char in token)
+        ):
+            candidates["opaque:" + token] += 1
+
+    group_kind = None
+    group_tokens = []
+
+    def flush_group() -> None:
+        nonlocal group_kind, group_tokens
+        skeleton = "".join(group_tokens)
+        if len(skeleton) >= 8 and group_kind is not None:
+            candidates["split-%s:%s" % (group_kind, skeleton)] += 1
+        group_kind = None
+        group_tokens = []
+
+    previous_end = 0
+    for match in matches:
+        token = match.group().casefold()
+        kind = (
+            "alpha"
+            if token.isalpha() and len(token) <= 2
+            else "digits"
+            if token.isdigit() and len(token) <= 2
+            else None
+        )
+        separator = value[previous_end : match.start()]
+        separator_is_safe = not any(char.isalnum() for char in separator)
+        if kind is None or (group_kind is not None and kind != group_kind):
+            flush_group()
+        elif group_kind is not None and not separator_is_safe:
+            flush_group()
+        if kind is not None:
+            group_kind = kind
+            group_tokens.append(token)
+        previous_end = match.end()
+    flush_group()
+    return candidates
+
+
+def _candidate_skeleton(candidate: str) -> str:
+    return candidate.split(":", 1)[1]
+
+
+def _candidate_fingerprints(candidate: str) -> Iterable[str]:
+    skeleton = _candidate_skeleton(candidate)
+    size = min(len(skeleton), REFERENCE_PROSE_FINGERPRINT_LENGTH)
+    for index in range(len(skeleton) - size + 1):
+        yield skeleton[index : index + size]
+
+
+def _contains_sensitive_math_fingerprint(
+    skeleton: str,
+    sensitive_fingerprints: FrozenSet[str],
+) -> bool:
+    for size in range(
+        _MIN_SHORT_SKELETON_LENGTH,
+        REFERENCE_PROSE_FINGERPRINT_LENGTH + 1,
+    ):
+        if len(skeleton) < size:
+            continue
+        if any(
+            skeleton[index : index + size] in sensitive_fingerprints
+            for index in range(len(skeleton) - size + 1)
+        ):
+            return True
+    return False
+
+
+def _public_digit_skeletons(value: str) -> FrozenSet[str]:
+    candidates = {
+        _candidate_skeleton(item)
+        for item in _sensitive_math_candidates(value)
+        if item.startswith(("digits:", "split-digits:"))
+    }
+    for expression in _embedded_math_expressions(value):
+        digits = "".join(
+            char
+            for char in _canonical_math_skeleton(expression)
+            if char.isdigit()
+        )
+        if digits:
+            candidates.add(digits)
+    return frozenset(candidates)
+
+
 def _is_structural_field(
     field_name: str,
     *,
@@ -242,15 +358,19 @@ def _bounded_typed_math(value: Any) -> Iterable[StrictMathText]:
             yield current
         elif isinstance(current, BaseModel):
             stack.extend(
-                getattr(current, name)
-                for name in type(current).model_fields
+                reversed(
+                    [
+                        getattr(current, name)
+                        for name in type(current).model_fields
+                    ]
+                )
             )
         elif isinstance(current, Mapping):
-            stack.extend(current.values())
+            stack.extend(reversed(list(current.values())))
         elif isinstance(current, Sequence) and not isinstance(
             current, (str, bytes, bytearray)
         ):
-            stack.extend(current)
+            stack.extend(reversed(current))
     if stack:
         raise ReferenceContentSafetyError(
             "reference safety traversal exceeded its bound"
@@ -298,8 +418,10 @@ class ReferenceSafetyPolicy:
     sensitive_fingerprints: FrozenSet[str]
     sensitive_skeleton_fingerprints: FrozenSet[str]
     sensitive_short_skeletons: FrozenSet[str]
-    authorized_identifiers: FrozenSet[str]
-    authorized_long_numbers: FrozenSet[str]
+    sensitive_math_fingerprints: FrozenSet[str]
+    authorized_geometry_identifiers: FrozenSet[str]
+    authorized_digit_skeletons: FrozenSet[str]
+    public_problem_text: str
     authorized_projection_fingerprints: set = field(default_factory=set)
     authorized_projection_skeleton_fingerprints: set = field(
         default_factory=set
@@ -316,6 +438,10 @@ class ReferenceSafetyPolicy:
         )
         public_short_skeleton = _short_skeleton(public)
         raw_short_skeleton = _short_skeleton(raw)
+        sensitive_math_candidates = (
+            _sensitive_math_candidates(raw)
+            - _sensitive_math_candidates(public)
+        )
         return cls(
             sensitive_fingerprints=(
                 frozenset(_fingerprints(raw)) - public_fingerprints
@@ -329,8 +455,17 @@ class ReferenceSafetyPolicy:
                 - ({public_short_skeleton} if public_short_skeleton else set())
                 - {""}
             ),
-            authorized_identifiers=frozenset(math_identifiers(public)),
-            authorized_long_numbers=frozenset(long_numeric_literals(public)),
+            sensitive_math_fingerprints=frozenset(
+                fingerprint
+                for item, count in sensitive_math_candidates.items()
+                if count > 0
+                for fingerprint in _candidate_fingerprints(item)
+            ),
+            authorized_geometry_identifiers=frozenset(
+                geometry_identifiers(public)
+            ),
+            authorized_digit_skeletons=_public_digit_skeletons(public),
+            public_problem_text=problem.problem_text,
         )
 
     def ensure_safe(
@@ -339,8 +474,10 @@ class ReferenceSafetyPolicy:
         *,
         check_identifiers: bool = False,
     ) -> None:
+        math_skeletons = []
         for expression in _bounded_typed_math(value):
             self._ensure_authorized_math(expression)
+            math_skeletons.append(_canonical_math_skeleton(expression))
         for text, structural in _bounded_strings(
             value,
             check_identifiers=check_identifiers,
@@ -349,6 +486,9 @@ class ReferenceSafetyPolicy:
                 continue
             for expression in _embedded_math_expressions(text):
                 self._ensure_authorized_math(expression)
+                math_skeletons.append(
+                    _canonical_math_skeleton(expression)
+                )
             prose_leak = any(
                 item in self.sensitive_fingerprints
                 and item not in self.authorized_projection_fingerprints
@@ -374,12 +514,37 @@ class ReferenceSafetyPolicy:
                 raise ReferenceContentSafetyError(
                     "reference-only content crossed the safe boundary"
                 )
+        aggregate_math_skeleton = "".join(math_skeletons)
+        if _contains_sensitive_math_fingerprint(
+            aggregate_math_skeleton,
+            self.sensitive_math_fingerprints,
+        ):
+            raise ReferenceContentSafetyError(
+                "unverified math content crossed the safe boundary"
+            )
 
     def _ensure_authorized_math(self, expression: str) -> None:
-        if not math_identifiers(expression).issubset(
-            self.authorized_identifiers
-        ) or not long_numeric_literals(expression).issubset(
-            self.authorized_long_numbers
+        skeleton = _canonical_math_skeleton(expression)
+        if _contains_sensitive_math_fingerprint(
+            skeleton,
+            self.sensitive_math_fingerprints,
+        ):
+            raise ReferenceContentSafetyError(
+                "unverified math content crossed the safe boundary"
+            )
+        if not geometry_identifiers(expression).issubset(
+            self.authorized_geometry_identifiers
+        ):
+            raise ReferenceContentSafetyError(
+                "unverified math content crossed the safe boundary"
+            )
+        digits = "".join(char for char in skeleton if char.isdigit())
+        if (
+            len(digits) > _MAX_NOVEL_DIGITS_PER_EXPRESSION
+            and not any(
+                digits == authorized
+                for authorized in self.authorized_digit_skeletons
+            )
         ):
             raise ReferenceContentSafetyError(
                 "unverified math content crossed the safe boundary"
@@ -442,8 +607,44 @@ class ReferenceSafetyPolicy:
         brief: ReferenceGroundingBrief,
         reference_answer: str,
     ) -> ReferenceGroundingBrief:
+        self.ensure_safe(brief)
         payload = brief.model_dump(mode="python")
         payload["audit_notes"] = []
+        assumption_id_map = {
+            item["assumption_id"]: "ground-assumption-%03d" % index
+            for index, item in enumerate(
+                payload["assumptions"], start=1
+            )
+        }
+        step_id_map = {
+            item["step_id"]: "ground-step-%03d" % index
+            for index, item in enumerate(
+                payload["reasoning_steps"], start=1
+            )
+        }
+        for item in payload["assumptions"]:
+            item["assumption_id"] = assumption_id_map[
+                item["assumption_id"]
+            ]
+            item["source_kind"] = (
+                "problem"
+                if contains_cross_artifact_math_identity(
+                    self.public_problem_text,
+                    item["expression"],
+                )
+                else "solution"
+            )
+        for item in payload["reasoning_steps"]:
+            item["step_id"] = step_id_map[item["step_id"]]
+            item["assumption_ids_used"] = [
+                assumption_id_map[assumption_id]
+                for assumption_id in item["assumption_ids_used"]
+            ]
+        for index, item in enumerate(payload["check_requests"], start=1):
+            item["check_id"] = "ground-check-%03d" % index
+            item["source_step_id"] = step_id_map[
+                item["source_step_id"]
+            ]
         sanitized = ReferenceGroundingBrief.validate_for_reference_answer(
             payload,
             reference_answer,

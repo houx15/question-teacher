@@ -54,6 +54,7 @@ _MATH_COMMANDS = frozenset(
         "alpha",
         "angle",
         "beta",
+        "because",
         "cdot",
         "circ",
         "cong",
@@ -85,8 +86,10 @@ _MATH_COMMANDS = frozenset(
         "ne",
         "neq",
         "notin",
+        "odot",
         "omega",
         "overline",
+        "overrightarrow",
         "parallel",
         "perp",
         "phi",
@@ -108,11 +111,14 @@ _MATH_COMMANDS = frozenset(
         "tan",
         "tau",
         "theta",
+        "therefore",
         "tfrac",
         "times",
         "triangle",
         "union",
         "varphi",
+        "vec",
+        "widehat",
     }
 )
 _PLAIN_FUNCTIONS = frozenset(
@@ -158,18 +164,20 @@ _ALLOWED_ASCII_PUNCTUATION = frozenset(
     "+-*/^_=<>!.,;:&|%()[]{}'"
 )
 _ALLOWED_UNICODE_MATH = frozenset(
-    "±²³·×÷ΓΔΠΣΦΨΩαβγδεθλμπρστφψω"
+    "±¹²³·×÷ΓΔΠΣΦΨΩαβγδεθλμπρστφψω"
     "⁰ⁱ⁴⁵⁶⁷⁸⁹⁺⁻ⁿ"
     "₀₁₂₃₄₅₆₇₈₉₊₋"
     "→⇒∅∈∉∑−∓√∞∩∪≈≠≤≥⊂⊆"
-    "∠°⊥∥△≅∽"
+    "∠°⊥∥△≅∽∵∴⊙"
 )
 _ASCII_WORD = re.compile(r"[A-Za-z]+")
+_ASCII_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _OPAQUE_MIXED_ALNUM = re.compile(r"[A-Za-z0-9]{7,}")
 _GEOMETRY_COMMAND = re.compile(
-    r"\\(?:angle|overline|parallel|perp|triangle|cong|sim)\b"
+    r"\\(?:angle|overline|overrightarrow|parallel|perp|triangle|"
+    r"cong|sim|vec|widehat)\b"
 )
-_GEOMETRY_RELATION_MARKERS = frozenset("=/:\u2220⊥∥△≅∽")
+_GEOMETRY_RELATION_MARKERS = frozenset("=/:\u2220⊥∥△≅∽∵∴⊙")
 _CONTROL_SKELETON_TERMS = (
     "ignore",
     "rules",
@@ -349,12 +357,22 @@ def _validate_command_arguments(
             raise StrictMathExpressionError(
                 "invalid strict math expression"
             )
-    elif command in {"sqrt", "overline"}:
+    elif command in {
+        "sqrt",
+        "overline",
+        "overrightarrow",
+        "vec",
+        "widehat",
+    }:
         if cursor < len(source) and source[cursor] == "[":
             cursor = _balanced_group_end(source, cursor, "[", "]")
             while cursor < len(source) and source[cursor].isspace():
                 cursor += 1
-        _balanced_group_end(source, cursor, "{", "}")
+        end = _balanced_group_end(source, cursor, "{", "}")
+        if not source[cursor + 1 : end - 1].strip():
+            raise StrictMathExpressionError(
+                "invalid strict math expression"
+            )
     elif command == "mathbb":
         end = _balanced_group_end(source, cursor, "{", "}")
         if source[cursor + 1 : end - 1].strip() not in {
@@ -420,7 +438,11 @@ def validate_strict_math_expression(value: str) -> str:
         raise StrictMathExpressionError("invalid strict math expression")
     _validate_latex_structure(stripped)
     source = _normalized_for_scan(stripped)
-    if "://" in source or re.search(r"\d\.\.\d", source):
+    if (
+        "://" in source
+        or ".." in source
+        or re.search(r"(?:\+\+|\*\*|//|\^\^|==|[+*/^][+*/^])", source)
+    ):
         raise StrictMathExpressionError("invalid strict math expression")
     _reject_split_control_tokens(source)
     if any(
@@ -439,12 +461,13 @@ def validate_strict_math_expression(value: str) -> str:
             continue
         if char.isascii() and char.isdigit():
             saw_math_atom = True
-            index += 1
-            while index < len(source) and (
-                source[index].isascii()
-                and (source[index].isdigit() or source[index] == ".")
-            ):
-                index += 1
+            match = _ASCII_NUMBER.match(source, index)
+            assert match is not None
+            index = match.end()
+            if index < len(source) and source[index] == ".":
+                raise StrictMathExpressionError(
+                    "invalid strict math expression"
+                )
             continue
         if char.isascii() and char.isalpha():
             match = _ASCII_WORD.match(source, index)
@@ -522,22 +545,32 @@ def validate_operation_operands(
 def allowed_gap_codes_for_operation(
     operation_kind: MathOperationKind,
 ) -> list:
+    baseline = ["missing_justification", "reference_omits_step"]
     mapping = {
         "substitute": ["implicit_substitution"],
         "eliminate": ["implicit_equivalence"],
+        "expand": ["implicit_equivalence"],
+        "factor": ["implicit_equivalence"],
+        "combine_like_terms": ["implicit_equivalence"],
+        "simplify": ["implicit_equivalence"],
         "rearrange": ["implicit_equivalence"],
         "add": ["implicit_equivalence"],
         "subtract": ["implicit_equivalence"],
         "multiply": ["implicit_equivalence"],
-        "divide": ["implicit_nonzero_condition"],
+        "divide": ["nonzero_condition_required"],
         "apply_identity": ["implicit_identity"],
         "complete_square": ["implicit_identity"],
-        "take_square_root": ["implicit_domain_restriction"],
-        "split_cases": ["implicit_case_split"],
+        "take_square_root": [
+            "domain_condition_required",
+            "branch_completeness_required",
+        ],
+        "split_cases": [
+            "implicit_case_split",
+            "branch_completeness_required",
+        ],
         "back_substitute": ["back_substitution_required"],
-        "derive": ["reference_omits_step"],
     }
-    return list(mapping.get(operation_kind, []))
+    return baseline + list(mapping.get(operation_kind, []))
 
 
 def is_strict_math_expression(value: str) -> bool:
@@ -559,6 +592,15 @@ def math_identifiers(value: str) -> set:
         elif token.isupper() and 2 <= len(token) <= 3:
             identifiers.update(token)
     return identifiers
+
+
+def geometry_identifiers(value: str) -> set:
+    source = _normalized_for_scan(value)
+    return {
+        token
+        for token in _ascii_letter_tokens(source)
+        if token.isupper() and 2 <= len(token) <= 3
+    }
 
 
 def long_numeric_literals(value: str) -> set:

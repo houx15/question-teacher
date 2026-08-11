@@ -146,10 +146,22 @@ def freeze_grounded_route(
         )
         else TeachingRouteConsistency.CONSISTENT
     )
+    checked_step_ids = {
+        evidence["source_step_id"]
+        for evidence in check_evidence
+        if (
+            evidence["status"] == ClaimStatus.PASSED.value
+            and evidence["conclusion_linked"]
+        )
+    }
     steps = [
         {
             **step.model_dump(),
-            "evidence_status": "reference_only",
+            "evidence_status": (
+                "checked"
+                if step.step_id in checked_step_ids
+                else "reference_only"
+            ),
         }
         for step in grounding_brief.reasoning_steps
     ]
@@ -246,7 +258,7 @@ def _freeze_route(
                 "expression": validate_strict_math_expression(
                     item["expression"]
                 ),
-                "source_kind": "problem",
+                "source_kind": item.get("source_kind", "solution"),
             }
             for item in assumptions
         ]
@@ -427,6 +439,7 @@ def _normalize_check_evidence(
                 "conclusion_linked": request.conclusion_linked,
                 "reason_code": result.reason_code,
                 "request_fingerprint": expected_fingerprint,
+                "source_step_id": request.source_step_id,
                 "status": result.status.value,
             }
         )

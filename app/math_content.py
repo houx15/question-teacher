@@ -390,6 +390,7 @@ def normalize_cross_artifact_math_identity(value: str) -> str:
         (r"\div", "/"),
     ):
         normalized = normalized.replace(command, replacement)
+    normalized = re.sub(r"\\(?:neq|ne)(?![A-Za-z])", "!=", normalized)
     normalized = re.sub(r"\s+", "", normalized)
     simple_fraction = re.compile(
         r"\\frac\{(-?[A-Za-z0-9.]+)\}\{(-?[A-Za-z0-9.]+)\}"

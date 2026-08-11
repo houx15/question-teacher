@@ -28,7 +28,14 @@ from app.schemas import (
 )
 
 
-EvidenceStatus = Literal["quoted", "derived", "inferred", "verified_route"]
+EvidenceStatus = Literal[
+    "quoted",
+    "derived",
+    "inferred",
+    "verified_route",
+    "reference_only",
+    "checked",
+]
 ReasoningMode = Literal["understand", "plan", "explore", "execute", "monitor", "revise", "reflect"]
 TrajectoryType = Literal["planned", "exploratory", "hybrid"]
 PedagogicalFunction = Literal["focus", "question", "explain", "decide", "execute", "observe", "correct", "transition", "review", "summarize"]

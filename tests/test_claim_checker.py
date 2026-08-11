@@ -22,6 +22,7 @@ def check_payload(
     return request(
         {
             "check_id": "check",
+            "source_step_id": "source-step",
             "kind": kind,
             "expression": expression,
             "expected": expected,

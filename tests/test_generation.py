@@ -254,11 +254,64 @@ def grounded_source_problem(reference_solution_text=None):
     )
 
 
+def grounded_trace_payload(*, checked_step_ids=()):
+    payload = trace_payload()
+    assumption_ids = {
+        item["assumption_id"]: "ground-assumption-%03d" % index
+        for index, item in enumerate(payload["assumptions"], start=1)
+    }
+    step_ids = {
+        item["source_step_id"]: "ground-step-%03d" % index
+        for index, item in enumerate(payload["source_steps"], start=1)
+    }
+    for item in payload["assumptions"]:
+        original_id = item["assumption_id"]
+        item["assumption_id"] = assumption_ids[original_id]
+        item["source_anchor"]["source_kind"] = (
+            "problem" if original_id == "assumption-nonzero" else "solution"
+        )
+    for item in payload["source_steps"]:
+        original_id = item["source_step_id"]
+        item["source_step_id"] = step_ids[original_id]
+        item["source_anchor"]["source_id"] = step_ids[original_id]
+        item["assumption_ids_used"] = [
+            assumption_ids[assumption_id]
+            for assumption_id in item["assumption_ids_used"]
+        ]
+        item["evidence_status"] = (
+            "checked" if original_id in checked_step_ids else "reference_only"
+        )
+    return payload
+
+
+def grounded_trajectory_payload():
+    payload = trajectory_payload()
+    step_ids = {
+        step_id: "ground-step-%03d" % index
+        for index, step_id in enumerate(
+            ("substitute-root", "connect-target", "use-nonzero", "return-target"),
+            start=1,
+        )
+    }
+    for episode in payload["episodes"]:
+        episode["source_step_ids"] = [
+            step_ids[step_id] for step_id in episode["source_step_ids"]
+        ]
+        for gap_ref in episode.get("resolved_gap_refs", []):
+            gap_ref["source_step_id"] = step_ids[gap_ref["source_step_id"]]
+    return payload
+
+
 def _approved_preparation_client(route_responses=None, performance=None):
+    grounded = route_responses is not None
     preparation_client = PreparationFakeClient(
         {
-            "reference_analyst": [trace_payload()],
-            "teaching_designer": [trajectory_payload()],
+            "reference_analyst": [
+                grounded_trace_payload() if grounded else trace_payload()
+            ],
+            "teaching_designer": [
+                grounded_trajectory_payload() if grounded else trajectory_payload()
+            ],
             "script_teacher": [downstream_script_payload()],
             "interaction_designer": [downstream_interaction_payload()],
             "classroom_director": [
@@ -379,7 +432,18 @@ def test_real_grounder_precedes_preparation_and_freezes_route_and_focus_targets(
     ]
     received_problem, received_route, received_targets = pipeline.received
     assert received_problem == source_problem
-    assert received_route.fingerprint == preparation_route().fingerprint
+    assert received_route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    route_payload = received_route.to_prompt_payload()
+    assert [item["assumption_id"] for item in route_payload["assumptions"]] == [
+        "ground-assumption-001",
+        "ground-assumption-002",
+    ]
+    assert [item["step_id"] for item in route_payload["steps"]] == [
+        "ground-step-001",
+        "ground-step-002",
+        "ground-step-003",
+        "ground-step-004",
+    ]
     assert received_targets == compile_problem_focus_targets(
         source_problem.problem_text
     )
@@ -411,14 +475,14 @@ def test_grounded_raw_reference_reaches_only_grounder_and_reference_analyst():
 
 
 def test_grounded_reference_anchor_marker_is_absent_from_all_downstream_outputs():
-    trace = trace_payload()
+    trace = grounded_trace_payload()
     trace["source_steps"][0]["source_anchor"]["excerpt"] = (
         RAW_REFERENCE_MARKER
     )
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace],
-            "teaching_designer": [trajectory_payload()],
+            "teaching_designer": [grounded_trajectory_payload()],
             "script_teacher": [downstream_script_payload()],
             "interaction_designer": [downstream_interaction_payload()],
             "classroom_director": [downstream_score_payload()],
@@ -455,12 +519,12 @@ def test_grounded_reference_anchor_marker_is_absent_from_all_downstream_outputs(
 
 def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream():
     marker = "这是只供内部审核的批注不要公开"
-    trace = trace_payload()
+    trace = grounded_trace_payload()
     trace["source_steps"][0]["mathematical_action"] = marker
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace],
-            "teaching_designer": [trajectory_payload()],
+            "teaching_designer": [grounded_trajectory_payload()],
             "script_teacher": [downstream_script_payload()],
             "interaction_designer": [downstream_interaction_payload()],
             "classroom_director": [downstream_score_payload()],
@@ -512,6 +576,7 @@ def test_grounder_reference_only_literal_is_rejected_before_preparation():
 def test_checker_unavailability_softly_degrades_the_real_grounded_route():
     check_request = {
         "check_id": "divide-by-n",
+        "source_step_id": "use-nonzero",
         "kind": "nonzero_division",
         "expression": "2*n*(2*n-2*m+1)",
         "expected": "2*n-2*m+1",
@@ -546,6 +611,7 @@ def test_checker_unavailability_softly_degrades_the_real_grounded_route():
 def test_unexpected_checker_errors_propagate_before_preparation(checker_error):
     check_request = {
         "check_id": "divide-by-n",
+        "source_step_id": "use-nonzero",
         "kind": "nonzero_division",
         "expression": "2*n*(2*n-2*m+1)",
         "expected": "2*n-2*m+1",

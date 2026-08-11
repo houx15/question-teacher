@@ -310,6 +310,7 @@ def _normalize_reference_text(value: str) -> str:
 class GroundedAssumption(SchemaModel):
     assumption_id: GeneratedId
     expression: StrictMathExpression
+    source_kind: Literal["problem", "solution"] = "solution"
 
 
 class GroundedReasoningStep(SchemaModel):
@@ -334,6 +335,7 @@ class GroundedReasoningStep(SchemaModel):
 
 class GroundingCheckRequest(SchemaModel):
     check_id: GeneratedId
+    source_step_id: GeneratedId
     kind: Literal[
         "substitution",
         "equivalence",
@@ -445,11 +447,20 @@ class ReferenceGroundingBrief(SchemaModel):
                 raise ValueError(
                     "grounded step references an unknown assumption"
                 )
+        step_ids = [step.step_id for step in self.reasoning_steps]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("grounded step ids must be unique")
+        known_steps = set(step_ids)
         check_ids = [
             request.check_id for request in self.check_requests
         ]
         if len(check_ids) != len(set(check_ids)):
             raise ValueError("check request ids must be unique")
+        if any(
+            request.source_step_id not in known_steps
+            for request in self.check_requests
+        ):
+            raise ValueError("check request references an unknown step")
         return self
 
 

@@ -224,6 +224,8 @@ def test_cross_artifact_identity_preserves_semantic_grouping_and_equivalences():
         (r"x^{2}", "x^2"),
         (r"2\times x", "2*x"),
         (r"2\cdot x", "2*x"),
+        (r"n\ne 0", "n!=0"),
+        (r"n\neq 0", "n!=0"),
     )
     for left, right in safe_equivalents:
         assert normalizer(left) == normalizer(right)

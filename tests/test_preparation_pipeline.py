@@ -70,8 +70,16 @@ def route(final_conclusion="m-n=1/2"):
             "task_summary": "由参数根求m-n",
             "target": "m-n",
             "assumptions": [
-                {"assumption_id": "assumption-nonzero", "expression": "n!=0"},
-                {"assumption_id": "assumption-root", "expression": "x=2n"},
+                {
+                    "assumption_id": "assumption-nonzero",
+                    "expression": "n!=0",
+                    "source_kind": "problem",
+                },
+                {
+                    "assumption_id": "assumption-root",
+                    "expression": "x=2n",
+                    "source_kind": "problem",
+                },
             ],
             "reference_conclusion": final_conclusion,
             "method_name": "代入法",
@@ -162,7 +170,7 @@ def trace_payload(final_conclusion="m-n=1/2"):
                     else []
                 ),
                 "reasoning_gap_codes": [],
-                "evidence_status": "verified_route",
+                "evidence_status": "reference_only",
             }
             for step_id, (before, operation_kind, operands, after) in zip(
                 STEP_IDS, states

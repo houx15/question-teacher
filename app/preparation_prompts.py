@@ -75,6 +75,8 @@ SOLUTION_TRACE_SYSTEM = "\n".join(
         "只能写符合 Schema 的纯数学表达式；不得在 LaTeX 参数中夹带说明文字。",
         "步骤 ID、前后状态、operation_kind、operands、assumption_ids_used、"
         "source provenance 与 evidence_status 必须逐字段复制冻结路线；不得改写数学决定。",
+        "source_anchor.source_kind/source_id 表示冻结路线绑定；evidence_status 另行保留"
+        " reference_only 或 checked 的实际证据等级，不得混为一谈。",
         "reasoning_gap_codes 只能从该路线步骤的 allowed_reasoning_gap_codes 中选择；"
         "只标记确实需要在教学中补足的省略推理。",
         "mathematical_action、justification、new_information、anchor excerpt 仅作私有审计输入，"

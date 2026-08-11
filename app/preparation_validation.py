@@ -217,7 +217,7 @@ def validate_solution_trace(
             or trace_operands != route_operands
             or step.assumption_ids_used
             != route_step.get("assumption_ids_used", [])
-            or step.evidence_status != "verified_route"
+            or step.evidence_status != route_step["evidence_status"]
         ):
             _fail(
                 "trace_typed_decision_mismatch",

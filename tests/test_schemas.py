@@ -57,6 +57,7 @@ def grounding_brief_payload():
         "check_requests": [
             {
                 "check_id": "check-substitution",
+                "source_step_id": "substitute-root",
                 "kind": "substitution",
                 "expression": "x^2-2*m*x+2*n",
                 "expected": "4*n^2-4*m*n+2*n",

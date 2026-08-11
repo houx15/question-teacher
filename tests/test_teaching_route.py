@@ -27,8 +27,16 @@ def grounding_brief(
             "task_summary": "把已知根代回方程，求m-n",
             "target": r"\(m-n\)",
             "assumptions": [
-                {"assumption_id": "nonzero-n", "expression": r"\(n\ne0\)"},
-                {"assumption_id": "given-root", "expression": r"\(x=2n\)"},
+                {
+                    "assumption_id": "nonzero-n",
+                    "expression": r"\(n\ne0\)",
+                    "source_kind": "problem",
+                },
+                {
+                    "assumption_id": "given-root",
+                    "expression": r"\(x=2n\)",
+                    "source_kind": "problem",
+                },
             ],
             "reference_conclusion": REFERENCE_ANSWER,
             "method_name": "代入法",
@@ -71,6 +79,7 @@ def checked_brief(
     expression, expected = expressions[status]
     request = {
         "check_id": check_id,
+        "source_step_id": "use-nonzero",
         "kind": (
             "nonzero_division"
             if status == ClaimStatus.UNSUPPORTED
@@ -93,6 +102,7 @@ def passed_brief_with_expression(expression: str) -> tuple:
         [
             {
                 "check_id": "same-check-id",
+                "source_step_id": "use-nonzero",
                 "kind": "equivalence",
                 "expression": expression,
                 "expected": expression,
@@ -148,12 +158,14 @@ def test_grounded_route_preserves_assumptions_and_conclusion():
         },
     ]
     assert payload["steps"][0]["evidence_status"] == "reference_only"
+    assert payload["steps"][1]["evidence_status"] == "checked"
     assert payload["check_evidence"] == [
         {
             "check_id": "back-check",
             "conclusion_linked": True,
             "reason_code": "equivalent",
             "request_fingerprint": result.request_fingerprint,
+            "source_step_id": "use-nonzero",
             "status": "passed",
         }
     ]
@@ -205,6 +217,9 @@ def test_passed_unlinked_check_does_not_upgrade_grounded_mode():
     route = freeze_grounded_route(brief, [result])
 
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    assert route.to_prompt_payload()["steps"][1]["evidence_status"] == (
+        "reference_only"
+    )
 
 
 def test_model_proposed_failed_linked_check_creates_warning():
@@ -213,6 +228,9 @@ def test_model_proposed_failed_linked_check_creates_warning():
 
     assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
     assert route.consistency == TeachingRouteConsistency.WARNING
+    assert route.to_prompt_payload()["steps"][1]["evidence_status"] == (
+        "reference_only"
+    )
 
 
 @pytest.mark.parametrize(
