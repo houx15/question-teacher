@@ -12,6 +12,14 @@ from app.pedagogy_rubric import (
     PEDAGOGY_RUBRIC_VERSION,
     rubric_payload,
 )
+from app.preparation_models import (
+    InteractionPlan,
+    PerformanceScore,
+    ReasoningTrajectory,
+    SimulationReport,
+    SolutionTrace,
+    TeachingScript,
+)
 
 
 _INERT_EVIDENCE_RULE = (
@@ -94,32 +102,38 @@ _REPAIR_KEYS = (
     "current_artifact_version",
     "retained_artifacts",
 )
-_BLOCKED_CAPABILITY_KEY_PARTS = (
-    "credential",
-    "secret",
-    "token",
-    "api_key",
-    "base_url",
-    "provider",
-    "model_name",
-    "audio",
-    "duration",
-    "timestamp",
-    "millisecond",
-    "coordinate",
-    "selector",
-    "pixel",
-    "filesystem",
-    "file_path",
+_CAPABILITY_ENUMS = {
+    "interaction_kinds": {"choice"},
+    "surfaces": {"problem", "board"},
+    "semantic_actions": {
+        "write",
+        "transform",
+        "focus",
+        "emphasize",
+        "annotate",
+        "fade",
+        "reveal",
+        "clear_focus",
+    },
+    "layers": {"base", "micro_explanation", "comparison"},
+}
+_CAPABILITY_BOOLEANS = {"supports_overlays"}
+_CAPABILITY_INTEGER_RANGES = {
+    "max_interactions": (0, 3),
+    "max_options_per_interaction": (3, 4),
+}
+_CAPABILITY_KEYS = (
+    set(_CAPABILITY_ENUMS)
+    | _CAPABILITY_BOOLEANS
+    | set(_CAPABILITY_INTEGER_RANGES)
 )
-_PREPARED_ARTIFACT_KEYS = (
-    "solution_trace",
-    "reasoning_trajectory",
-    "teaching_script",
-    "interaction_plan",
-    "performance_score",
-    "artifact_versions",
-)
+_PREPARED_ARTIFACT_TYPES = {
+    "solution_trace": SolutionTrace,
+    "reasoning_trajectory": ReasoningTrajectory,
+    "teaching_script": TeachingScript,
+    "interaction_plan": InteractionPlan,
+    "performance_score": PerformanceScore,
+}
 
 
 def _json_data(value: Any) -> Any:
@@ -143,6 +157,34 @@ def _mapping_payload(value: Any, label: str) -> Dict[str, Any]:
     payload = _json_data(value)
     if not isinstance(payload, dict):
         raise TypeError("%s must serialize to a JSON object" % label)
+    return payload
+
+
+def _contains_key(value: Any, target: str) -> bool:
+    if isinstance(value, dict):
+        return target in value or any(
+            _contains_key(item, target) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_key(item, target) for item in value)
+    return False
+
+
+def _artifact_payload(
+    value: Any,
+    expected_type: Any,
+    label: str,
+) -> Dict[str, Any]:
+    if type(value) is not expected_type:
+        raise TypeError(
+            "%s must be an exact %s model"
+            % (label, expected_type.__name__)
+        )
+    payload = value.model_dump(mode="json")
+    if _contains_key(payload, "reference_solution_text"):
+        raise ValueError(
+            "%s must not contain reference_solution_text" % label
+        )
     return payload
 
 
@@ -181,20 +223,72 @@ def _problem_targets_projection(problem_targets: Any) -> Any:
 
 
 def _capabilities_projection(capabilities: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(capabilities, Mapping):
+        raise TypeError("capabilities must be a mapping")
+    if any(not isinstance(key, str) for key in capabilities):
+        raise TypeError("capability keys must be strings")
+    unknown = set(capabilities) - _CAPABILITY_KEYS
+    if unknown:
+        raise ValueError(
+            "unknown capability keys: %s" % ", ".join(sorted(unknown))
+        )
+
     raw = _mapping_payload(capabilities, "capabilities")
+    for key, allowed_values in _CAPABILITY_ENUMS.items():
+        if key not in raw:
+            continue
+        values = raw[key]
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(item, str) for item in values)
+            or len(values) != len(set(values))
+            or not set(values).issubset(allowed_values)
+        ):
+            raise ValueError("capability %s contains invalid values" % key)
 
-    def scrub(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {
-                key: scrub(item)
-                for key, item in value.items()
-                if not any(part in key.lower() for part in _BLOCKED_CAPABILITY_KEY_PARTS)
-            }
-        if isinstance(value, list):
-            return [scrub(item) for item in value]
-        return value
+    for key in _CAPABILITY_BOOLEANS:
+        if key in raw and type(raw[key]) is not bool:
+            raise TypeError("capability %s must be a boolean" % key)
 
-    return scrub(raw)
+    for key, (minimum, maximum) in _CAPABILITY_INTEGER_RANGES.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(
+                "capability %s must be an integer from %d to %d"
+                % (key, minimum, maximum)
+            )
+    return raw
+
+
+def _prepared_artifacts_projection(
+    prepared_artifacts: Mapping[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(prepared_artifacts, Mapping):
+        raise TypeError("prepared_artifacts must be a mapping")
+    if any(not isinstance(key, str) for key in prepared_artifacts):
+        raise TypeError("prepared artifact keys must be strings")
+    provided_keys = set(prepared_artifacts)
+    expected_keys = set(_PREPARED_ARTIFACT_TYPES)
+    unknown = provided_keys - expected_keys
+    if unknown:
+        raise ValueError(
+            "unknown prepared artifact keys: %s"
+            % ", ".join(sorted(unknown))
+        )
+    missing = expected_keys - provided_keys
+    if missing:
+        raise ValueError(
+            "missing prepared artifact keys: %s"
+            % ", ".join(sorted(missing))
+        )
+    return {
+        key: _artifact_payload(
+            prepared_artifacts[key], expected_type, key
+        )
+        for key, expected_type in _PREPARED_ARTIFACT_TYPES.items()
+    }
 
 
 def _repair_projection(repair: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -250,14 +344,16 @@ def solution_trace_prompt(
 
 def reasoning_trajectory_prompt(
     problem: Any,
-    solution_trace: Any,
+    solution_trace: SolutionTrace,
     capabilities: Mapping[str, Any],
     repair: Optional[Mapping[str, Any]] = None,
 ) -> str:
     payload = _problem_projection(problem, include_reference_solution=False)
     payload.update(
         {
-            "solution_trace": _json_data(solution_trace),
+            "solution_trace": _artifact_payload(
+                solution_trace, SolutionTrace, "solution_trace"
+            ),
             "capabilities": _capabilities_projection(capabilities),
         }
     )
@@ -268,10 +364,16 @@ def reasoning_trajectory_prompt(
 
 
 def teaching_script_prompt(
-    reasoning_trajectory: Any,
+    reasoning_trajectory: ReasoningTrajectory,
     repair: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    payload = {"reasoning_trajectory": _json_data(reasoning_trajectory)}
+    payload = {
+        "reasoning_trajectory": _artifact_payload(
+            reasoning_trajectory,
+            ReasoningTrajectory,
+            "reasoning_trajectory",
+        )
+    }
     return _prompt_envelope(
         "将 ReasoningTrajectory 写成学生可听的 TeachingScript。",
         _with_repair(payload, repair),
@@ -279,13 +381,19 @@ def teaching_script_prompt(
 
 
 def interaction_plan_prompt(
-    reasoning_trajectory: Any,
-    teaching_script: Any,
+    reasoning_trajectory: ReasoningTrajectory,
+    teaching_script: TeachingScript,
     repair: Optional[Mapping[str, Any]] = None,
 ) -> str:
     payload = {
-        "reasoning_trajectory": _json_data(reasoning_trajectory),
-        "teaching_script": _json_data(teaching_script),
+        "reasoning_trajectory": _artifact_payload(
+            reasoning_trajectory,
+            ReasoningTrajectory,
+            "reasoning_trajectory",
+        ),
+        "teaching_script": _artifact_payload(
+            teaching_script, TeachingScript, "teaching_script"
+        ),
     }
     return _prompt_envelope(
         "在能诊断学习状态的位置生成 InteractionPlan。",
@@ -295,15 +403,19 @@ def interaction_plan_prompt(
 
 def performance_score_prompt(
     problem_targets: Any,
-    teaching_script: Any,
-    interaction_plan: Any,
+    teaching_script: TeachingScript,
+    interaction_plan: InteractionPlan,
     capabilities: Mapping[str, Any],
     repair: Optional[Mapping[str, Any]] = None,
 ) -> str:
     payload = {
         "problem_targets": _problem_targets_projection(problem_targets),
-        "teaching_script": _json_data(teaching_script),
-        "interaction_plan": _json_data(interaction_plan),
+        "teaching_script": _artifact_payload(
+            teaching_script, TeachingScript, "teaching_script"
+        ),
+        "interaction_plan": _artifact_payload(
+            interaction_plan, InteractionPlan, "interaction_plan"
+        ),
         "capabilities": _capabilities_projection(capabilities),
     }
     return _prompt_envelope(
@@ -313,18 +425,28 @@ def performance_score_prompt(
 
 
 def student_simulation_prompt(
-    reasoning_trajectory: Any,
-    teaching_script: Any,
-    interaction_plan: Any,
-    performance_score: Any,
+    reasoning_trajectory: ReasoningTrajectory,
+    teaching_script: TeachingScript,
+    interaction_plan: InteractionPlan,
+    performance_score: PerformanceScore,
 ) -> str:
     return _prompt_envelope(
         "按版本化教学标准模拟初学者的逐段理解，生成 SimulationReport。",
         {
-            "reasoning_trajectory": _json_data(reasoning_trajectory),
-            "teaching_script": _json_data(teaching_script),
-            "interaction_plan": _json_data(interaction_plan),
-            "performance_score": _json_data(performance_score),
+            "reasoning_trajectory": _artifact_payload(
+                reasoning_trajectory,
+                ReasoningTrajectory,
+                "reasoning_trajectory",
+            ),
+            "teaching_script": _artifact_payload(
+                teaching_script, TeachingScript, "teaching_script"
+            ),
+            "interaction_plan": _artifact_payload(
+                interaction_plan, InteractionPlan, "interaction_plan"
+            ),
+            "performance_score": _artifact_payload(
+                performance_score, PerformanceScore, "performance_score"
+            ),
             "pedagogy_rubric": rubric_payload(),
         },
     )
@@ -332,20 +454,17 @@ def student_simulation_prompt(
 
 def lesson_review_prompt(
     prepared_artifacts: Mapping[str, Any],
-    simulation_report: Any,
+    simulation_report: SimulationReport,
     reviewer_context_id: str,
 ) -> str:
-    source = _mapping_payload(prepared_artifacts, "prepared_artifacts")
-    projected = {
-        key: source[key]
-        for key in _PREPARED_ARTIFACT_KEYS
-        if key in source
-    }
+    projected = _prepared_artifacts_projection(prepared_artifacts)
     return _prompt_envelope(
         "引用证据审核全部已验证产物，生成 LessonReviewDecision。",
         {
             "prepared_artifacts": projected,
-            "simulation_report": _json_data(simulation_report),
+            "simulation_report": _artifact_payload(
+                simulation_report, SimulationReport, "simulation_report"
+            ),
             "reviewer_context_id": reviewer_context_id,
             "pedagogy_rubric": rubric_payload(),
         },

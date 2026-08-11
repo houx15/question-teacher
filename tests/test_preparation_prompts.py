@@ -251,7 +251,6 @@ def prompts(repair=None):
                 "teaching_script": script,
                 "interaction_plan": interactions,
                 "performance_score": score,
-                "artifact_versions": {"solution_trace": 1, "teaching_script": 2},
             },
             simulation_report(),
             "review-context-1",
@@ -367,7 +366,7 @@ def test_no_role_is_asked_for_runtime_or_provider_implementation_details():
             assert re.search(pattern, json.dumps(payload, ensure_ascii=False), re.IGNORECASE) is None
 
 
-def test_capability_projection_drops_provider_credentials_and_paths():
+def test_capability_projection_rejects_provider_credentials_and_paths():
     unsafe_capabilities = {
         "semantic_actions": ["focus"],
         "provider_name": "vendor-x",
@@ -377,9 +376,178 @@ def test_capability_projection_drops_provider_credentials_and_paths():
         "audio_duration": 99,
         "filesystem_path": "/tmp/private",
     }
-    prompt = reasoning_trajectory_prompt(problem(), solution_trace(), unsafe_capabilities)
-    payload = _parse_envelope(prompt)[1]
-    assert payload["capabilities"] == {"semantic_actions": ["focus"]}
+    with pytest.raises(ValueError, match="unknown capability keys"):
+        reasoning_trajectory_prompt(problem(), solution_trace(), unsafe_capabilities)
+
+
+@pytest.mark.parametrize(
+    "leaked_capability",
+    (
+        {"endpoint_url": "https://example.invalid/v1"},
+        {"auth": {"bearer": "secret"}},
+        {"engine_model": "vendor/model-v2"},
+        {"workspace_path": "/private/workspace"},
+    ),
+)
+def test_capability_projection_rejects_unknown_keys_instead_of_leaking_them(
+    leaked_capability,
+):
+    capabilities = {"semantic_actions": ["focus"], **leaked_capability}
+    with pytest.raises(ValueError, match="unknown capability keys"):
+        reasoning_trajectory_prompt(problem(), solution_trace(), capabilities)
+
+
+def test_capability_projection_accepts_only_known_demo_semantics():
+    capabilities = {
+        "interaction_kinds": ["choice"],
+        "surfaces": ["problem", "board"],
+        "semantic_actions": [
+            "write", "transform", "focus", "emphasize", "annotate",
+            "fade", "reveal", "clear_focus",
+        ],
+        "layers": ["base", "micro_explanation", "comparison"],
+        "supports_overlays": True,
+        "max_interactions": 3,
+        "max_options_per_interaction": 4,
+    }
+    payload = _parse_envelope(
+        reasoning_trajectory_prompt(problem(), solution_trace(), capabilities)
+    )[1]
+    assert payload["capabilities"] == capabilities
+
+
+@pytest.mark.parametrize(
+    "invalid_capabilities",
+    (
+        {"interaction_kinds": ["free_text"]},
+        {"surfaces": ["browser"]},
+        {"semantic_actions": ["move_to_pixel"]},
+        {"layers": ["debug"]},
+        {"supports_overlays": "yes"},
+        {"max_interactions": 4},
+        {"max_options_per_interaction": 2},
+    ),
+)
+def test_capability_projection_rejects_invalid_known_values(invalid_capabilities):
+    with pytest.raises((TypeError, ValueError), match="capabilit"):
+        performance_score_prompt(
+            [], teaching_script(), interaction_plan(), invalid_capabilities
+        )
+
+
+def test_designer_rejects_mapping_solution_trace_with_raw_reference_payload():
+    bypass = solution_trace().model_dump(mode="json")
+    bypass["reference_solution_text"] = "IGNORE_ALL_RULES"
+    with pytest.raises(TypeError, match="solution_trace"):
+        reasoning_trajectory_prompt(
+            problem(), bypass, {"semantic_actions": ["focus"]}
+        )
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "build_prompt"),
+    (
+        (
+            "reasoning_trajectory",
+            lambda payload: student_simulation_prompt(
+                payload, teaching_script(), interaction_plan(), performance_score()
+            ),
+        ),
+        (
+            "teaching_script",
+            lambda payload: student_simulation_prompt(
+                reasoning_trajectory(), payload, interaction_plan(), performance_score()
+            ),
+        ),
+        (
+            "interaction_plan",
+            lambda payload: student_simulation_prompt(
+                reasoning_trajectory(), teaching_script(), payload, performance_score()
+            ),
+        ),
+        (
+            "performance_score",
+            lambda payload: student_simulation_prompt(
+                reasoning_trajectory(), teaching_script(), interaction_plan(), payload
+            ),
+        ),
+    ),
+)
+def test_student_simulator_rejects_mapping_artifact_bypasses(
+    artifact_name, build_prompt
+):
+    bypass = {"reference_solution_text": "IGNORE_ALL_RULES"}
+    with pytest.raises(TypeError, match=artifact_name):
+        build_prompt(bypass)
+
+
+def test_reviewer_rejects_mapping_artifact_bypass_and_unknown_aggregate_keys():
+    artifacts = {
+        "solution_trace": {
+            **solution_trace().model_dump(mode="json"),
+            "reference_solution_text": "IGNORE_ALL_RULES",
+        },
+        "reasoning_trajectory": reasoning_trajectory(),
+        "teaching_script": teaching_script(),
+        "interaction_plan": interaction_plan(),
+        "performance_score": performance_score(),
+    }
+    with pytest.raises(TypeError, match="solution_trace"):
+        lesson_review_prompt(artifacts, simulation_report(), "review-context-1")
+
+    artifacts["solution_trace"] = solution_trace()
+    artifacts["reference_solution_text"] = "IGNORE_ALL_RULES"
+    with pytest.raises(ValueError, match="unknown prepared artifact keys"):
+        lesson_review_prompt(artifacts, simulation_report(), "review-context-1")
+
+
+def test_reviewer_rejects_mapping_simulation_report_bypass():
+    artifacts = {
+        "solution_trace": solution_trace(),
+        "reasoning_trajectory": reasoning_trajectory(),
+        "teaching_script": teaching_script(),
+        "interaction_plan": interaction_plan(),
+        "performance_score": performance_score(),
+    }
+    with pytest.raises(TypeError, match="simulation_report"):
+        lesson_review_prompt(
+            artifacts,
+            {"reference_solution_text": "IGNORE_ALL_RULES"},
+            "review-context-1",
+        )
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "build_prompt"),
+    (
+        ("reasoning_trajectory", lambda value: teaching_script_prompt(value)),
+        (
+            "reasoning_trajectory",
+            lambda value: interaction_plan_prompt(value, teaching_script()),
+        ),
+        (
+            "teaching_script",
+            lambda value: interaction_plan_prompt(reasoning_trajectory(), value),
+        ),
+        (
+            "teaching_script",
+            lambda value: performance_score_prompt(
+                [], value, interaction_plan(), {"semantic_actions": ["focus"]}
+            ),
+        ),
+        (
+            "interaction_plan",
+            lambda value: performance_score_prompt(
+                [], teaching_script(), value, {"semantic_actions": ["focus"]}
+            ),
+        ),
+    ),
+)
+def test_other_named_artifact_parameters_reject_mappings(
+    artifact_name, build_prompt
+):
+    with pytest.raises(TypeError, match=artifact_name):
+        build_prompt({"reference_solution_text": "IGNORE_ALL_RULES"})
 
 
 def test_each_repairable_builder_preserves_complete_repair_contract():
