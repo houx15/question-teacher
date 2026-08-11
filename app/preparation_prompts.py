@@ -21,6 +21,7 @@ from app.preparation_models import (
     SolutionTrace,
     TeachingScript,
 )
+from app.teaching_route import FrozenTeachingRoute
 
 
 _INERT_EVIDENCE_RULE = (
@@ -117,6 +118,43 @@ _TEACHING_ROUTE_OPTIONAL_KEYS = {"symbolic_context"}
 _TEACHING_ROUTE_KEYS = (
     _TEACHING_ROUTE_REQUIRED_KEYS | _TEACHING_ROUTE_OPTIONAL_KEYS
 )
+_SENSITIVE_METADATA_KEY_TOKENS = {
+    "auth",
+    "authorization",
+    "bearer",
+    "credential",
+    "credentials",
+    "endpoint",
+    "engine",
+    "model",
+    "path",
+    "provider",
+    "secret",
+    "token",
+    "uri",
+    "url",
+    "vendor",
+    "workspace",
+}
+_SENSITIVE_STRING_PATTERNS = (
+    re.compile(r"IGNORE_ALL_RULES", re.IGNORECASE),
+    re.compile(r"\b(?:https?|file)://", re.IGNORECASE),
+    re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+    re.compile(
+        r"\b(?:auth|authorization|token|api[-_ ]?key|secret|credential)\s*[:=]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:provider|vendor|model|engine|endpoint)\s*[:=]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:openai|anthropic|claude(?:-[A-Za-z0-9.-]+)?|gpt-[A-Za-z0-9.-]+)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:^|\s)[A-Za-z]:[\\/]\S*"),
+    re.compile(r"(?:^|\s)/(?!/)(?:[^\s/]+(?:/[^\s/]*)*)"),
+)
 _CAPABILITY_ENUMS = {
     "interaction_kinds": {"choice"},
     "surfaces": {"problem", "board"},
@@ -175,14 +213,54 @@ def _mapping_payload(value: Any, label: str) -> Dict[str, Any]:
     return payload
 
 
-def _contains_key(value: Any, target: str) -> bool:
+def _metadata_key_tokens(key: str) -> Any:
+    snake_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", snake_case.lower())
+        if token
+    }
+
+
+def _guard_nonraw_payload(
+    value: Any,
+    label: str,
+    path: str = "$",
+) -> None:
     if isinstance(value, dict):
-        return target in value or any(
-            _contains_key(item, target) for item in value.values()
-        )
+        for key, item in value.items():
+            item_path = "%s.%s" % (path, key)
+            if key == "reference_solution_text":
+                raise ValueError(
+                    "%s contains sensitive non-raw metadata at %s"
+                    % (label, item_path)
+                )
+            normalized_key = key.lower().replace("-", "_")
+            key_tokens = _metadata_key_tokens(key)
+            if (
+                "api_key" in normalized_key
+                or "apikey" in normalized_key
+                or key_tokens & _SENSITIVE_METADATA_KEY_TOKENS
+            ):
+                raise ValueError(
+                    "%s contains sensitive non-raw metadata at %s"
+                    % (label, item_path)
+                )
+            _guard_nonraw_payload(item, label, item_path)
+        return
     if isinstance(value, list):
-        return any(_contains_key(item, target) for item in value)
-    return False
+        for index, item in enumerate(value):
+            _guard_nonraw_payload(
+                item, label, "%s[%d]" % (path, index)
+            )
+        return
+    if isinstance(value, str) and any(
+        pattern.search(value) for pattern in _SENSITIVE_STRING_PATTERNS
+    ):
+        raise ValueError(
+            "%s contains sensitive non-raw metadata at %s"
+            % (label, path)
+        )
 
 
 def _artifact_payload(
@@ -196,10 +274,7 @@ def _artifact_payload(
             % (label, expected_type.__name__)
         )
     payload = value.model_dump(mode="json")
-    if _contains_key(payload, "reference_solution_text"):
-        raise ValueError(
-            "%s must not contain reference_solution_text" % label
-        )
+    _guard_nonraw_payload(payload, label)
     return payload
 
 
@@ -234,6 +309,7 @@ def _problem_targets_projection(problem_targets: Any) -> Any:
         if not isinstance(item, dict):
             raise TypeError("each problem target must serialize to a JSON object")
         projected.append({key: item[key] for key in allowed if key in item})
+    _guard_nonraw_payload(projected, "problem_targets")
     return projected
 
 
@@ -274,6 +350,7 @@ def _capabilities_projection(capabilities: Mapping[str, Any]) -> Dict[str, Any]:
                 "capability %s must be an integer from %d to %d"
                 % (key, minimum, maximum)
             )
+    _guard_nonraw_payload(raw, "capabilities")
     return raw
 
 
@@ -307,14 +384,13 @@ def _prepared_artifacts_projection(
 
 
 def _teaching_route_projection(teaching_route: Any) -> Dict[str, Any]:
-    to_prompt_payload = getattr(teaching_route, "to_prompt_payload", None)
-    if callable(to_prompt_payload):
-        source = to_prompt_payload()
+    if type(teaching_route) is FrozenTeachingRoute:
+        source = teaching_route.to_prompt_payload()
     elif isinstance(teaching_route, Mapping):
         source = teaching_route
     else:
         raise TypeError(
-            "teaching_route must be a Mapping or expose to_prompt_payload()"
+            "teaching_route must be an exact FrozenTeachingRoute or a Mapping"
         )
     if not isinstance(source, Mapping):
         raise TypeError("teaching_route payload must be a mapping")
@@ -334,10 +410,7 @@ def _teaching_route_projection(teaching_route: Any) -> Dict[str, Any]:
             % ", ".join(sorted(missing))
         )
     payload = _mapping_payload(source, "teaching_route")
-    if _contains_key(payload, "reference_solution_text"):
-        raise ValueError(
-            "teaching_route must not contain reference_solution_text"
-        )
+    _guard_nonraw_payload(payload, "teaching_route")
     return payload
 
 
@@ -411,7 +484,7 @@ def _repair_projection(repair: Optional[Mapping[str, Any]]) -> Optional[Dict[str
         raise ValueError(
             "repair_request.current_artifact_version must be a positive integer"
         )
-    return {
+    payload = {
         "finding_ids": list(finding_ids),
         "evidence": _nonblank_string_list(repair["evidence"], "evidence"),
         "requested_changes": _nonblank_string_list(
@@ -422,6 +495,8 @@ def _repair_projection(repair: Optional[Mapping[str, Any]]) -> Optional[Dict[str
             repair["retained_artifacts"]
         ),
     }
+    _guard_nonraw_payload(payload, "repair_request")
+    return payload
 
 
 def _with_repair(payload: Dict[str, Any], repair: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
