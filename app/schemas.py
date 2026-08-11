@@ -1,4 +1,3 @@
-import re
 from typing import Annotated, Dict, List, Literal, Optional
 
 from pydantic import (
@@ -11,6 +10,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from app.math_content import contains_math_markup as _contains_math_markup
 
 
 NonEmptyString = Annotated[
@@ -647,12 +648,6 @@ _LOSSLESS_LEGACY_ANNOTATIONS = {
     "bracket",
     "label",
 }
-
-
-def _contains_math_markup(value: str) -> bool:
-    return "$" in value or bool(
-        re.search(r"\\(?:[()[\]]|[A-Za-z]+)", value)
-    )
 
 
 def _legacy_action_to_sync(

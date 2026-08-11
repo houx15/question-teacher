@@ -11,8 +11,13 @@ from app.generation import (
     LessonInputError,
     LessonQualityError,
     _VerifiedMathRoute,
+    _normalize_choice_option_label,
     _normalize_grounded_choice_option_label,
     _prune_orphan_cue_cleanup_actions,
+)
+from app.math_content import (
+    normalize_choice_option_label,
+    normalize_grounded_choice_option_label,
 )
 from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
@@ -103,6 +108,12 @@ def sync_cue_payload(cue_id, spoken_text, **action_phases):
         "spoken_text": spoken_text,
         **action_phases,
     }
+
+
+def test_legacy_generation_normalizer_names_delegate_to_shared_math_content():
+    value = r"  选项   \( x + 1 = 2 \)  "
+    assert _normalize_choice_option_label(value) == normalize_choice_option_label(value)
+    assert _normalize_grounded_choice_option_label(value) == normalize_grounded_choice_option_label(value)
 
 
 def migrate_legacy_moments_to_sync_cues(payload):

@@ -9,8 +9,6 @@ from typing import (
     Callable,
     Optional,
     Sequence,
-    Set,
-    Tuple,
     Union,
 )
 
@@ -30,6 +28,18 @@ from app.claim_checker import (
 from app.deterministic_route import DeterministicRoutePlanner
 from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
+from app.math_content import (
+    contains_explicit_choice_answer_leak,
+    normalize_answer_leak_text,
+    normalize_choice_option_label as _normalize_choice_option_label,
+    normalize_grounded_choice_option_label as _normalize_grounded_choice_option_label,
+    normalize_reference_text,
+)
+from app.preparation_validation import (
+    VisualActionValidationError,
+    validate_current_cue_cleanup,
+    validate_visual_action_references,
+)
 from app.prompts import (
     DIRECTOR_SYSTEM,
     MATERIALS_SYSTEM,
@@ -85,7 +95,6 @@ StageCallback = Callable[
     Union[None, Awaitable[None]],
 ]
 MomentWithSyncCues = Union[NarrativeMoment, LessonMoment]
-ActionKey = Tuple[str, str]
 MISSING_REQUIRED_LEAD_EMPHASIS_ERROR = (
     "教学主线缺少题面关键对象的前置强调。"
 )
@@ -197,10 +206,6 @@ RESOLVED_METHODS = {
 }
 
 
-_INLINE_MATH_SEGMENT = re.compile(r"\\\((.*?)\\\)")
-_BLOCK_MATH_SEGMENT = re.compile(r"\\\[(.*?)\\\]")
-
-
 def _cue_actions(moment: MomentWithSyncCues):
     for cue in moment.sync_cues:
         yield from cue.lead_actions
@@ -210,76 +215,6 @@ def _cue_actions(moment: MomentWithSyncCues):
 
 def _moment_spoken_text(moment: MomentWithSyncCues) -> str:
     return "".join(cue.spoken_text for cue in moment.sync_cues)
-
-
-def _normalize_choice_option_label(label: str) -> str:
-    """Approximate browser display normalization for choice-label equality."""
-    normalized = " ".join(label.split())
-    normalized = _INLINE_MATH_SEGMENT.sub(
-        lambda match: r"\(" + re.sub(r"\s+", "", match.group(1)) + r"\)",
-        normalized,
-    )
-    return _BLOCK_MATH_SEGMENT.sub(
-        lambda match: r"\[" + re.sub(r"\s+", "", match.group(1)) + r"\]",
-        normalized,
-    )
-
-
-def _normalize_grounded_choice_option_label(label: str) -> str:
-    """Normalize visually equivalent, bounded KaTeX choice labels."""
-    normalized = label.translate(
-        str.maketrans(
-            {
-                "−": "-",
-                "－": "-",
-                "–": "-",
-                "—": "-",
-                "＋": "+",
-                "×": "*",
-                "·": "*",
-                "÷": "/",
-                "＝": "=",
-                "≠": r"\ne",
-                "²": "^2",
-                "³": "^3",
-            }
-        )
-    )
-    for command, replacement in (
-        (r"\left", ""),
-        (r"\right", ""),
-        (r"\dfrac", r"\frac"),
-        (r"\tfrac", r"\frac"),
-        (r"\times", "*"),
-        (r"\cdot", "*"),
-        (r"\div", "/"),
-        (r"\neq", r"\ne"),
-    ):
-        normalized = normalized.replace(command, replacement)
-    for delimiter in (r"\(", r"\)", r"\[", r"\]", "$"):
-        normalized = normalized.replace(delimiter, "")
-    for spacing in (
-        r"\,",
-        r"\;",
-        r"\:",
-        r"\!",
-        r"\quad",
-        r"\qquad",
-        r"\enspace",
-        r"\thinspace",
-        r"\medspace",
-        r"\thickspace",
-    ):
-        normalized = normalized.replace(spacing, "")
-    normalized = re.sub(r"\s+", "", normalized)
-    redundant_script_braces = re.compile(
-        r"([_^])\{([A-Za-z0-9]|\\[A-Za-z]+)\}"
-    )
-    while True:
-        reduced = redundant_script_braces.sub(r"\1\2", normalized)
-        if reduced == normalized:
-            return normalized
-        normalized = reduced
 
 
 class LessonQualityError(RuntimeError):
@@ -296,21 +231,18 @@ class LessonInputError(LessonQualityError):
 
 def _validate_current_cue_cleanup(
     action: SyncVisualAction,
-    focused_targets: Set[ActionKey],
-    emphasized_targets: Set[ActionKey],
+    focused_targets: set,
+    emphasized_targets: set,
 ) -> None:
-    action_key = (action.surface, action.target)
-    if action.type == "fade" and action_key not in emphasized_targets:
-        raise LessonQualityError(
-            "结束动作没有匹配当前 cue 的强调活动状态。"
+    """Preserve the legacy private name while using the shared legality core."""
+    try:
+        validate_current_cue_cleanup(
+            action,
+            focused_targets,
+            emphasized_targets,
         )
-    if (
-        action.type == "clear_focus"
-        and action_key not in focused_targets
-    ):
-        raise LessonQualityError(
-            "结束动作没有匹配当前 cue 的聚焦活动状态。"
-        )
+    except VisualActionValidationError as error:
+        raise LessonQualityError(error.detail) from None
 
 
 class _DraftSchemaValidationError(LessonQualityError):
@@ -1341,93 +1273,13 @@ class LessonGenerationService:
         moments: Sequence[MomentWithSyncCues],
         problem_focus_targets: Sequence[ProblemFocusTarget] = (),
     ) -> None:
-        problem_target_ids = {
-            target.target_id
-            for target in problem_focus_targets
-        }
-        base_targets = set()
-        allowed_phase_types = {
-            "lead_actions": {"focus", "emphasize"},
-            "start_actions": {
-                "write",
-                "transform",
-                "focus",
-                "emphasize",
-                "annotate",
-                "reveal",
-            },
-            "end_actions": {"clear_focus", "fade"},
-        }
-        for moment in moments:
-            active_targets = set(base_targets)
-            for cue in moment.sync_cues:
-                cue_focused_targets = set()
-                cue_emphasized_targets = set()
-                action_phases = (
-                    ("lead_actions", cue.lead_actions),
-                    ("start_actions", cue.start_actions),
-                    ("end_actions", cue.end_actions),
-                )
-                for phase, actions in action_phases:
-                    for action in actions:
-                        if action.type not in allowed_phase_types[phase]:
-                            raise LessonQualityError(
-                                f"{phase} 包含不允许的动作类型。"
-                            )
-                        action_key = (action.surface, action.target)
-                        if action.surface == "problem":
-                            if action.target not in problem_target_ids:
-                                raise LessonQualityError(
-                                    "视觉动作引用了未知的题面目标。"
-                                )
-                            if phase == "end_actions":
-                                _validate_current_cue_cleanup(
-                                    action,
-                                    cue_focused_targets,
-                                    cue_emphasized_targets,
-                                )
-                            if action.type == "focus":
-                                cue_focused_targets.add(action_key)
-                            elif action.type == "emphasize":
-                                cue_emphasized_targets.add(action_key)
-                            continue
-                        if action.type in {"write", "transform"}:
-                            if (
-                                action.source is not None
-                                and action.source not in active_targets
-                            ):
-                                raise LessonQualityError(
-                                    "板书变形引用了尚未创建的来源对象。"
-                                )
-                            active_targets.add(action.target)
-                            continue
-                        required_targets = [action.target]
-                        if (
-                            action.type == "annotate"
-                            and action.annotation == "arrow"
-                        ):
-                            required_targets.append(
-                                action.relation_target
-                            )
-                        if any(
-                            target not in active_targets
-                            for target in required_targets
-                        ):
-                            raise LessonQualityError(
-                                "板书动作引用了尚未创建的对象。"
-                            )
-                        if phase == "end_actions":
-                            _validate_current_cue_cleanup(
-                                action,
-                                cue_focused_targets,
-                                cue_emphasized_targets,
-                            )
-                        if action.type == "focus":
-                            cue_focused_targets.add(action_key)
-                        elif action.type == "emphasize":
-                            cue_emphasized_targets.add(action_key)
-            if moment.layer == "base":
-                base_targets = active_targets
+        try:
+            validate_visual_action_references(
+                moments,
+                problem_focus_targets,
+            )
+        except VisualActionValidationError as error:
+            raise LessonQualityError(error.detail) from None
 
     @staticmethod
     def _validate_narrative_size(narrative: NarrativeDraft) -> None:
@@ -1692,60 +1544,16 @@ class LessonGenerationService:
             raw_visible = "|".join(
                 [*visible_parts, interaction.prompt]
             )
-            visible = self._normalize_answer_leak_text(raw_visible)
-            option_id = self._normalize_answer_leak_text(
-                correct_option.option_id
-            )
-            cue = r"(?:正确答案|答案|应选|选择)"
-            if len(option_id) >= 4:
-                explicit_option_id = option_id in visible
-            else:
-                option_id_pattern = (
-                    r"(?<![a-z0-9_+\-*/^=×÷−－–—＋])"
-                    + re.escape(option_id)
-                    + r"(?![a-z0-9_+\-*/^=×÷−－–—＋])"
-                )
-                explicit_option_id = re.search(
-                    rf"(?:"
-                    rf"(?:选择|应选|选){option_id_pattern}|"
-                    rf"(?:正确答案|答案)"
-                    rf"(?:就是|应该是|应为|是|为){option_id_pattern}|"
-                    rf"{option_id_pattern}(?:选项|项)|"
-                    rf"{option_id_pattern}"
-                    rf"(?:就是|应该是|应为|是|为)"
-                    rf"(?:正确答案|正确选项)"
-                    rf")",
-                    visible,
-                ) is not None
-            if option_id and explicit_option_id:
-                raise LessonQualityError("互动前明确泄露了正确选项。")
-
-            label = self._normalize_answer_leak_text(
-                correct_option.label
-            )
-            if not label or label not in visible:
-                continue
-            label_pattern = re.escape(label)
-            announcement = re.compile(
-                rf"(?:{cue}.{{0,32}}{label_pattern}|"
-                rf"{label_pattern}.{{0,32}}{cue})"
-            )
-            if announcement.search(visible):
+            if contains_explicit_choice_answer_leak(
+                raw_visible,
+                correct_option.option_id,
+                correct_option.label,
+            ):
                 raise LessonQualityError("互动前明确泄露了正确选项。")
 
     @staticmethod
     def _normalize_answer_leak_text(value: str) -> str:
-        normalized = value.lower()
-        normalized = re.sub(
-            r"\\(?:left|right|text|mathrm|mathbf)",
-            "",
-            normalized,
-        )
-        return re.sub(
-            r"[\s$\\()\[\]{}，。；：、,.!?！？;:]",
-            "",
-            normalized,
-        )
+        return normalize_answer_leak_text(value)
 
     def _validate_grounded_review_evidence(
         self,
@@ -1795,53 +1603,7 @@ class LessonGenerationService:
 
     @staticmethod
     def _normalize_grounded_text(value: str) -> str:
-        normalized = value.translate(
-            str.maketrans(
-                {
-                    "×": "*",
-                    "÷": "/",
-                    "−": "-",
-                    "－": "-",
-                    "–": "-",
-                    "—": "-",
-                    "＋": "+",
-                }
-            )
-        )
-        normalized = re.sub(
-            r"\\(?:left|right|,|;|!|quad|qquad)",
-            "",
-            normalized,
-        )
-        normalized = re.sub(
-            r"\\(?:dfrac|tfrac|frac)"
-            r"\{([A-Za-z0-9.+\-]+)\}"
-            r"\{([A-Za-z0-9.+\-]+)\}",
-            r"\1/\2",
-            normalized,
-        )
-        normalized = re.sub(
-            r"\\(?:dfrac|tfrac|frac)"
-            r"([A-Za-z0-9])([A-Za-z0-9])",
-            r"\1/\2",
-            normalized,
-        )
-        superscript_digits = str.maketrans(
-            "⁰¹²³⁴⁵⁶⁷⁸⁹",
-            "0123456789",
-        )
-        normalized = re.sub(
-            r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+",
-            lambda match: "^" + match.group().translate(
-                superscript_digits
-            ),
-            normalized,
-        )
-        return re.sub(
-            r"[\s$\\()\[\]{}，。；：,;:]",
-            "",
-            normalized,
-        )
+        return normalize_reference_text(value)
 
     @staticmethod
     def _resolved_method_display_name(
