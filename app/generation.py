@@ -1,5 +1,7 @@
 import hashlib
 import inspect
+import json
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import (
@@ -42,6 +44,7 @@ from app.prompts import (
 )
 from app.schemas import (
     FIXED_RUNTIME_CUE_IDS,
+    LessonDraft,
     MathRouteDraft,
     ProblemInput,
     ReferenceGroundingBrief,
@@ -115,6 +118,27 @@ class GeneratedLessonBundle(SchemaModel):
             FIXED_RUNTIME_CUE_IDS.values()
         )
         provenance = self.generation_record.cue_provenance
+        prepared = self.generation_record.prepared_lesson
+        clauses = prepared.teaching_script.clauses
+        if [item.clause_id for item in provenance] != [
+            item.clause_id for item in clauses
+        ]:
+            raise ValueError("cue provenance clause order changed")
+        clause_by_id = {item.clause_id: item for item in clauses}
+        original_cue_by_clause = {
+            clause_id: cue.cue_id
+            for cue in prepared.performance_score.cues
+            for clause_id in cue.clause_ids
+        }
+        if any(
+            item.episode_id != clause_by_id[item.clause_id].episode_id
+            or item.spoken_text
+            != clause_by_id[item.clause_id].spoken_text
+            or item.original_performance_cue_id
+            != original_cue_by_clause.get(item.clause_id)
+            for item in provenance
+        ):
+            raise ValueError("cue provenance no longer matches preparation")
         provenance_ids = {item.runtime_cue_id for item in provenance}
         if provenance_ids != authored_runtime_ids:
             raise ValueError("compiled authored cue ids changed")
@@ -144,6 +168,22 @@ class _RouteValidationError(LessonQualityError):
     def __init__(self, code: str, public_message: str) -> None:
         super().__init__(public_message)
         self.code = code
+
+
+def _canonical_report(report: dict) -> str:
+    return json.dumps(
+        report,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _runtime_semantics(lesson: RuntimeLesson) -> dict:
+    payload = lesson.model_dump(mode="json")
+    payload.pop("lesson_id", None)
+    return payload
 
 
 @dataclass(frozen=True)
@@ -326,17 +366,53 @@ class LessonGenerationService:
             validation_report["reference_material_status"] = (
                 reference_audit.status
             )
+        frozen_problem_json = problem.model_dump_json()
+        frozen_draft_json = draft.model_dump_json()
+        frozen_report_json = _canonical_report(validation_report)
         try:
-            lesson = self.compiler.compile(
-                problem,
-                draft,
-                validation_report,
+            expected_lesson = LessonCompiler().compile(
+                ProblemInput.model_validate_json(frozen_problem_json),
+                LessonDraft.model_validate_json(frozen_draft_json),
+                json.loads(frozen_report_json),
+                lesson_id="integrity-baseline",
             )
         except LessonCompileError:
             raise LessonQualityError("课堂编译失败。") from None
+        compiler_problem = ProblemInput.model_validate_json(
+            frozen_problem_json
+        )
+        compiler_draft = LessonDraft.model_validate_json(
+            frozen_draft_json
+        )
+        compiler_report = json.loads(frozen_report_json)
+        try:
+            lesson = self.compiler.compile(
+                compiler_problem,
+                compiler_draft,
+                compiler_report,
+            )
+        except LessonCompileError:
+            raise LessonQualityError("课堂编译失败。") from None
+        if type(lesson) is not RuntimeLesson:
+            raise LessonQualityError("课堂编译完整性检查失败。")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                lesson_payload = lesson.model_dump(mode="python")
+            lesson = RuntimeLesson.model_validate(lesson_payload)
+        except (ValidationError, TypeError, ValueError):
+            raise LessonQualityError(
+                "课堂编译完整性检查失败。"
+            ) from None
         if (
-            lesson.problem != problem
-            or lesson.validation_report != validation_report
+            compiler_problem.model_dump_json() != frozen_problem_json
+            or compiler_draft.model_dump_json() != frozen_draft_json
+            or _canonical_report(compiler_report) != frozen_report_json
+            or lesson.problem.model_dump_json() != frozen_problem_json
+            or _canonical_report(lesson.validation_report)
+            != frozen_report_json
+            or _runtime_semantics(lesson)
+            != _runtime_semantics(expected_lesson)
         ):
             raise LessonQualityError("课堂编译完整性检查失败。")
         generation_record = GenerationRecord(

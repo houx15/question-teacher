@@ -52,8 +52,8 @@ def problem() -> ProblemInput:
         reference_answer="m-n=1/2",
         reference_solution_text=(
             RAW_REFERENCE_MARKER
-            + "：将x=2n代入，连接目标m-n；利用n不等于0约去因式，"
-            "最后回到m-n=1/2。"
+            + "：$x=2n$，$4n^2-4mn+2n=0$，"
+            "$2n-2m+1=0$，$m-n=1/2$。"
         ),
     )
 

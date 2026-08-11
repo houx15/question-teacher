@@ -21,7 +21,11 @@ from app.preparation_pipeline import (
     PreparationFailure,
 )
 from app.problem_focus import compile_problem_focus_targets
-from app.schemas import ProblemInput, ReferenceMaterialAudit
+from app.schemas import (
+    ProblemInput,
+    ReferenceMaterialAudit,
+    SyncVisualAction,
+)
 from app.teaching_route import TeachingRouteMode
 from tests.generation_fakes import (
     CompositeGenerationClient,
@@ -239,14 +243,16 @@ def grounded_source_problem(reference_solution_text=None):
     )
 
 
-def _approved_preparation_client(route_responses=None):
+def _approved_preparation_client(route_responses=None, performance=None):
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace_payload()],
             "teaching_designer": [trajectory_payload()],
             "script_teacher": [downstream_script_payload()],
             "interaction_designer": [downstream_interaction_payload()],
-            "classroom_director": [downstream_score_payload()],
+            "classroom_director": [
+                performance or downstream_score_payload()
+            ],
             "student_simulator": [downstream_simulation_payload()],
             "lesson_reviewer": [downstream_review_payload()],
         }
@@ -739,6 +745,208 @@ def _merge_first_two_authored_cues(lesson):
     return lesson.model_copy(update={"beats": beats})
 
 
+def _mutate_authored_action(lesson, mode):
+    beats = list(lesson.beats)
+    if mode == "inject":
+        beat = beats[0]
+        cues = list(beat.sync_cues)
+        cue = cues[0]
+        cues[0] = cue.model_copy(
+            update={
+                "start_actions": [
+                    *cue.start_actions,
+                    SyncVisualAction(
+                        surface="board",
+                        type="focus",
+                        target="compiler-injected-target",
+                    ),
+                ]
+            }
+        )
+        beats[0] = beat.model_copy(update={"sync_cues": cues})
+        return lesson.model_copy(update={"beats": beats})
+
+    for beat_index, beat in enumerate(beats):
+        cues = list(beat.sync_cues)
+        for cue_index, cue in enumerate(cues):
+            for action_field in (
+                "lead_actions",
+                "start_actions",
+                "end_actions",
+            ):
+                actions = list(getattr(cue, action_field))
+                if not actions:
+                    continue
+                if mode == "delete":
+                    actions.pop(0)
+                else:
+                    actions[0] = actions[0].model_copy(
+                        update={"target": "compiler-mutated-target"}
+                    )
+                cues[cue_index] = cue.model_copy(
+                    update={action_field: actions}
+                )
+                beats[beat_index] = beat.model_copy(
+                    update={"sync_cues": cues}
+                )
+                return lesson.model_copy(update={"beats": beats})
+    raise AssertionError("fixture has no authored action")
+
+
+def _move_interaction_binding(lesson):
+    beats = list(lesson.beats)
+    source_index = next(
+        index
+        for index, beat in enumerate(beats)
+        if beat.interaction is not None
+    )
+    target_index = source_index - 1
+    interaction = beats[source_index].interaction
+    assert target_index >= 0
+    assert beats[target_index].interaction is None
+    beats[source_index] = beats[source_index].model_copy(
+        update={"interaction": None}
+    )
+    beats[target_index] = beats[target_index].model_copy(
+        update={"interaction": interaction}
+    )
+    return lesson.model_copy(update={"beats": beats})
+
+
+def _move_authored_cue_to_another_beat(lesson):
+    beats = list(lesson.beats)
+    source_index = next(
+        index for index, beat in enumerate(beats) if beat.sync_cues
+    )
+    target_index = source_index + 1
+    cue = beats[source_index].sync_cues[0]
+    beats[source_index] = beats[source_index].model_copy(
+        update={"sync_cues": beats[source_index].sync_cues[1:]}
+    )
+    beats[target_index] = beats[target_index].model_copy(
+        update={"sync_cues": [cue, *beats[target_index].sync_cues]}
+    )
+    return lesson.model_copy(update={"beats": beats})
+
+
+def _inject_audio_before_tts(lesson):
+    beats = list(lesson.beats)
+    beat = beats[0]
+    cues = list(beat.sync_cues)
+    cues[0] = cues[0].model_copy(
+        update={"audio_url": "/audio/compiler-injected.mp3"}
+    )
+    beats[0] = beat.model_copy(update={"sync_cues": cues})
+    return lesson.model_copy(update={"beats": beats})
+
+
+def _mutate_fixed_transfer_cue(lesson):
+    beats = list(lesson.beats)
+    beat = beats[-1]
+    cue = beat.sync_cues[0]
+    assert cue.cue_id == "runtime-transfer-intro-cue"
+    beats[-1] = beat.model_copy(
+        update={
+            "sync_cues": [
+                cue.model_copy(update={"spoken_text": "编译器注入的过渡语"})
+            ]
+        }
+    )
+    return lesson.model_copy(update={"beats": beats})
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda lesson: _mutate_authored_action(lesson, "inject"),
+        lambda lesson: _mutate_authored_action(lesson, "delete"),
+        lambda lesson: _mutate_authored_action(lesson, "modify"),
+        _move_interaction_binding,
+        lambda lesson: lesson.model_copy(
+            update={
+                "beats": [
+                    lesson.beats[0].model_copy(update={"layer": "comparison"}),
+                    *lesson.beats[1:],
+                ]
+            }
+        ),
+        _move_authored_cue_to_another_beat,
+        _inject_audio_before_tts,
+        _mutate_fixed_transfer_cue,
+    ],
+)
+def test_post_compile_integrity_rejects_any_runtime_semantic_mutation(
+    mutation,
+):
+    score = downstream_score_payload()
+    score["board_objects"] = [
+        {"board_object_id": "target-relation", "content": "m-n"}
+    ]
+    score["cues"][0]["start_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "target-relation",
+                "content": "m-n",
+            },
+        }
+    ]
+    client = _approved_preparation_client(performance=score)
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        compiler=_MutatingCompiler(mutation),
+    )
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    with pytest.raises(LessonQualityError, match="完整性"):
+        asyncio.run(service.generate_bundle(preparation_problem()))
+
+
+class _InPlaceMutatingCompiler:
+    def __init__(self, target):
+        self.target = target
+
+    def compile(self, source_problem, draft, report):
+        if self.target == "problem":
+            source_problem.problem_text = "被编译器原地篡改的题目"
+        elif self.target == "report":
+            report["compiler_injected"] = "private"
+        else:
+            draft.title = "被编译器原地篡改的标题"
+        return LessonCompiler().compile(source_problem, draft, report)
+
+
+@pytest.mark.parametrize("target", ["problem", "report", "draft"])
+def test_compiler_cannot_mutate_its_defensive_inputs_in_place(target):
+    client = _approved_preparation_client()
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        compiler=_InPlaceMutatingCompiler(target),
+    )
+    source_problem = preparation_problem()
+    frozen_source = source_problem.model_dump_json()
+
+    async def grounded_route(received_problem, on_stage):
+        del received_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    with pytest.raises(LessonQualityError, match="完整性"):
+        asyncio.run(service.generate_bundle(source_problem))
+
+    assert source_problem.model_dump_json() == frozen_source
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -749,6 +957,9 @@ def _merge_first_two_authored_cues(lesson):
                     reference_answer="另一个答案",
                 )
             }
+        ),
+        lambda lesson: lesson.model_copy(
+            update={"problem": {"problem_text": "malformed compiler output"}}
         ),
         lambda lesson: lesson.model_copy(
             update={"validation_report": {"review_status": "forged"}}
@@ -864,6 +1075,39 @@ def test_bundle_rejects_a_generation_record_for_another_lesson():
     )
 
     with pytest.raises(ValidationError, match="lesson id mismatch"):
+        GeneratedLessonBundle(
+            lesson=bundle.lesson,
+            generation_record=forged_record,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("episode_id", "forged-episode"),
+        ("original_performance_cue_id", "forged-performance-cue"),
+    ],
+)
+def test_bundle_rejects_provenance_detached_from_private_preparation(
+    field,
+    value,
+):
+    client = _approved_preparation_client()
+    service = LessonGenerationService(client, MathEngine())
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+    bundle = asyncio.run(service.generate_bundle(preparation_problem()))
+    provenance = list(bundle.generation_record.cue_provenance)
+    provenance[0] = provenance[0].model_copy(update={field: value})
+    forged_record = bundle.generation_record.model_copy(
+        update={"cue_provenance": provenance}
+    )
+
+    with pytest.raises(ValidationError, match="matches preparation"):
         GeneratedLessonBundle(
             lesson=bundle.lesson,
             generation_record=forged_record,
