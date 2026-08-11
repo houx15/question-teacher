@@ -1,7 +1,14 @@
-from typing import Dict, List, Literal, Optional
+from typing import Annotated, Dict, List, Literal, Optional
 
-from pydantic import Field, PositiveInt, field_validator, model_validator
+from pydantic import (
+    Field,
+    PositiveInt,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
+from app.pedagogy_rubric import ReviewCriterionId
 from app.schemas import (
     CueSpokenText,
     GeneratedId,
@@ -39,6 +46,18 @@ MAX_DETAIL_ITEMS = 64
 MAX_MATH_REFERENCE_ITEMS = 2048
 MAX_VISUAL_ACTION_ITEMS = 2048
 MAX_ARTIFACT_HISTORY_ITEMS = 64
+MAX_SIMULATION_EVIDENCE_ITEMS = 16
+MAX_REVIEW_ARTIFACT_ITEMS = 6
+MAX_SIMULATION_SERIALIZED_BYTES = 128 * 1024
+MAX_REVIEW_SERIALIZED_BYTES = 128 * 1024
+LearnerProfileText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+]
+BoundedReviewText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=800),
+]
 
 
 def _require_unique(values: List[str], label: str) -> None:
@@ -315,13 +334,13 @@ class PerformanceScore(SchemaModel):
 
 class EpisodeSimulationResult(SchemaModel):
     episode_id: GeneratedId
-    learner_profile: NonEmptyString
+    learner_profile: LearnerProfileText
     can_identify_attention_target: bool
     can_explain_decision: bool
     can_execute_action: bool
     can_use_result_to_continue: bool
-    evidence: List[NonEmptyString] = Field(
-        min_length=1, max_length=MAX_DETAIL_ITEMS
+    evidence: List[BoundedReviewText] = Field(
+        min_length=1, max_length=MAX_SIMULATION_EVIDENCE_ITEMS
     )
 
 
@@ -329,13 +348,19 @@ class SimulationReport(SchemaModel):
     episode_results: List[EpisodeSimulationResult] = Field(
         min_length=1, max_length=MAX_PREPARATION_ITEMS
     )
-    interaction_results: List[NonEmptyString] = Field(
+    interaction_results: List[BoundedReviewText] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
-    end_of_lesson_recall: NonEmptyString
-    blocking_findings: List[NonEmptyString] = Field(
+    end_of_lesson_recall: BoundedReviewText
+    blocking_findings: List[BoundedReviewText] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
+
+    @model_validator(mode="after")
+    def validate_serialized_size(self) -> "SimulationReport":
+        if len(self.model_dump_json().encode("utf-8")) > MAX_SIMULATION_SERIALIZED_BYTES:
+            raise ValueError("simulation report exceeds serialized byte limit")
+        return self
 
 
 class ReviewFinding(SchemaModel):
@@ -343,13 +368,21 @@ class ReviewFinding(SchemaModel):
     severity: Literal["blocking", "material", "polish"]
     artifact_type: ArtifactType
     artifact_id: GeneratedId
-    criterion: NonEmptyString
-    evidence: NonEmptyString
+    criterion: ReviewCriterionId
+    evidence: BoundedReviewText
     responsible_role: ResponsibleRole
-    requested_change: NonEmptyString
+    requested_change: BoundedReviewText
     invalidated_downstream_artifacts: List[ArtifactType] = Field(
-        default_factory=list, max_length=MAX_DETAIL_ITEMS
+        default_factory=list, max_length=MAX_REVIEW_ARTIFACT_ITEMS
     )
+
+    @model_validator(mode="after")
+    def validate_invalidated_artifacts(self) -> "ReviewFinding":
+        _require_unique(
+            self.invalidated_downstream_artifacts,
+            "invalidated downstream artifacts",
+        )
+        return self
 
 
 class LessonReviewDecision(SchemaModel):
@@ -358,18 +391,21 @@ class LessonReviewDecision(SchemaModel):
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
     retained_artifacts: List[ArtifactType] = Field(
-        default_factory=list, max_length=MAX_DETAIL_ITEMS
+        default_factory=list, max_length=MAX_REVIEW_ARTIFACT_ITEMS
     )
-    approval_summary: NonEmptyString
+    approval_summary: BoundedReviewText
 
     @model_validator(mode="after")
     def validate_decision(self) -> "LessonReviewDecision":
         _require_unique([item.finding_id for item in self.findings], "finding ids")
+        _require_unique(self.retained_artifacts, "retained artifacts")
         blocking_or_material = any(item.severity in {"blocking", "material"} for item in self.findings)
         if self.status == "approved" and blocking_or_material:
             raise ValueError("approved review cannot contain blocking or material findings")
         if self.status in {"revision_required", "failed"} and not blocking_or_material:
             raise ValueError("revision_required or failed review requires a blocking or material finding")
+        if len(self.model_dump_json().encode("utf-8")) > MAX_REVIEW_SERIALIZED_BYTES:
+            raise ValueError("review decision exceeds serialized byte limit")
         return self
 
 

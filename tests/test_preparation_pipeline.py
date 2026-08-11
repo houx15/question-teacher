@@ -328,7 +328,7 @@ def downstream_review_payload(status="approved", findings=None):
     }
 
 
-def review_finding(role, criterion="必须说明当前决定理由"):
+def review_finding(role, criterion="learner_follows_why"):
     artifact_by_role = {
         "reference_analyst": ("solution_trace", "substitute-root"),
         "teaching_designer": ("reasoning_trajectory", "episode-1"),
@@ -338,7 +338,7 @@ def review_finding(role, criterion="必须说明当前决定理由"):
     }
     artifact_type, artifact_id = artifact_by_role[role]
     return {
-        "finding_id": "finding-%s-%d" % (role, len(criterion)),
+        "finding_id": "finding-%s-%s" % (role, criterion),
         "severity": "material",
         "artifact_type": artifact_type,
         "artifact_id": artifact_id,
@@ -536,6 +536,7 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
     )
 
     assert run.audit.versions == expected_versions
+    assert run.audit.active_versions == expected_versions
     assert run.prepared_lesson.repair_count == 1
     assert run.prepared_lesson.artifact_history == run.audit.history
     assert [call.role for call in fake.calls].count("student_simulator") == 2
@@ -609,10 +610,333 @@ def test_repair_prompt_contains_current_and_upstream_but_no_downstream_artifacts
     }
 
 
+@pytest.mark.parametrize(
+    ("trajectory_failure", "expected_category"),
+    [
+        (ModelResponseError("provider unavailable"), "provider_error"),
+        (
+            {
+                **trajectory_payload(),
+                "episodes": [
+                    {
+                        **trajectory_payload()["episodes"][0],
+                        "source_step_ids": ["missing-source-step"],
+                    },
+                    *trajectory_payload()["episodes"][1:],
+                ],
+            },
+            "reasoning_design_failed",
+        ),
+    ],
+)
+def test_mid_repair_failure_keeps_issued_history_but_clears_inactive_downstream(
+    trajectory_failure, expected_category
+):
+    finding = review_finding("reference_analyst")
+    fake = client(
+        traces=[trace_payload(), trace_payload()],
+        trajectories=[trajectory_payload(), trajectory_failure],
+        simulations=[downstream_simulation_payload()],
+        reviews=[downstream_review_payload("revision_required", [finding])],
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == expected_category
+    assert captured.value.audit.versions == {
+        "solution_trace": 2,
+        "reasoning_trajectory": 1,
+        "teaching_script": 1,
+        "interaction_plan": 1,
+        "performance_score": 1,
+        "simulation_report": 1,
+    }
+    assert captured.value.audit.active_versions == {"solution_trace": 2}
+    assert [
+        item.version
+        for item in captured.value.audit.history
+        if item.artifact_type == "solution_trace"
+    ] == [1, 2]
+    assert captured.value.audit.role_calls[-1].input_artifact_versions == {
+        "solution_trace": 2
+    }
+
+
+@pytest.mark.parametrize(
+    "failure_role",
+    (
+        "reference_analyst",
+        "teaching_designer",
+        "script_teacher",
+        "interaction_designer",
+        "classroom_director",
+        "student_simulator",
+        "lesson_reviewer",
+    ),
+)
+@pytest.mark.parametrize("failure_kind", ("provider", "deterministic"))
+def test_every_repair_rebuild_boundary_preserves_truthful_active_versions(
+    failure_role, failure_kind
+):
+    invalid_trace = trace_payload(final_conclusion="m-n=3/2")
+    invalid_trajectory = trajectory_payload()
+    invalid_trajectory["episodes"][0]["source_step_ids"] = ["missing-step"]
+    invalid_script = downstream_script_payload()
+    invalid_script["clauses"][3], invalid_script["clauses"][4] = (
+        invalid_script["clauses"][4],
+        invalid_script["clauses"][3],
+    )
+    invalid_interaction = {
+        "interactions": [
+            downstream_planned_interaction("interaction-1"),
+            downstream_planned_interaction("interaction-2"),
+        ],
+        "transfer_item": downstream_transfer_payload(),
+    }
+    invalid_performance = downstream_score_payload()
+    invalid_performance["cues"][0]["lead_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "problem",
+                "type": "focus",
+                "target": "missing-problem-target",
+            },
+        }
+    ]
+    invalid_simulation = downstream_simulation_payload()
+    invalid_simulation["episode_results"] = invalid_simulation[
+        "episode_results"
+    ][:-1]
+    invalid_review = downstream_review_payload(
+        "revision_required",
+        [
+            {
+                **review_finding("reference_analyst"),
+                "finding_id": "finding-missing-review-artifact",
+                "artifact_id": "missing-trace-step",
+            }
+        ],
+    )
+    deterministic = {
+        "reference_analyst": invalid_trace,
+        "teaching_designer": invalid_trajectory,
+        "script_teacher": invalid_script,
+        "interaction_designer": invalid_interaction,
+        "classroom_director": invalid_performance,
+        "student_simulator": invalid_simulation,
+        "lesson_reviewer": invalid_review,
+    }
+    failure = (
+        ModelResponseError("provider unavailable")
+        if failure_kind == "provider"
+        else deterministic[failure_role]
+    )
+    initial_finding = review_finding("reference_analyst")
+    fake = client(
+        traces=[
+            trace_payload(),
+            failure if failure_role == "reference_analyst" else trace_payload(),
+        ],
+        trajectories=[
+            trajectory_payload(),
+            failure
+            if failure_role == "teaching_designer"
+            else trajectory_payload(),
+        ],
+        scripts=[
+            downstream_script_payload(),
+            failure
+            if failure_role == "script_teacher"
+            else downstream_script_payload(),
+        ],
+        interactions=[
+            downstream_interaction_payload(),
+            failure
+            if failure_role == "interaction_designer"
+            else downstream_interaction_payload(),
+        ],
+        performances=[
+            downstream_score_payload(),
+            failure
+            if failure_role == "classroom_director"
+            else downstream_score_payload(),
+        ],
+        simulations=[
+            downstream_simulation_payload(),
+            failure
+            if failure_role == "student_simulator"
+            else downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload(
+                "revision_required", [initial_finding]
+            ),
+            failure
+            if failure_role == "lesson_reviewer"
+            else downstream_review_payload(),
+        ],
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    dependency_order = [
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_script",
+        "interaction_plan",
+        "performance_score",
+        "simulation_report",
+    ]
+    boundary = dependency_order.index(
+        "simulation_report"
+        if failure_role == "lesson_reviewer"
+        else failure_role.replace("reference_analyst", "solution_trace")
+        .replace("teaching_designer", "reasoning_trajectory")
+        .replace("script_teacher", "teaching_script")
+        .replace("interaction_designer", "interaction_plan")
+        .replace("classroom_director", "performance_score")
+        .replace("student_simulator", "simulation_report")
+    )
+    expected_active = {}
+    for index, artifact_type in enumerate(dependency_order):
+        if index < boundary or failure_role == "lesson_reviewer":
+            expected_active[artifact_type] = 2
+    if failure_role == "reference_analyst":
+        expected_active = {"solution_trace": 1}
+    assert captured.value.audit.active_versions == expected_active
+    assert set(captured.value.audit.versions) == set(dependency_order)
+
+
+@pytest.mark.parametrize(
+    ("prompt_name", "role"),
+    [
+        ("student_simulation_prompt", "student_simulator"),
+        ("lesson_review_prompt", "lesson_reviewer"),
+    ],
+)
+def test_simulation_and_review_prompt_size_failures_are_safe_and_audited(
+    monkeypatch, prompt_name, role
+):
+    def oversized_prompt(*args, **kwargs):
+        del args, kwargs
+        raise ValueError("prompt_payload_too_large")
+
+    monkeypatch.setattr(preparation_pipeline, prompt_name, oversized_prompt)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(client()).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "prompt_payload_too_large"
+    assert captured.value.role == role
+    assert captured.value.audit.role_calls[-1].role == role
+    assert captured.value.audit.role_calls[-1].failure_category == (
+        "prompt_payload_too_large"
+    )
+
+
+def test_repair_projection_limit_failure_is_safe_and_audited(monkeypatch):
+    original = preparation_pipeline.teaching_script_prompt
+
+    def bounded_repair_prompt(trajectory, repair=None):
+        if repair is not None:
+            raise ValueError("repair_request_evidence_text_limit")
+        return original(trajectory, repair=repair)
+
+    monkeypatch.setattr(
+        preparation_pipeline,
+        "teaching_script_prompt",
+        bounded_repair_prompt,
+    )
+    finding = review_finding("script_teacher")
+    fake = client(
+        reviews=[downstream_review_payload("revision_required", [finding])]
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "prompt_payload_too_large"
+    assert captured.value.role == "script_teacher"
+    assert captured.value.audit.role_calls[-1].failure_category == (
+        "prompt_payload_too_large"
+    )
+    assert captured.value.audit.active_versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+        "teaching_script": 1,
+    }
+
+
+def test_unknown_prompt_programmer_value_error_propagates(monkeypatch):
+    def broken_prompt(*args, **kwargs):
+        del args, kwargs
+        raise ValueError("programmer contract defect")
+
+    monkeypatch.setattr(
+        preparation_pipeline,
+        "lesson_review_prompt",
+        broken_prompt,
+    )
+
+    with pytest.raises(ValueError, match="programmer contract defect"):
+        asyncio.run(
+            LessonPreparationPipeline(client()).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+
+@pytest.mark.parametrize("role", ("student_simulator", "lesson_reviewer"))
+def test_oversized_model_text_fails_as_audited_invalid_structure(role):
+    simulations = [downstream_simulation_payload()]
+    reviews = [downstream_review_payload()]
+    if role == "student_simulator":
+        invalid = downstream_simulation_payload()
+        invalid["episode_results"][0]["evidence"] = ["证" * 1001]
+        simulations = [invalid, invalid]
+    else:
+        invalid = downstream_review_payload()
+        invalid["approval_summary"] = "结" * 2_000_000
+        reviews = [invalid, invalid]
+    fake = client(simulations=simulations, reviews=reviews)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "invalid_structure"
+    assert captured.value.role == role
+    assert captured.value.audit.role_calls[-1].failure_category == (
+        "invalid_structure"
+    )
+
+
 def test_multiple_material_findings_repair_from_earliest_responsible_role():
     findings = [
-        review_finding("classroom_director", "视觉重点错位"),
-        review_finding("script_teacher", "决定理由缺失"),
+        review_finding("classroom_director", "visual_action_alignment"),
+        review_finding("script_teacher", "learner_follows_why"),
     ]
     assert preparation_pipeline.earliest_responsible_role(
         [
@@ -655,7 +979,7 @@ def test_multiple_material_findings_repair_from_earliest_responsible_role():
 
 
 def test_polish_only_review_approves_without_a_repair_cycle():
-    polish = review_finding("script_teacher", "表达可更精炼")
+    polish = review_finding("script_teacher", "learner_follows_why")
     polish["severity"] = "polish"
     fake = client(
         reviews=[downstream_review_payload("approved", [polish])]
@@ -673,10 +997,15 @@ def test_polish_only_review_approves_without_a_repair_cycle():
 
 
 def test_three_repairs_can_converge_without_fixed_two_round_acceptance():
+    criteria = [
+        "visual_action_alignment",
+        "current_emphasis_correct",
+        "learner_follows_why",
+    ]
     reviews = [
         downstream_review_payload(
             "revision_required",
-            [review_finding("classroom_director", "criterion-%d" % index)],
+            [review_finding("classroom_director", criteria[index])],
         )
         for index in range(3)
     ] + [downstream_review_payload()]
@@ -707,10 +1036,32 @@ def test_three_repairs_can_converge_without_fixed_two_round_acceptance():
 
 
 def test_eight_unresolved_repairs_fail_safely_without_prepared_lesson():
+    cue_ids = [
+        "cue-clause-open",
+        "cue-clause-method",
+        "cue-clause-2",
+        "cue-clause-2-resume",
+        "cue-clause-3",
+        "cue-clause-4",
+        "cue-clause-close",
+    ]
+    findings = []
+    for index in range(9):
+        finding = review_finding(
+            "classroom_director",
+            (
+                "visual_action_alignment"
+                if index < len(cue_ids)
+                else "current_emphasis_correct"
+            ),
+        )
+        finding["finding_id"] = "finding-budget-%d" % index
+        finding["artifact_id"] = cue_ids[index % len(cue_ids)]
+        findings.append(finding)
     reviews = [
         downstream_review_payload(
             "revision_required",
-            [review_finding("classroom_director", "budget-%d" % index)],
+            [findings[index]],
         )
         for index in range(9)
     ]
@@ -1184,6 +1535,7 @@ def test_trace_and_trajectory_stages_run_in_dependency_order():
         "solution_trace": 1,
         "reasoning_trajectory": 1,
     }
+    assert result.active_versions == result.versions
 
 
 def test_raw_reference_solution_reaches_only_reference_analyst():
@@ -1694,11 +2046,14 @@ def test_run_snapshot_returns_defensive_copies_of_audit_and_artifacts():
     first_calls[0].failure_category = "tampered"
     first_versions = result.versions
     first_versions["solution_trace"] = 99
+    first_active_versions = result.active_versions
+    first_active_versions["solution_trace"] = 88
     first_trace = result.solution_trace
     first_trace.task_target = "tampered"
 
     assert result.role_calls[0].failure_category is None
     assert result.versions["solution_trace"] == 1
+    assert result.active_versions["solution_trace"] == 1
     assert result.solution_trace.task_target == "求m-n"
 
 
@@ -1837,6 +2192,84 @@ def test_concurrent_full_runs_keep_distinct_lessons_and_downstream_records():
     assert [
         call.token_usage["prompt_tokens"] for call in run_b.audit.role_calls
     ] == [51, 52, 53]
+
+
+def test_real_full_state_machine_reverses_concurrent_runs_without_state_leakage():
+    class FullInterleavingClient:
+        def __init__(self):
+            self.release_a = asyncio.Event()
+            self.finished = []
+
+        async def complete_json_with_metadata(self, system, user):
+            role = role_for_system(system)
+            marker = "RUN-A" if "RUN-A" in user else "RUN-B"
+            is_a = marker == "RUN-A"
+            if role == "classroom_director" and is_a:
+                await self.release_a.wait()
+
+            if role == "reference_analyst":
+                payload = trace_payload()
+                payload["audit_notes"] = [marker]
+            elif role == "teaching_designer":
+                payload = trajectory_payload()
+                payload["lesson_purpose"] += " " + marker
+            elif role == "script_teacher":
+                payload = downstream_script_payload()
+                payload["title"] += " " + marker
+            elif role == "interaction_designer":
+                payload = downstream_interaction_payload()
+                payload["transfer_item"]["problem_text"] += " " + marker
+            elif role == "classroom_director":
+                payload = downstream_score_payload()
+            elif role == "student_simulator":
+                payload = downstream_simulation_payload()
+                payload["end_of_lesson_recall"] += " " + marker
+            else:
+                payload = downstream_review_payload()
+                payload["approval_summary"] += " " + marker
+                self.finished.append(marker)
+                if not is_a:
+                    self.release_a.set()
+            usage = 101 if is_a else 202
+            return ModelCompletion(
+                payload,
+                {"prompt_tokens": usage, "total_tokens": usage},
+            )
+
+    async def scenario():
+        fake = FullInterleavingClient()
+        pipeline = LessonPreparationPipeline(fake)
+        problem_a = problem().model_copy(
+            update={"problem_text": problem().problem_text + " RUN-A"}
+        )
+        problem_b = problem().model_copy(
+            update={"problem_text": problem().problem_text + " RUN-B"}
+        )
+        runs = await asyncio.gather(
+            pipeline.prepare_with_audit(
+                problem_a, route(), focus_targets()
+            ),
+            pipeline.prepare_with_audit(
+                problem_b, route(), focus_targets()
+            ),
+        )
+        return fake, runs
+
+    fake, (run_a, run_b) = asyncio.run(scenario())
+
+    assert fake.finished == ["RUN-B", "RUN-A"]
+    assert run_a.prepared_lesson.teaching_script.title.endswith("RUN-A")
+    assert run_b.prepared_lesson.teaching_script.title.endswith("RUN-B")
+    assert run_a.prepared_lesson.review.approval_summary.endswith("RUN-A")
+    assert run_b.prepared_lesson.review.approval_summary.endswith("RUN-B")
+    assert run_a.audit.active_versions == run_a.audit.versions
+    assert run_b.audit.active_versions == run_b.audit.versions
+    assert {
+        call.token_usage["prompt_tokens"] for call in run_a.audit.role_calls
+    } == {101}
+    assert {
+        call.token_usage["prompt_tokens"] for call in run_b.audit.role_calls
+    } == {202}
 
 
 def test_prepare_compatibility_method_returns_only_defensive_prepared_lesson():

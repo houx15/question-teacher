@@ -1,6 +1,7 @@
 """Deterministic orchestration for the private lesson-preparation chain."""
 
 import inspect
+import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -139,6 +140,7 @@ class PreparationState:
     simulation_report: Optional[SimulationReport] = None
     review: Optional[LessonReviewDecision] = None
     versions: Dict[str, int] = field(default_factory=dict)
+    active_versions: Dict[str, int] = field(default_factory=dict)
     history: List[ArtifactRevision] = field(default_factory=list)
     role_calls: List[RoleCallRecord] = field(default_factory=list)
 
@@ -156,6 +158,7 @@ class PreparationAuditSnapshot:
     """Content-free, immutable storage for one request's audit metadata."""
 
     _version_items: Tuple[Tuple[str, int], ...]
+    _active_version_items: Tuple[Tuple[str, int], ...]
     _history_json: Tuple[str, ...]
     _role_call_json: Tuple[str, ...]
 
@@ -166,6 +169,9 @@ class PreparationAuditSnapshot:
     ) -> "PreparationAuditSnapshot":
         return cls(
             _version_items=tuple(sorted(state.versions.items())),
+            _active_version_items=tuple(
+                sorted(state.active_versions.items())
+            ),
             _history_json=tuple(
                 item.model_dump_json() for item in state.history
             ),
@@ -177,6 +183,10 @@ class PreparationAuditSnapshot:
     @property
     def versions(self) -> Dict[str, int]:
         return dict(self._version_items)
+
+    @property
+    def active_versions(self) -> Dict[str, int]:
+        return dict(self._active_version_items)
 
     @property
     def history(self) -> List[ArtifactRevision]:
@@ -229,6 +239,10 @@ class PreparationRunSnapshot:
     @property
     def versions(self) -> Dict[str, int]:
         return self.audit.versions
+
+    @property
+    def active_versions(self) -> Dict[str, int]:
+        return self.audit.active_versions
 
     @property
     def history(self) -> List[ArtifactRevision]:
@@ -445,6 +459,22 @@ class LessonPreparationPipeline:
 
         if state.review is None or state.review.status != "approved":
             self._raise_not_converged()
+        expected_active = {
+            "solution_trace",
+            "reasoning_trajectory",
+            "teaching_script",
+            "interaction_plan",
+            "performance_score",
+            "simulation_report",
+        }
+        if (
+            set(state.active_versions) != expected_active
+            or any(
+                state.active_versions[item] != state.versions.get(item)
+                for item in expected_active
+            )
+        ):
+            self._raise_not_converged()
         required = (
             state.solution_trace,
             state.reasoning_trajectory,
@@ -472,6 +502,7 @@ class LessonPreparationPipeline:
                 prepared,
                 teaching_route,
                 problem_focus_targets,
+                active_versions=state.active_versions,
             )
         except PreparationValidationError:
             raise PreparationFailure(
@@ -880,13 +911,16 @@ class LessonPreparationPipeline:
         repair = self._repair_request(role, state, routed)
         finding_ids = [item.finding_id for item in routed]
         state.review = None
-        state.simulation_report = None
+        self._deactivate_artifacts(state, "simulation_report")
 
         if role == "reference_analyst":
-            state.reasoning_trajectory = None
-            state.teaching_script = None
-            state.interaction_plan = None
-            state.performance_score = None
+            self._deactivate_artifacts(
+                state,
+                "reasoning_trajectory",
+                "teaching_script",
+                "interaction_plan",
+                "performance_score",
+            )
             await self._create_solution_trace(
                 state,
                 context.problem,
@@ -907,9 +941,12 @@ class LessonPreparationPipeline:
                 None,
             )
         elif role == "teaching_designer":
-            state.teaching_script = None
-            state.interaction_plan = None
-            state.performance_score = None
+            self._deactivate_artifacts(
+                state,
+                "teaching_script",
+                "interaction_plan",
+                "performance_score",
+            )
             await self._create_reasoning_trajectory(
                 state,
                 context.problem,
@@ -925,8 +962,11 @@ class LessonPreparationPipeline:
                 None,
             )
         elif role == "script_teacher":
-            state.interaction_plan = None
-            state.performance_score = None
+            self._deactivate_artifacts(
+                state,
+                "interaction_plan",
+                "performance_score",
+            )
             await self._create_teaching_script(
                 state,
                 None,
@@ -940,7 +980,7 @@ class LessonPreparationPipeline:
                 None,
             )
         elif role == "interaction_designer":
-            state.performance_score = None
+            self._deactivate_artifacts(state, "performance_score")
             await self._create_interaction_plan(
                 state,
                 None,
@@ -960,6 +1000,15 @@ class LessonPreparationPipeline:
                 repair,
                 finding_ids,
             )
+
+    @staticmethod
+    def _deactivate_artifacts(
+        state: PreparationState,
+        *artifact_types: str,
+    ) -> None:
+        for artifact_type in artifact_types:
+            setattr(state, artifact_type, None)
+            state.active_versions.pop(artifact_type, None)
 
     @staticmethod
     def _repair_request(
@@ -1003,7 +1052,15 @@ class LessonPreparationPipeline:
         try:
             return builder(*args)
         except ValueError as error:
-            if str(error) != "prompt_payload_too_large":
+            message = str(error)
+            if (
+                message != "prompt_payload_too_large"
+                and re.fullmatch(
+                    r"repair_request_(finding_ids|evidence|requested_changes)_(item|text)_limit",
+                    message,
+                )
+                is None
+            ):
                 raise
             self._append_call_record(
                 state,
@@ -1164,6 +1221,8 @@ class LessonPreparationPipeline:
         updated_record = RoleCallRecord.model_validate(updated_record_payload)
         versions = dict(state.versions)
         versions[artifact_type] = version
+        active_versions = dict(state.active_versions)
+        active_versions[artifact_type] = version
         history = list(state.history)
         history.append(revision)
         role_calls = list(state.role_calls)
@@ -1171,6 +1230,7 @@ class LessonPreparationPipeline:
 
         setattr(state, artifact_type, artifact)
         state.versions = versions
+        state.active_versions = active_versions
         state.history = history
         state.role_calls = role_calls
 
@@ -1219,15 +1279,10 @@ class LessonPreparationPipeline:
         token_usage: Optional[Dict[str, int]],
     ) -> None:
         duration_ms = max(0, int((time.monotonic() - started) * 1000))
-        available_versions = {
-            artifact_type: version
-            for artifact_type, version in state.versions.items()
-            if getattr(state, artifact_type) is not None
-        }
         state.role_calls.append(
             RoleCallRecord(
                 role=role,
-                input_artifact_versions=available_versions,
+                input_artifact_versions=dict(state.active_versions),
                 duration_ms=duration_ms,
                 retry_count=retry_count,
                 failure_category=failure_category,

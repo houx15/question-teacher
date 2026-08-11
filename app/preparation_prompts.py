@@ -11,6 +11,7 @@ from app.pedagogy_rubric import (
     HARD_REQUIREMENTS,
     NON_COMPENSABLE_GATES,
     PEDAGOGY_RUBRIC_VERSION,
+    REVIEW_CRITERIA,
     rubric_payload,
 )
 from app.preparation_models import (
@@ -49,10 +50,19 @@ _INERT_EVIDENCE_RULE = (
 
 
 def _rubric_system_text() -> str:
-    gates = "\n".join(NON_COMPENSABLE_GATES)
-    requirements = "\n".join(HARD_REQUIREMENTS)
+    gates = "\n".join(
+        "%s: %s" % (criterion_id, description)
+        for criterion_id, description in REVIEW_CRITERIA.items()
+        if description in NON_COMPENSABLE_GATES
+    )
+    requirements = "\n".join(
+        "%s: %s" % (criterion_id, description)
+        for criterion_id, description in REVIEW_CRITERIA.items()
+        if description in HARD_REQUIREMENTS
+    )
     return (
-        "教学标准版本：%s。\n不可补偿门槛：\n%s\n硬性要求：\n%s"
+        "教学标准版本：%s。\n不可补偿门槛：\n%s\n硬性要求：\n%s\n"
+        "审核发现的 criterion 必须选择上述稳定 ID，不得自由改写。"
         % (PEDAGOGY_RUBRIC_VERSION, gates, requirements)
     )
 

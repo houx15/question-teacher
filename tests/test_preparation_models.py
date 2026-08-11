@@ -15,6 +15,7 @@ from app.preparation_models import (
     ReasoningTrajectory,
     RoleCallRecord,
     ScriptClause,
+    SimulationReport,
     TeachingScript,
 )
 
@@ -94,7 +95,7 @@ def prepared_lesson():
         "teaching_script": teaching_script(), "interaction_plan": {"interactions": [], "transfer_item": transfer_item()},
         "performance_score": {"cues": [{"cue_id": "cue-1", "clause_ids": ["open-1"]}]},
         "simulation_report": {"episode_results": [{"episode_id": "episode-1", "learner_profile": "基础学习者", "can_identify_attention_target": True, "can_explain_decision": True, "can_execute_action": True, "can_use_result_to_continue": True, "evidence": ["能说明等式两边同步"]}], "end_of_lesson_recall": "能说出等式性质"},
-        "review": {"status": "approved", "findings": [{"finding_id": "finding-1", "severity": "polish", "artifact_type": "teaching_script", "artifact_id": "script-1", "criterion": "语句自然", "evidence": "一个句子可更短", "responsible_role": "script_teacher", "requested_change": "精简句子"}], "approval_summary": "可以使用"},
+        "review": {"status": "approved", "findings": [{"finding_id": "finding-1", "severity": "polish", "artifact_type": "teaching_script", "artifact_id": "script-1", "criterion": "learner_follows_why", "evidence": "一个句子可更短", "responsible_role": "script_teacher", "requested_change": "精简句子"}], "approval_summary": "可以使用"},
         "repair_count": 0,
         "artifact_history": [
             {"artifact_type": artifact, "version": 1, "responsible_role": role}
@@ -102,6 +103,7 @@ def prepared_lesson():
                 ("solution_trace", "reference_analyst"), ("reasoning_trajectory", "teaching_designer"),
                 ("teaching_script", "script_teacher"), ("interaction_plan", "interaction_designer"),
                 ("performance_score", "classroom_director"),
+                ("simulation_report", "student_simulator"),
             ]
         ],
     }
@@ -354,6 +356,95 @@ def test_review_decision_literals_and_approval_rules():
     payload["findings"][0]["responsible_role"] = "runtime_operator"
     with pytest.raises(ValidationError):
         LessonReviewDecision.model_validate(payload)
+
+
+def test_review_criterion_is_a_stable_bounded_vocabulary():
+    payload = prepared_lesson()["review"]
+    payload["findings"][0]["criterion"] = "learner_follows_why"
+    assert LessonReviewDecision.model_validate(payload).findings[0].criterion == (
+        "learner_follows_why"
+    )
+    payload["findings"][0]["criterion"] = "学生要能跟上"
+    with pytest.raises(ValidationError, match="criterion"):
+        LessonReviewDecision.model_validate(payload)
+
+
+def test_simulation_and_review_text_fields_have_explicit_boundaries():
+    simulation = prepared_lesson()["simulation_report"]
+    simulation["episode_results"][0]["learner_profile"] = "学" * 120
+    simulation["episode_results"][0]["evidence"] = ["证" * 800]
+    simulation["end_of_lesson_recall"] = "回" * 800
+    SimulationReport.model_validate(simulation)
+
+    simulation["episode_results"][0]["evidence"] = ["证" * 1001]
+    with pytest.raises(ValidationError):
+        SimulationReport.model_validate(simulation)
+
+    review = prepared_lesson()["review"]
+    review["findings"][0].update(
+        criterion="learner_follows_why",
+        evidence="证" * 800,
+        requested_change="改" * 800,
+    )
+    review["approval_summary"] = "结" * 800
+    LessonReviewDecision.model_validate(review)
+    review["approval_summary"] = "结" * 2_000_000
+    with pytest.raises(ValidationError):
+        LessonReviewDecision.model_validate(review)
+
+
+def test_simulation_report_rejects_aggregate_oversize_payload():
+    episode_result = prepared_lesson()["simulation_report"][
+        "episode_results"
+    ][0]
+    episode_result["evidence"] = ["证" * 800 for _ in range(16)]
+    report = {
+        "episode_results": [
+            dict(episode_result, episode_id="episode-%d" % index)
+            for index in range(20)
+        ],
+        "end_of_lesson_recall": "回" * 800,
+    }
+
+    with pytest.raises(ValidationError, match="serialized byte limit"):
+        SimulationReport.model_validate(report)
+
+
+def test_review_decision_rejects_aggregate_oversize_payload():
+    finding = prepared_lesson()["review"]["findings"][0]
+    finding.update(
+        criterion="learner_follows_why",
+        evidence="证" * 800,
+        requested_change="改" * 800,
+    )
+    review = {
+        "status": "approved",
+        "findings": [
+            dict(finding, finding_id="finding-%d" % index)
+            for index in range(64)
+        ],
+        "approval_summary": "结" * 800,
+    }
+
+    with pytest.raises(ValidationError, match="serialized byte limit"):
+        LessonReviewDecision.model_validate(review)
+
+
+def test_review_artifact_lists_are_unique():
+    review = prepared_lesson()["review"]
+    review["findings"][0]["criterion"] = "learner_follows_why"
+    review["retained_artifacts"] = ["solution_trace", "solution_trace"]
+    with pytest.raises(ValidationError, match="retained artifacts"):
+        LessonReviewDecision.model_validate(review)
+
+    review = prepared_lesson()["review"]
+    review["findings"][0]["criterion"] = "learner_follows_why"
+    review["findings"][0]["invalidated_downstream_artifacts"] = [
+        "performance_score",
+        "performance_score",
+    ]
+    with pytest.raises(ValidationError, match="invalidated downstream"):
+        LessonReviewDecision.model_validate(review)
 
 
 def test_prepared_lesson_requires_rubric_and_complete_history():

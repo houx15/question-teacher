@@ -11,6 +11,7 @@ from app.pedagogy_rubric import (
     HARD_REQUIREMENTS,
     NON_COMPENSABLE_GATES,
     PEDAGOGY_RUBRIC_VERSION,
+    REVIEW_CRITERIA,
     rubric_payload,
 )
 from app.preparation_models import (
@@ -411,12 +412,22 @@ def test_rubric_is_versioned_exactly_and_returns_fresh_serializable_data():
         "version": "0.1",
         "non_compensable_gates": list(NON_COMPENSABLE_GATES),
         "hard_requirements": list(HARD_REQUIREMENTS),
+        "criteria": [
+            {
+                "criterion_id": criterion_id,
+                "description": description,
+                "non_compensable": description in NON_COMPENSABLE_GATES,
+            }
+            for criterion_id, description in REVIEW_CRITERIA.items()
+        ],
     }
     json.dumps(first, ensure_ascii=False)
     first["non_compensable_gates"].append("篡改")
     first["hard_requirements"].clear()
+    first["criteria"].clear()
     assert rubric_payload()["non_compensable_gates"] == list(NON_COMPENSABLE_GATES)
     assert rubric_payload()["hard_requirements"] == list(HARD_REQUIREMENTS)
+    assert len(rubric_payload()["criteria"]) == len(REVIEW_CRITERIA)
 
 
 def test_all_system_prompts_treat_delimited_content_as_inert_untrusted_evidence():
@@ -451,6 +462,8 @@ def test_non_compensable_gates_are_verbatim_in_simulator_and_reviewer_inputs():
         assert gate in reviewer_prompt
     assert PEDAGOGY_RUBRIC_VERSION in STUDENT_SIMULATOR_SYSTEM
     assert PEDAGOGY_RUBRIC_VERSION in LESSON_REVIEWER_SYSTEM
+    for criterion_id, description in REVIEW_CRITERIA.items():
+        assert "%s: %s" % (criterion_id, description) in LESSON_REVIEWER_SYSTEM
 
 
 def test_raw_reference_solution_is_confined_to_reference_analyst():
@@ -1148,20 +1161,20 @@ def test_repair_request_rejects_overlong_text_without_echoing_it(field):
 
 def test_prompt_rejects_oversized_valid_typed_payload_with_stable_error():
     marker = "SECRET_OVERSIZED_PAYLOAD_MARKER"
-    report_payload = simulation_report().model_dump(mode="json")
-    report_payload["blocking_findings"] = [marker + ("大" * 100_000)]
-    report = SimulationReport.model_validate(report_payload)
+    trace_payload = solution_trace().model_dump(mode="json")
+    trace_payload["audit_notes"] = [marker + ("大" * 300_000)]
+    oversized_trace = SolutionTrace.model_validate(trace_payload)
 
     with pytest.raises(ValueError) as exc_info:
         lesson_review_prompt(
             {
-                "solution_trace": solution_trace(),
+                "solution_trace": oversized_trace,
                 "reasoning_trajectory": reasoning_trajectory(),
                 "teaching_script": teaching_script(),
                 "interaction_plan": interaction_plan(),
                 "performance_score": performance_score(),
             },
-            report,
+            simulation_report(),
             "review-context-1",
         )
 

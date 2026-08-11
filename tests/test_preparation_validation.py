@@ -321,7 +321,7 @@ def review_payload():
                 "severity": "polish",
                 "artifact_type": "teaching_script",
                 "artifact_id": "clause-3",
-                "criterion": "语言简洁",
+                "criterion": "learner_follows_why",
                 "evidence": "句子略长",
                 "responsible_role": "script_teacher",
                 "requested_change": "下次可精简",
@@ -352,6 +352,7 @@ def prepared_payload():
                 ("teaching_script", "script_teacher"),
                 ("interaction_plan", "interaction_designer"),
                 ("performance_score", "classroom_director"),
+                ("simulation_report", "student_simulator"),
             )
         ],
     }
@@ -1325,7 +1326,7 @@ def test_review_decision_rechecks_invalid_constructed_approval():
                     "severity": "blocking",
                     "artifact_type": "solution_trace",
                     "artifact_id": "is-root",
-                    "criterion": "结论一致",
+                    "criterion": "authoritative_math_alignment",
                     "evidence": "不一致",
                     "responsible_role": "reference_analyst",
                     "requested_change": "修复",
@@ -1348,7 +1349,7 @@ def test_blocking_signature_uses_only_sorted_material_identity_fields():
                     "severity": "material",
                     "artifact_type": "teaching_script",
                     "artifact_id": "clause-2",
-                    "criterion": "必须解释理由",
+                    "criterion": "learner_follows_why",
                     "evidence": "wording one",
                     "responsible_role": "script_teacher",
                     "requested_change": "change one",
@@ -1377,7 +1378,7 @@ def test_blocking_signature_ignores_duplicate_semantic_findings():
         "severity": "material",
         "artifact_type": "teaching_script",
         "artifact_id": "clause-2",
-        "criterion": "必须解释理由",
+        "criterion": "learner_follows_why",
         "evidence": "wording one",
         "responsible_role": "script_teacher",
         "requested_change": "change one",
@@ -1424,7 +1425,7 @@ def test_review_requires_each_finding_to_cite_an_existing_artifact_id():
                     "severity": "material",
                     "artifact_type": "teaching_script",
                     "artifact_id": "clause-does-not-exist",
-                    "criterion": "决定理由",
+                    "criterion": "learner_follows_why",
                     "evidence": "审核声称该句缺失理由",
                     "responsible_role": "script_teacher",
                     "requested_change": "补充理由",
@@ -1454,7 +1455,7 @@ def test_review_can_cite_a_concrete_nested_source_anchor_id():
                     "severity": "material",
                     "artifact_type": "solution_trace",
                     "artifact_id": anchor_id,
-                    "criterion": "条件引用",
+                    "criterion": "authoritative_math_alignment",
                     "evidence": "%s 的条件用途未说明" % anchor_id,
                     "responsible_role": "reference_analyst",
                     "requested_change": "标明条件的数学用途",
@@ -1480,7 +1481,7 @@ def test_review_cannot_assign_a_role_later_than_the_cited_artifact_owner():
                     "severity": "material",
                     "artifact_type": "teaching_script",
                     "artifact_id": "clause-1",
-                    "criterion": "决定理由",
+                    "criterion": "learner_follows_why",
                     "evidence": "clause-1 缺少决定理由",
                     "responsible_role": "classroom_director",
                     "requested_change": "补充理由",
@@ -1494,6 +1495,98 @@ def test_review_cannot_assign_a_role_later_than_the_cited_artifact_owner():
         "review_responsibility_invalid",
         lambda: validate_review_decision(
             decision, trace, trajectory, script, plan, score, report
+        ),
+    )
+
+
+def test_review_retained_and_invalidated_artifacts_follow_dependency_order():
+    trace, trajectory, script, plan, score, report, _ = models()
+    base = {
+        "status": "revision_required",
+        "findings": [
+            {
+                "finding_id": "finding-script-dependency",
+                "severity": "material",
+                "artifact_type": "teaching_script",
+                "artifact_id": "clause-1",
+                "criterion": "learner_follows_why",
+                "evidence": "clause-1 没有交代决定理由",
+                "responsible_role": "script_teacher",
+                "requested_change": "补充决定理由",
+                "invalidated_downstream_artifacts": [
+                    "interaction_plan",
+                    "performance_score",
+                    "simulation_report",
+                ],
+            }
+        ],
+        "retained_artifacts": [
+            "solution_trace",
+            "reasoning_trajectory",
+        ],
+        "approval_summary": "从讲稿开始修订",
+    }
+    valid = LessonReviewDecision.model_validate(base)
+    validate_review_decision(
+        valid, trace, trajectory, script, plan, score, report
+    )
+
+    director_base = copy.deepcopy(base)
+    director_base["findings"][0].update(
+        {
+            "finding_id": "finding-director-dependency",
+            "artifact_type": "performance_score",
+            "artifact_id": "cue-clause-1",
+            "criterion": "visual_action_alignment",
+            "responsible_role": "classroom_director",
+            "invalidated_downstream_artifacts": ["simulation_report"],
+        }
+    )
+    director_base["retained_artifacts"] = [
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_script",
+        "interaction_plan",
+    ]
+    validate_review_decision(
+        LessonReviewDecision.model_validate(director_base),
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+    )
+
+    invalidated_upstream = copy.deepcopy(base)
+    invalidated_upstream["findings"][0][
+        "invalidated_downstream_artifacts"
+    ] = ["solution_trace"]
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(invalidated_upstream),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+        ),
+    )
+
+    retained_downstream = copy.deepcopy(base)
+    retained_downstream["retained_artifacts"].append("teaching_script")
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(retained_downstream),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
         ),
     )
 
@@ -1533,7 +1626,7 @@ def test_prepared_lesson_requires_an_approved_review_even_if_artifacts_validate(
                 "severity": "material",
                 "artifact_type": "teaching_script",
                 "artifact_id": "clause-1",
-                "criterion": "决定理由",
+                "criterion": "learner_follows_why",
                 "evidence": "clause-1 没有说明理由",
                 "responsible_role": "script_teacher",
                 "requested_change": "补充理由",
@@ -1546,4 +1639,90 @@ def test_prepared_lesson_requires_an_approved_review_even_if_artifacts_validate(
     assert_code(
         "review_approval_invalid",
         lambda: validate_prepared_lesson(prepared, route(), []),
+    )
+
+
+def assert_history_invalid(payload):
+    prepared = PreparedLesson.model_validate(payload)
+    assert_code(
+        "artifact_history_invalid",
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )
+
+
+def test_prepared_history_requires_exactly_all_six_artifact_types():
+    payload = prepared_payload()
+    payload["artifact_history"] = [
+        item
+        for item in payload["artifact_history"]
+        if item["artifact_type"] != "simulation_report"
+    ]
+    assert_history_invalid(payload)
+
+
+@pytest.mark.parametrize("versions", ([1, 1], [1, 3], [2, 1]))
+def test_prepared_history_versions_are_unique_contiguous_and_finish_latest(
+    versions,
+):
+    payload = prepared_payload()
+    payload["repair_count"] = 1
+    payload["artifact_history"] = [
+        item
+        for item in payload["artifact_history"]
+        if item["artifact_type"] != "simulation_report"
+    ] + [
+        {
+            "artifact_type": "simulation_report",
+            "version": version,
+            "responsible_role": "student_simulator",
+        }
+        for version in versions
+    ]
+    assert_history_invalid(payload)
+
+
+def test_prepared_history_rejects_wrong_artifact_role():
+    payload = prepared_payload()
+    simulation = next(
+        item
+        for item in payload["artifact_history"]
+        if item["artifact_type"] == "simulation_report"
+    )
+    simulation["responsible_role"] = "classroom_director"
+    assert_history_invalid(payload)
+
+
+def test_prepared_history_simulation_versions_match_repair_count():
+    payload = prepared_payload()
+    payload["repair_count"] = 1
+    assert_history_invalid(payload)
+
+
+def test_prepared_history_rejects_repair_count_over_runtime_budget():
+    payload = prepared_payload()
+    payload["repair_count"] = 999
+    assert_history_invalid(payload)
+
+
+def test_prepared_history_must_match_supplied_current_active_versions():
+    prepared = PreparedLesson.model_validate(prepared_payload())
+    active = {
+        item.artifact_type: item.version
+        for item in prepared.artifact_history
+    }
+    validate_prepared_lesson(
+        prepared,
+        route(),
+        [],
+        active_versions=active,
+    )
+    active["simulation_report"] = 2
+    assert_code(
+        "artifact_history_invalid",
+        lambda: validate_prepared_lesson(
+            prepared,
+            route(),
+            [],
+            active_versions=active,
+        ),
     )

@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Set, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from app.math_content import (
     contains_bounded_answer_token,
@@ -53,8 +53,17 @@ _ARTIFACT_OWNER_ORDER = {
     "teaching_script": 2,
     "interaction_plan": 3,
     "performance_score": 4,
-    "simulation_report": 4,
+    "simulation_report": 5,
 }
+_ARTIFACT_HISTORY_ROLES = {
+    "solution_trace": "reference_analyst",
+    "reasoning_trajectory": "teaching_designer",
+    "teaching_script": "script_teacher",
+    "interaction_plan": "interaction_designer",
+    "performance_score": "classroom_director",
+    "simulation_report": "student_simulator",
+}
+MAX_REPAIR_CYCLES = 8
 
 
 class PreparationValidationError(ValueError):
@@ -1092,6 +1101,34 @@ def validate_review_decision(
                 finding.finding_id,
                 "Review finding must route to the earliest responsible role.",
             )
+        if any(
+            _ARTIFACT_OWNER_ORDER[item]
+            <= _REVIEW_ROLE_ORDER[finding.responsible_role]
+            for item in finding.invalidated_downstream_artifacts
+        ):
+            _fail(
+                "review_dependency_invalid",
+                finding.finding_id,
+                "Invalidated artifacts must be downstream of the responsible role.",
+            )
+
+    material_findings = [
+        item for item in decision.findings if item.severity != "polish"
+    ]
+    if material_findings:
+        earliest_order = min(
+            _REVIEW_ROLE_ORDER[item.responsible_role]
+            for item in material_findings
+        )
+        if any(
+            _ARTIFACT_OWNER_ORDER[item] >= earliest_order
+            for item in decision.retained_artifacts
+        ):
+            _fail(
+                "review_dependency_invalid",
+                "review",
+                "Retained artifacts must be strictly upstream of the earliest repair role.",
+            )
 
     novice_gate_failed = bool(report.blocking_findings) or any(
         not (
@@ -1137,6 +1174,7 @@ def validate_prepared_lesson(
     prepared: PreparedLesson,
     teaching_route: FrozenTeachingRoute,
     problem_targets: ProblemTargets,
+    active_versions: Optional[Dict[str, int]] = None,
 ) -> None:
     _require_exact(prepared, PreparedLesson, "prepared")
     _require_exact(teaching_route, FrozenTeachingRoute, "teaching_route")
@@ -1173,6 +1211,7 @@ def validate_prepared_lesson(
         prepared.reasoning_trajectory,
         prepared.interaction_plan,
     )
+    _validate_artifact_history(prepared, active_versions)
     validate_review_decision(
         prepared.review,
         prepared.solution_trace,
@@ -1188,3 +1227,60 @@ def validate_prepared_lesson(
             "review",
             "Prepared lesson requires an approved review.",
         )
+
+
+def _validate_artifact_history(
+    prepared: PreparedLesson,
+    active_versions: Optional[Dict[str, int]],
+) -> None:
+    by_type = {
+        artifact_type: [
+            revision
+            for revision in prepared.artifact_history
+            if revision.artifact_type == artifact_type
+        ]
+        for artifact_type in _ARTIFACT_HISTORY_ROLES
+    }
+    if set(item.artifact_type for item in prepared.artifact_history) != set(
+        _ARTIFACT_HISTORY_ROLES
+    ):
+        _fail(
+            "artifact_history_invalid",
+            "artifact_history",
+            "Artifact history must represent exactly all authored artifact types.",
+        )
+    for artifact_type, revisions in by_type.items():
+        expected_role = _ARTIFACT_HISTORY_ROLES[artifact_type]
+        versions = [item.version for item in revisions]
+        if (
+            any(item.responsible_role != expected_role for item in revisions)
+            or versions != list(range(1, len(revisions) + 1))
+        ):
+            _fail(
+                "artifact_history_invalid",
+                artifact_type,
+                "Artifact history roles and versions must be contiguous and authoritative.",
+            )
+    if not 0 <= prepared.repair_count <= MAX_REPAIR_CYCLES:
+        _fail(
+            "artifact_history_invalid",
+            "repair_count",
+            "Repair count exceeds the preparation convergence budget.",
+        )
+    if len(by_type["simulation_report"]) != prepared.repair_count + 1:
+        _fail(
+            "artifact_history_invalid",
+            "simulation_report",
+            "Simulation history must contain one version per reviewed lesson state.",
+        )
+    if active_versions is not None:
+        latest_versions = {
+            artifact_type: revisions[-1].version
+            for artifact_type, revisions in by_type.items()
+        }
+        if type(active_versions) is not dict or active_versions != latest_versions:
+            _fail(
+                "artifact_history_invalid",
+                "active_versions",
+                "Current active artifact versions must match history maxima.",
+            )
