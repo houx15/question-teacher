@@ -21,14 +21,20 @@ from app.generation import LessonGenerationService, LessonQualityError
 from app.llm_client import ModelResponseError, OpenAICompatibleClient
 from app.math_engine import MathEngine
 from app.prompts import (
-    DIRECTOR_SYSTEM,
-    MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
     REFERENCE_GROUNDING_SYSTEM,
-    REVIEWER_SYSTEM,
-    REVISION_SYSTEM,
 )
+from app.preparation_prompts import (
+    CLASSROOM_DIRECTOR_SYSTEM,
+    INTERACTION_DESIGNER_SYSTEM,
+    LESSON_REVIEWER_SYSTEM,
+    SCRIPT_TEACHER_SYSTEM,
+    SOLUTION_TRACE_SYSTEM,
+    STUDENT_SIMULATOR_SYSTEM,
+    TEACHING_DESIGNER_SYSTEM,
+)
+from app.preparation_pipeline import PreparationFailure
 from app.schemas import ProblemInput
 from app.tts_client import (
     OpenAISpeechClient,
@@ -82,27 +88,22 @@ def _require_contract(condition: bool, message: str) -> None:
 
 
 PromptRun = Tuple[str, int]
-_PROMPT_STAGE_CAPS = {
-    "A": 2,
-    "G": 2,
-    "D": 4,
-    "M": 4,
-    "R": 2,
-    "REV": 4,
+_PREPARATION_PROMPT_STAGES = {
+    SOLUTION_TRACE_SYSTEM: "TRACE",
+    TEACHING_DESIGNER_SYSTEM: "DESIGN",
+    SCRIPT_TEACHER_SYSTEM: "SCRIPT",
+    INTERACTION_DESIGNER_SYSTEM: "INTERACTION",
+    CLASSROOM_DIRECTOR_SYSTEM: "PERFORMANCE",
+    STUDENT_SIMULATOR_SYSTEM: "SIMULATION",
+    LESSON_REVIEWER_SYSTEM: "REVIEW",
 }
 _CORE_PROMPT_STAGES = {
     REFERENCE_AUDITOR_SYSTEM: "A",
-    DIRECTOR_SYSTEM: "D",
-    MATERIALS_SYSTEM: "M",
-    REVIEWER_SYSTEM: "R",
-    REVISION_SYSTEM: "REV",
+    **_PREPARATION_PROMPT_STAGES,
 }
 _GROUNDED_PROMPT_STAGES = {
     REFERENCE_GROUNDING_SYSTEM: "G",
-    DIRECTOR_SYSTEM: "D",
-    MATERIALS_SYSTEM: "M",
-    REVIEWER_SYSTEM: "R",
-    REVISION_SYSTEM: "REV",
+    **_PREPARATION_PROMPT_STAGES,
 }
 
 
@@ -121,37 +122,8 @@ def _prompt_runs(
             runs[-1] = (stage, runs[-1][1] + 1)
         else:
             runs.append((stage, 1))
-        _require_contract(
-            runs[-1][1] <= _PROMPT_STAGE_CAPS[stage],
-            f"{stage} Agent 重试次数超过 smoke 合同。",
-        )
+        _require_contract(runs[-1][1] <= 2, f"{stage} Agent 结构重试超限。")
     return runs
-
-
-def _require_complete_stage_trace(
-    runs: Sequence[PromptRun],
-    *,
-    initial: Sequence[str],
-    cycle: Sequence[str],
-    max_cycles: int,
-    message: str,
-) -> None:
-    stages = [stage for stage, _count in runs]
-    _require_contract(stages[: len(initial)] == list(initial), message)
-    remainder = stages[len(initial) :]
-    _require_contract(
-        len(remainder) % len(cycle) == 0,
-        message,
-    )
-    cycle_count = len(remainder) // len(cycle)
-    _require_contract(cycle_count <= max_cycles, message)
-    _require_contract(
-        all(
-            remainder[index : index + len(cycle)] == list(cycle)
-            for index in range(0, len(remainder), len(cycle))
-        ),
-        message,
-    )
 
 
 def assert_model_call_contract(
@@ -163,38 +135,43 @@ def assert_model_call_contract(
         MATH_ROUTE_SYSTEM not in system_prompts,
         "配方法 smoke 未使用确定性数学路线。",
     )
-    if grounded_parameter_root:
-        runs = _prompt_runs(
-            system_prompts,
-            prompt_stages=_GROUNDED_PROMPT_STAGES,
-            unknown_message="参数根 smoke 出现未知 Agent 调用。",
-        )
-        _require_complete_stage_trace(
-            runs,
-            initial=("G", "D", "M", "R"),
-            cycle=("REV", "M", "R"),
-            max_cycles=LessonGenerationService.MAX_REVISIONS,
-            message=(
-                "参数根 smoke 未按参考材料路线完成核心 Agent 调用。"
-            ),
-        )
-        return
-
+    expected_route_stage = "G" if grounded_parameter_root else None
     runs = _prompt_runs(
         system_prompts,
-        prompt_stages=_CORE_PROMPT_STAGES,
-        unknown_message="core smoke 出现未知 Agent 调用。",
-    )
-    _require_complete_stage_trace(
-        runs,
-        initial=(
-            ("A", "D", "M", "R")
-            if with_reference_audit
-            else ("D", "M", "R")
+        prompt_stages=(
+            _GROUNDED_PROMPT_STAGES
+            if grounded_parameter_root
+            else _CORE_PROMPT_STAGES
         ),
-        cycle=("REV", "M", "R"),
-        max_cycles=LessonGenerationService.MAX_REVISIONS,
-        message="core smoke 的 Agent 调用顺序或修订轮次不符合合同。",
+        unknown_message="smoke 出现未知 Agent 调用。",
+    )
+    stages = [stage for stage, _count in runs]
+    prefix = (
+        [expected_route_stage]
+        if expected_route_stage is not None
+        else (["A"] if with_reference_audit else [])
+    )
+    _require_contract(
+        stages[: len(prefix)] == prefix,
+        "smoke 的路线审计阶段顺序不正确。",
+    )
+    preparation_order = [
+        "TRACE",
+        "DESIGN",
+        "SCRIPT",
+        "INTERACTION",
+        "PERFORMANCE",
+        "SIMULATION",
+        "REVIEW",
+    ]
+    _require_contract(
+        all(stage in stages for stage in preparation_order),
+        "smoke 未完成全部备课、模拟与审核角色。",
+    )
+    first_positions = [stages.index(stage) for stage in preparation_order]
+    _require_contract(
+        first_positions == sorted(first_positions),
+        "smoke 未按依赖顺序完成备课、模拟与审核。",
     )
 
 
@@ -664,7 +641,7 @@ async def main(argv=None) -> None:
                     **smoke_contract,
                     "math_status": report.get("math_status"),
                     "review_status": report.get("review_status"),
-                    "revision_count": report.get("revision_count"),
+                    "repair_count": report.get("repair_count"),
                     "math_route_source": report.get("math_route_source"),
                 }
                 if args.with_reference_audit:
@@ -702,6 +679,14 @@ def run_cli(argv=None) -> None:
     except ModelResponseError:
         raise SystemExit(
             "模型服务调用失败，请检查配置或稍后重试。"
+        ) from None
+    except PreparationFailure as error:
+        if error.category == "provider_error":
+            raise SystemExit(
+                "模型服务调用失败，请检查配置或稍后重试。"
+            ) from None
+        raise SystemExit(
+            "讲解生成未通过质量门，请检查模型输出后重试。"
         ) from None
     except LessonQualityError:
         raise SystemExit(

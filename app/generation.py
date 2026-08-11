@@ -1,24 +1,19 @@
 import hashlib
 import inspect
-import json
-import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import (
     Any,
     Awaitable,
     Callable,
     Optional,
-    Sequence,
     Union,
 )
+from uuid import uuid4
 
 from pydantic import ValidationError
 
-from app.compiler import (
-    NEAR_TRANSFER_INTERACTION_ID,
-    LessonCompileError,
-    LessonCompiler,
-)
+from app.compiler import LessonCompileError, LessonCompiler
 from app.claim_checker import (
     ClaimCheckResult,
     ClaimChecker,
@@ -28,63 +23,38 @@ from app.claim_checker import (
 from app.deterministic_route import DeterministicRoutePlanner
 from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
-from app.math_content import (
-    contains_explicit_choice_answer_leak,
-    normalize_answer_leak_text,
-    normalize_choice_option_label as _normalize_choice_option_label,
-    normalize_grounded_choice_option_label as _normalize_grounded_choice_option_label,
-    normalize_reference_text,
+from app.preparation_models import (
+    GenerationRecord,
+    RuntimeCueProvenanceRecord,
 )
-from app.preparation_validation import (
-    VisualActionValidationError,
-    validate_current_cue_cleanup,
-    validate_visual_action_references,
+from app.preparation_pipeline import LessonPreparationPipeline
+from app.prepared_lesson_adapter import (
+    prepared_lesson_to_draft_with_provenance,
 )
 from app.prompts import (
-    DIRECTOR_SYSTEM,
-    MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
     REFERENCE_GROUNDING_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
-    REVIEWER_SYSTEM,
-    REVISION_SYSTEM,
-    director_prompt,
-    materials_prompt,
     math_route_prompt,
     reference_grounding_prompt,
     reference_audit_prompt,
-    reviewer_prompt,
-    revision_prompt,
 )
 from app.schemas import (
-    LessonMoment,
-    LessonDraft,
-    MAX_NARRATIVE_SERIALIZED_BYTES,
-    MaterialsDraft,
     MathRouteDraft,
-    NarrativeDraft,
-    NarrativeMoment,
-    ProblemFocusTarget,
     ProblemInput,
     ReferenceGroundingBrief,
     ReferenceMaterialAudit,
-    ReviewDecision,
     RuntimeLesson,
-    SyncVisualAction,
+    SchemaModel,
 )
 from app.problem_capability import (
     ProblemCapabilityProbe,
     ProblemIntakeStatus,
 )
-from app.problem_focus import (
-    compile_problem_focus_targets,
-    required_lead_emphasis,
-)
+from app.problem_focus import compile_problem_focus_targets
 from app.teaching_route import (
     FrozenTeachingRoute,
     TeachingRouteEvidenceError,
-    TeachingRouteIntegrityError,
-    TeachingRouteMode,
     freeze_grounded_route,
     freeze_symbolic_route,
 )
@@ -94,95 +64,6 @@ StageCallback = Callable[
     [str],
     Union[None, Awaitable[None]],
 ]
-MomentWithSyncCues = Union[NarrativeMoment, LessonMoment]
-MISSING_REQUIRED_LEAD_EMPHASIS_ERROR = (
-    "教学主线缺少题面关键对象的前置强调。"
-)
-_MATH_TOKEN_CONTINUATION_CHARACTER = (
-    "A-Za-z0-9_^¹²³\u2070-\u209f"
-)
-
-
-def _spoken_text_mentions_token(
-    spoken_text: str,
-    token: str,
-) -> bool:
-    normalized_text = re.sub(r"\s+", "", spoken_text).casefold()
-    normalized_token = re.sub(r"\s+", "", token).casefold()
-    return (
-        re.search(
-            (
-                rf"(?<![{_MATH_TOKEN_CONTINUATION_CHARACTER}])"
-                rf"{re.escape(normalized_token)}"
-                rf"(?![{_MATH_TOKEN_CONTINUATION_CHARACTER}])"
-            ),
-            normalized_text,
-        )
-        is not None
-    )
-
-
-def _prune_orphan_cue_cleanup_actions(
-    narrative: NarrativeDraft,
-    problem_focus_targets: Sequence[ProblemFocusTarget] = (),
-) -> NarrativeDraft:
-    sanitized = narrative.model_copy(deep=True)
-    problem_target_ids = {
-        target.target_id
-        for target in problem_focus_targets
-    }
-    base_targets = set()
-    for moment in sanitized.moments:
-        active_targets = set(base_targets)
-        for cue in moment.sync_cues:
-            setup_actions = [
-                *cue.lead_actions,
-                *cue.start_actions,
-            ]
-            for action in setup_actions:
-                if (
-                    action.surface == "board"
-                    and action.type in {"write", "transform"}
-                ):
-                    active_targets.add(action.target)
-            focused = {
-                (action.surface, action.target)
-                for action in setup_actions
-                if action.type == "focus"
-            }
-            emphasized = {
-                (action.surface, action.target)
-                for action in setup_actions
-                if action.type == "emphasize"
-            }
-            retained_cleanup = []
-            for action in cue.end_actions:
-                known_targets = (
-                    problem_target_ids
-                    if action.surface == "problem"
-                    else active_targets
-                )
-                if action.target not in known_targets:
-                    retained_cleanup.append(action)
-                    continue
-                action_key = (action.surface, action.target)
-                if (
-                    action.type == "clear_focus"
-                    and action_key not in focused
-                ):
-                    continue
-                if (
-                    action.type == "fade"
-                    and action_key not in emphasized
-                ):
-                    continue
-                retained_cleanup.append(action)
-            cue.end_actions = retained_cleanup
-        if moment.layer == "base":
-            base_targets = active_targets
-    return sanitized
-
-
 REQUIRED_METHODS = {
     "factor": {
         "display_name": "因式分解法",
@@ -206,19 +87,13 @@ RESOLVED_METHODS = {
 }
 
 
-def _cue_actions(moment: MomentWithSyncCues):
-    for cue in moment.sync_cues:
-        yield from cue.lead_actions
-        yield from cue.start_actions
-        yield from cue.end_actions
-
-
-def _moment_spoken_text(moment: MomentWithSyncCues) -> str:
-    return "".join(cue.spoken_text for cue in moment.sync_cues)
-
-
 class LessonQualityError(RuntimeError):
     """Raised when a generated lesson cannot pass safe quality gates."""
+
+
+class GeneratedLessonBundle(SchemaModel):
+    lesson: RuntimeLesson
+    generation_record: GenerationRecord
 
 
 class LessonInputError(LessonQualityError):
@@ -227,38 +102,6 @@ class LessonInputError(LessonQualityError):
     def __init__(self, public_message: str) -> None:
         super().__init__(public_message)
         self.public_message = public_message
-
-
-def _validate_current_cue_cleanup(
-    action: SyncVisualAction,
-    focused_targets: set,
-    emphasized_targets: set,
-) -> None:
-    """Preserve the legacy private name while using the shared legality core."""
-    try:
-        validate_current_cue_cleanup(
-            action,
-            focused_targets,
-            emphasized_targets,
-        )
-    except VisualActionValidationError as error:
-        raise LessonQualityError(error.detail) from None
-
-
-class _DraftSchemaValidationError(LessonQualityError):
-    """Carries a bounded schema-only retry summary inside the service."""
-
-    def __init__(self, validation_summary: str) -> None:
-        super().__init__("模型生成的讲解结构无效。")
-        self.validation_summary = validation_summary
-
-
-class _MaterialsValidationError(LessonQualityError):
-    """Carries a safe materials-only retry reason."""
-
-    def __init__(self, public_message: str, retry_summary: str) -> None:
-        super().__init__(public_message)
-        self.retry_summary = retry_summary
 
 
 class _RouteValidationError(LessonQualityError):
@@ -303,96 +146,7 @@ class _VerifiedMathRoute:
         return route
 
 
-def _schema_property_names(model: Any) -> set:
-    names = set()
-
-    def visit(value: Any) -> None:
-        if isinstance(value, dict):
-            properties = value.get("properties")
-            if isinstance(properties, dict):
-                names.update(properties)
-            for child in value.values():
-                visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(model.model_json_schema())
-    return names
-
-
-_NARRATIVE_DRAFT_PROPERTY_NAMES = _schema_property_names(NarrativeDraft)
-_MATERIALS_DRAFT_PROPERTY_NAMES = _schema_property_names(MaterialsDraft)
-_MAX_SCHEMA_RETRY_ISSUES = 12
-
-
-def _schema_validation_summary(
-    error: ValidationError,
-    *,
-    category: str,
-    property_names: set,
-) -> str:
-    raw_issues = error.errors(
-        include_url=False,
-        include_context=False,
-        include_input=False,
-    )
-    issues = []
-    for raw_issue in raw_issues[:_MAX_SCHEMA_RETRY_ISSUES]:
-        path_parts = []
-        for part in raw_issue.get("loc", ()):
-            if isinstance(part, int):
-                path_parts.append("[]")
-            elif part in property_names:
-                path_parts.append(part)
-            else:
-                path_parts.append("<unknown>")
-        issue_type = raw_issue.get("type")
-        if not (
-            isinstance(issue_type, str)
-            and len(issue_type) <= 40
-            and re.fullmatch(r"[a-z_]+", issue_type)
-        ):
-            issue_type = "validation_error"
-        issues.append(
-            {
-                "path": ".".join(path_parts) or "<model>",
-                "type": issue_type,
-            }
-        )
-    return json.dumps(
-        {
-            "category": category,
-            "issue_count": len(raw_issues),
-            "issues": issues,
-            "truncated": len(raw_issues) > len(issues),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def _narrative_schema_validation_summary(error: ValidationError) -> str:
-    return _schema_validation_summary(
-        error,
-        category="narrative_draft_schema_validation",
-        property_names=_NARRATIVE_DRAFT_PROPERTY_NAMES,
-    )
-
-
-def _materials_schema_validation_summary(error: ValidationError) -> str:
-    return _schema_validation_summary(
-        error,
-        category="materials_draft_schema_validation",
-        property_names=_MATERIALS_DRAFT_PROPERTY_NAMES,
-    )
-
-
 class LessonGenerationService:
-    MAX_REVISIONS = 2
-    MAX_DRAFT_ATTEMPTS = 2
-
     def __init__(
         self,
         client: Any,
@@ -401,6 +155,7 @@ class LessonGenerationService:
         deterministic_route_planner: Any = None,
         capability_probe: Any = None,
         claim_checker: Any = None,
+        preparation_pipeline: Optional[LessonPreparationPipeline] = None,
     ) -> None:
         self.client = client
         self.math_engine = math_engine
@@ -416,12 +171,24 @@ class LessonGenerationService:
             else ProblemCapabilityProbe(math_engine)
         )
         self.claim_checker = claim_checker or ClaimChecker()
+        self.preparation_pipeline = (
+            preparation_pipeline
+            if preparation_pipeline is not None
+            else LessonPreparationPipeline(client)
+        )
 
     async def generate(
         self,
         problem: ProblemInput,
         on_stage: Optional[StageCallback] = None,
     ) -> RuntimeLesson:
+        return (await self.generate_bundle(problem, on_stage=on_stage)).lesson
+
+    async def generate_bundle(
+        self,
+        problem: ProblemInput,
+        on_stage: Optional[StageCallback] = None,
+    ) -> GeneratedLessonBundle:
         await self._emit(on_stage, "正在验证数学路线")
         assessment = self.capability_probe.assess(
             problem.problem_text,
@@ -471,105 +238,38 @@ class LessonGenerationService:
                 on_stage,
             )
 
-        solution_strings = (
-            problem_report.solution_strings
-            if problem_report is not None
-            else []
-        )
-        equation_degree = (
-            problem_report.equation_degree
-            if problem_report is not None
-            else None
-        )
         problem_focus_targets = compile_problem_focus_targets(
             problem.problem_text
         )
-        await self._emit(on_stage, "正在设计完整讲解")
-        narrative = await self._create_validated_narrative(
+        prepared_run = await self.preparation_pipeline.prepare_with_audit(
             problem,
-            solution_strings,
-            reference_audit,
-            equation_degree,
-            verified_route,
             teaching_route,
-            problem_focus_targets,
+            list(problem_focus_targets),
+            on_stage=on_stage,
         )
-        await self._emit(on_stage, "正在准备互动素材")
-        draft = await self._create_validated_materials(
+        prepared = prepared_run.prepared_lesson
+        prepared_draft_run = prepared_lesson_to_draft_with_provenance(
             problem,
-            narrative,
-            solution_strings,
-            None,
-            equation_degree,
-            verified_route,
+            prepared,
             teaching_route,
-            problem_focus_targets,
+            verified_math_steps=(
+                verified_route.thaw().math_steps
+                if verified_route is not None
+                else None
+            ),
         )
-        revision_count = 0
-
-        while True:
-            self._validate_narrative_size(narrative)
-            self._validate_draft(
-                problem,
-                draft,
-                verified_route,
-                teaching_route,
-                problem_focus_targets,
-            )
-            self._assert_route_fingerprint(draft, teaching_route)
-            await self._emit(on_stage, "正在进行整篇审稿")
-            review = await self._review(
-                problem,
-                draft,
-                reference_audit,
-                teaching_route,
-                problem_focus_targets,
-            )
-            if review.status == "approved":
-                if (
-                    teaching_route.mode
-                    != TeachingRouteMode.SYMBOLIC_VERIFIED
-                ):
-                    self._validate_grounded_review_evidence(
-                        review,
-                        teaching_route,
-                        draft,
-                    )
-                break
-            if revision_count >= self.MAX_REVISIONS:
-                raise LessonQualityError("整篇讲稿在两轮修订后仍未通过。")
-
-            await self._emit(on_stage, "正在修订完整讲解")
-            narrative = await self._revise(
-                problem,
-                narrative,
-                review,
-                reference_audit,
-                teaching_route,
-                problem_focus_targets,
-            )
-            await self._emit(on_stage, "正在准备互动素材")
-            draft = await self._create_validated_materials(
-                problem,
-                narrative,
-                solution_strings,
-                review,
-                equation_degree,
-                verified_route,
-                teaching_route,
-                problem_focus_targets,
-            )
-            revision_count += 1
+        draft = prepared_draft_run.draft
 
         await self._emit(on_stage, "正在编译课堂")
-        self._validate_narrative_size(narrative)
         validation_report = {
             "verification_mode": teaching_route.mode.value,
             "consistency_status": teaching_route.consistency.value,
             "teaching_route_fingerprint": teaching_route.fingerprint,
-            "review_status": review.status,
-            "revision_count": revision_count,
-            "review_assessment": review.overall_assessment,
+            "pedagogy_rubric_version": prepared.rubric_version,
+            "artifact_versions": prepared_run.audit.active_versions,
+            "repair_count": prepared.repair_count,
+            "review_status": prepared.review.status,
+            "review_assessment": prepared.review.approval_summary,
         }
         if verified_route is not None and problem_report is not None:
             validation_report.update(
@@ -591,7 +291,7 @@ class LessonGenerationService:
                 reference_audit.status
             )
         try:
-            return self.compiler.compile(
+            lesson = self.compiler.compile(
                 problem,
                 draft,
                 validation_report,
@@ -600,6 +300,30 @@ class LessonGenerationService:
             raise
         except Exception:
             raise LessonQualityError("课堂编译失败。") from None
+        generation_record = GenerationRecord(
+            generation_id=str(uuid4()),
+            lesson_id=lesson.lesson_id,
+            route_fingerprint=teaching_route.fingerprint,
+            prepared_lesson=prepared,
+            role_calls=prepared_run.audit.role_calls,
+            cue_provenance=[
+                RuntimeCueProvenanceRecord(
+                    episode_id=item.episode_id,
+                    clause_id=item.clause_id,
+                    original_performance_cue_id=(
+                        item.original_performance_cue_id
+                    ),
+                    runtime_cue_id=item.runtime_cue_id,
+                    spoken_text=item.spoken_text,
+                )
+                for item in prepared_draft_run.cue_provenance
+            ],
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return GeneratedLessonBundle(
+            lesson=lesson,
+            generation_record=generation_record,
+        )
 
     async def _build_grounded_teaching_route(
         self,
@@ -736,399 +460,6 @@ class LessonGenerationService:
             source="deterministic",
         )
 
-    async def _create_narrative(
-        self,
-        problem: ProblemInput,
-        solution_strings: Any,
-        reference_audit: Optional[ReferenceMaterialAudit],
-        previous_validation_error: Optional[str] = None,
-        original_equation_degree: Optional[int] = None,
-        verified_route: Optional[_VerifiedMathRoute] = None,
-        teaching_route: Optional[FrozenTeachingRoute] = None,
-        problem_focus_targets: Optional[
-            Sequence[ProblemFocusTarget]
-        ] = None,
-    ) -> NarrativeDraft:
-        payload = await self._complete_json(
-            DIRECTOR_SYSTEM,
-            director_prompt(
-                problem,
-                list(solution_strings),
-                reference_audit,
-                previous_validation_error,
-                original_equation_degree,
-                verified_math_route=(
-                    verified_route.thaw()
-                    if verified_route is not None
-                    else None
-                ),
-                resolved_method_family=(
-                    verified_route.method_family
-                    if verified_route is not None
-                    else None
-                ),
-                resolved_method_display_name=(
-                    self._resolved_method_display_name(verified_route)
-                    if verified_route is not None
-                    else None
-                ),
-                teaching_route=(
-                    teaching_route.to_prompt_payload()
-                    if teaching_route is not None
-                    else None
-                ),
-                teaching_route_fingerprint=(
-                    teaching_route.fingerprint
-                    if teaching_route is not None
-                    else None
-                ),
-                problem_focus_targets=problem_focus_targets,
-            ),
-        )
-        try:
-            narrative = NarrativeDraft.model_validate(payload)
-        except ValidationError as error:
-            raise _DraftSchemaValidationError(
-                _narrative_schema_validation_summary(error)
-            ) from None
-        return _prune_orphan_cue_cleanup_actions(
-            narrative,
-            problem_focus_targets or (),
-        )
-
-    async def _create_validated_narrative(
-        self,
-        problem: ProblemInput,
-        solution_strings: Any,
-        reference_audit: Optional[ReferenceMaterialAudit],
-        original_equation_degree: Optional[int],
-        verified_route: Optional[_VerifiedMathRoute],
-        teaching_route: FrozenTeachingRoute,
-        problem_focus_targets: Sequence[ProblemFocusTarget],
-    ) -> NarrativeDraft:
-        previous_validation_error = None
-        for attempt in range(self.MAX_DRAFT_ATTEMPTS):
-            try:
-                narrative = await self._create_narrative(
-                    problem,
-                    solution_strings,
-                    reference_audit,
-                    previous_validation_error,
-                    original_equation_degree,
-                    verified_route,
-                    teaching_route,
-                    problem_focus_targets,
-                )
-            except _DraftSchemaValidationError as error:
-                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
-                    raise LessonQualityError(str(error)) from None
-                previous_validation_error = error.validation_summary
-                continue
-            try:
-                self._validate_narrative(
-                    problem,
-                    narrative,
-                    verified_route,
-                    teaching_route,
-                    problem_focus_targets,
-                )
-                return narrative
-            except LessonQualityError as error:
-                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
-                    raise
-                previous_validation_error = str(error)
-        raise LessonQualityError("完整讲解生成失败。")
-
-    async def _create_materials(
-        self,
-        problem: ProblemInput,
-        narrative: NarrativeDraft,
-        solution_strings: Any,
-        review: Optional[ReviewDecision],
-        previous_validation_error: Optional[str],
-        original_equation_degree: Optional[int],
-        verified_route: Optional[_VerifiedMathRoute],
-        teaching_route: FrozenTeachingRoute,
-    ) -> MaterialsDraft:
-        payload = await self._complete_json(
-            MATERIALS_SYSTEM,
-            materials_prompt(
-                problem,
-                narrative,
-                list(solution_strings),
-                review,
-                previous_validation_error,
-                original_equation_degree,
-                verified_math_route=(
-                    verified_route.thaw()
-                    if verified_route is not None
-                    else None
-                ),
-                resolved_method_family=(
-                    verified_route.method_family
-                    if verified_route is not None
-                    else None
-                ),
-                resolved_method_display_name=(
-                    self._resolved_method_display_name(verified_route)
-                    if verified_route is not None
-                    else None
-                ),
-                teaching_route=teaching_route.to_prompt_payload(),
-                teaching_route_fingerprint=teaching_route.fingerprint,
-            ),
-        )
-        try:
-            return MaterialsDraft.model_validate(payload)
-        except ValidationError as error:
-            raise _MaterialsValidationError(
-                "互动素材结构无效。",
-                _materials_schema_validation_summary(error),
-            ) from None
-
-    async def _create_validated_materials(
-        self,
-        problem: ProblemInput,
-        narrative: NarrativeDraft,
-        solution_strings: Any,
-        review: Optional[ReviewDecision],
-        original_equation_degree: Optional[int],
-        verified_route: Optional[_VerifiedMathRoute],
-        teaching_route: FrozenTeachingRoute,
-        problem_focus_targets: Sequence[ProblemFocusTarget],
-    ) -> LessonDraft:
-        self._validate_narrative_size(narrative)
-        previous_validation_error = None
-        last_error: Optional[LessonQualityError] = None
-        for attempt in range(2):
-            try:
-                materials = await self._create_materials(
-                    problem,
-                    narrative,
-                    solution_strings,
-                    review,
-                    previous_validation_error,
-                    original_equation_degree,
-                    verified_route,
-                    teaching_route,
-                )
-                draft = self._compose_draft(
-                    narrative,
-                    materials,
-                    teaching_route,
-                    verified_route,
-                )
-                draft = self._canonicalize_transfer_labels(
-                    draft,
-                    teaching_route,
-                )
-                self._validate_draft(
-                    problem,
-                    draft,
-                    verified_route,
-                    teaching_route,
-                    problem_focus_targets,
-                )
-                return draft
-            except _MaterialsValidationError as error:
-                last_error = error
-                previous_validation_error = error.retry_summary
-            except LessonQualityError as error:
-                last_error = error
-                previous_validation_error = str(error)
-            if attempt == 1:
-                assert last_error is not None
-                raise last_error
-        raise AssertionError("unreachable materials retry state")
-
-    def _compose_draft(
-        self,
-        narrative: NarrativeDraft,
-        materials: MaterialsDraft,
-        teaching_route: Union[FrozenTeachingRoute, _VerifiedMathRoute],
-        verified_route: Optional[_VerifiedMathRoute] = None,
-    ) -> LessonDraft:
-        if isinstance(teaching_route, _VerifiedMathRoute):
-            verified_route = teaching_route
-            teaching_route = freeze_symbolic_route(
-                verified_route,
-                method_name=self._resolved_method_display_name(
-                    verified_route
-                ),
-            )
-        narrative_ids = {
-            moment.moment_id
-            for moment in narrative.moments
-        }
-        intended_ids = {
-            moment.moment_id
-            for moment in narrative.moments
-            if moment.interaction_intent is not None
-        }
-        bound_ids = [
-            binding.moment_id
-            for binding in materials.interactions
-        ]
-        if any(moment_id not in narrative_ids for moment_id in bound_ids):
-            raise LessonQualityError("互动素材的绑定位置无效。")
-        if len(bound_ids) != len(set(bound_ids)):
-            raise LessonQualityError("互动素材不能重复绑定同一时刻。")
-        if set(bound_ids) != intended_ids:
-            raise LessonQualityError(
-                "互动素材必须完整填写已声明的互动意图。"
-            )
-
-        by_id = {
-            binding.moment_id: binding.interaction
-            for binding in materials.interactions
-        }
-        moments = [
-            LessonMoment(
-                purpose=moment.purpose,
-                sync_cues=[
-                    cue.model_copy(deep=True)
-                    for cue in moment.sync_cues
-                ],
-                layer=moment.layer,
-                interaction=(
-                    by_id[moment.moment_id].model_dump()
-                    if moment.moment_id in by_id
-                    else None
-                ),
-            )
-            for moment in narrative.moments
-        ]
-        return LessonDraft(
-            **narrative.model_dump(exclude={"moments"}),
-            math_steps=[
-                step.model_copy(deep=True)
-                for step in (
-                    verified_route.thaw().math_steps
-                    if verified_route is not None
-                    else []
-                )
-            ],
-            teaching_route={
-                **teaching_route.to_prompt_payload(),
-                "teaching_route_fingerprint": teaching_route.fingerprint,
-            },
-            moments=moments,
-            transfer_item=materials.transfer_item.model_dump(),
-        )
-
-    async def _review(
-        self,
-        problem: ProblemInput,
-        draft: LessonDraft,
-        reference_audit: Optional[ReferenceMaterialAudit],
-        teaching_route: FrozenTeachingRoute,
-        problem_focus_targets: Sequence[ProblemFocusTarget],
-    ) -> ReviewDecision:
-        payload = await self._complete_json(
-            REVIEWER_SYSTEM,
-            reviewer_prompt(
-                problem,
-                draft,
-                reference_audit,
-                teaching_route=teaching_route.to_prompt_payload(),
-                teaching_route_fingerprint=teaching_route.fingerprint,
-                problem_focus_targets=problem_focus_targets,
-            ),
-        )
-        try:
-            return ReviewDecision.model_validate(payload)
-        except ValidationError:
-            raise LessonQualityError("模型返回的审稿结构无效。") from None
-
-    async def _revise(
-        self,
-        problem: ProblemInput,
-        narrative: NarrativeDraft,
-        review: ReviewDecision,
-        reference_audit: Optional[ReferenceMaterialAudit],
-        teaching_route: FrozenTeachingRoute,
-        problem_focus_targets: Sequence[ProblemFocusTarget],
-    ) -> NarrativeDraft:
-        previous_validation_error = None
-        for attempt in range(self.MAX_DRAFT_ATTEMPTS):
-            payload = await self._complete_json(
-                REVISION_SYSTEM,
-                revision_prompt(
-                    problem,
-                    narrative,
-                    review,
-                    reference_audit,
-                    previous_validation_error,
-                    teaching_route=teaching_route.to_prompt_payload(),
-                    teaching_route_fingerprint=teaching_route.fingerprint,
-                    problem_focus_targets=problem_focus_targets,
-                ),
-            )
-            try:
-                revised = NarrativeDraft.model_validate(payload)
-            except ValidationError as error:
-                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
-                    raise LessonQualityError(
-                        "模型修订的讲解结构无效。"
-                    ) from None
-                previous_validation_error = (
-                    _narrative_schema_validation_summary(error)
-                )
-                continue
-            revised = _prune_orphan_cue_cleanup_actions(
-                revised,
-                problem_focus_targets,
-            )
-            try:
-                self._validate_narrative(
-                    problem,
-                    revised,
-                    None,
-                    teaching_route,
-                    problem_focus_targets,
-                )
-                return revised
-            except LessonQualityError as error:
-                if attempt + 1 >= self.MAX_DRAFT_ATTEMPTS:
-                    raise
-                previous_validation_error = str(error)
-        raise AssertionError("unreachable revision retry state")
-
-    def _canonicalize_transfer_labels(
-        self,
-        draft: LessonDraft,
-        teaching_route: Optional[FrozenTeachingRoute] = None,
-    ) -> LessonDraft:
-        if (
-            teaching_route is not None
-            and teaching_route.mode
-            != TeachingRouteMode.SYMBOLIC_VERIFIED
-        ):
-            return draft
-        try:
-            labels = [
-                self.math_engine.format_answer_label(
-                    option.canonical_answer
-                )
-                for option in draft.transfer_item.options
-            ]
-        except MathValidationError:
-            return draft
-
-        options = [
-            option.model_copy(update={"label": label})
-            for option, label in zip(
-                draft.transfer_item.options,
-                labels,
-            )
-        ]
-        transfer_item = draft.transfer_item.model_copy(
-            update={"options": options}
-        )
-        return draft.model_copy(
-            update={"transfer_item": transfer_item}
-        )
-
     async def _audit_reference(
         self,
         problem: ProblemInput,
@@ -1186,425 +517,6 @@ class LessonGenerationService:
                     raise
         raise AssertionError("unreachable model retry state")
 
-    def _validate_narrative(
-        self,
-        problem: ProblemInput,
-        narrative: NarrativeDraft,
-        verified_route: Optional[_VerifiedMathRoute] = None,
-        teaching_route: Optional[FrozenTeachingRoute] = None,
-        problem_focus_targets: Optional[
-            Sequence[ProblemFocusTarget]
-        ] = None,
-    ) -> None:
-        self._validate_narrative_size(narrative)
-        resolved_problem_focus_targets = (
-            compile_problem_focus_targets(problem.problem_text)
-            if problem_focus_targets is None
-            else problem_focus_targets
-        )
-        self._validate_board_action_references(
-            narrative.moments,
-            resolved_problem_focus_targets,
-        )
-        required_emphasis = required_lead_emphasis(
-            resolved_problem_focus_targets
-        )
-        if (
-            required_emphasis is not None
-            and not any(
-                _spoken_text_mentions_token(
-                    cue.spoken_text,
-                    required_emphasis.spoken_token,
-                )
-                and any(
-                    action.surface == "problem"
-                    and action.type == "emphasize"
-                    and action.target == required_emphasis.target_id
-                    for action in cue.lead_actions
-                )
-                for moment in narrative.moments
-                for cue in moment.sync_cues
-            )
-        ):
-            raise LessonQualityError(
-                MISSING_REQUIRED_LEAD_EMPHASIS_ERROR
-            )
-        expected_method_name = (
-            teaching_route.method_name
-            if teaching_route is not None
-            else self._resolved_method_display_name(verified_route)
-            if verified_route is not None
-            else (
-                REQUIRED_METHODS.get(problem.required_method) or {}
-            ).get("display_name")
-        )
-        moment_ids = [
-            moment.moment_id
-            for moment in narrative.moments
-        ]
-        if len(moment_ids) != len(set(moment_ids)):
-            raise LessonQualityError("教学主线的时刻标识必须唯一。")
-        intent_count = sum(
-            moment.interaction_intent is not None
-            for moment in narrative.moments
-        )
-        if intent_count not in {1, 2, 3}:
-            raise LessonQualityError(
-                "教学主线必须声明 1 至 3 个互动意图。"
-            )
-        if (
-            expected_method_name is not None
-            and narrative.method_introduction.method_name
-            != expected_method_name
-        ):
-            raise LessonQualityError(
-                "讲解的方法介绍与已验证数学路线不一致。"
-            )
-        if len(narrative.method_introduction.spoken_narration) > 90:
-            raise LessonQualityError("方法介绍的口语讲稿过长。")
-        if teaching_route is not None:
-            self._validate_narrative_route(
-                narrative,
-                teaching_route,
-            )
-
-    @staticmethod
-    def _validate_board_action_references(
-        moments: Sequence[MomentWithSyncCues],
-        problem_focus_targets: Sequence[ProblemFocusTarget] = (),
-    ) -> None:
-        try:
-            validate_visual_action_references(
-                moments,
-                problem_focus_targets,
-            )
-        except VisualActionValidationError as error:
-            raise LessonQualityError(error.detail) from None
-
-    @staticmethod
-    def _validate_narrative_size(narrative: NarrativeDraft) -> None:
-        serialized_size = len(
-            narrative.model_dump_json().encode("utf-8")
-        )
-        if serialized_size > MAX_NARRATIVE_SERIALIZED_BYTES:
-            raise LessonQualityError("教学主线整体内容过长。")
-
-    def _validate_draft(
-        self,
-        problem: ProblemInput,
-        draft: LessonDraft,
-        verified_route: Optional[_VerifiedMathRoute] = None,
-        teaching_route: Optional[FrozenTeachingRoute] = None,
-        problem_focus_targets: Optional[
-            Sequence[ProblemFocusTarget]
-        ] = None,
-    ) -> None:
-        self._validate_board_action_references(
-            draft.moments,
-            (
-                compile_problem_focus_targets(problem.problem_text)
-                if problem_focus_targets is None
-                else problem_focus_targets
-            ),
-        )
-        required_method = REQUIRED_METHODS.get(problem.required_method)
-        expected_method_name = (
-            teaching_route.method_name
-            if teaching_route is not None
-            else self._resolved_method_display_name(verified_route)
-            if verified_route is not None
-            else (
-                required_method["display_name"]
-                if required_method is not None
-                else None
-            )
-        )
-        if (
-            expected_method_name is not None
-            and draft.method_introduction.method_name
-            != expected_method_name
-        ):
-            raise LessonQualityError(
-                "讲解的方法介绍与已验证数学路线不一致。"
-            )
-
-        if len(draft.method_introduction.spoken_narration) > 90:
-            raise LessonQualityError("方法介绍的口语讲稿过长。")
-
-        is_symbolic = (
-            teaching_route is None
-            or teaching_route.mode == TeachingRouteMode.SYMBOLIC_VERIFIED
-        )
-        if is_symbolic:
-            for step in draft.math_steps:
-                try:
-                    self.math_engine.validate_step(step)
-                except MathValidationError:
-                    raise LessonQualityError(
-                        "讲解中的数学步骤未通过验证。"
-                    ) from None
-
-            self._validate_math_route(problem, draft)
-
-            try:
-                self.math_engine.validate_problem(
-                    draft.transfer_item.problem_text,
-                    draft.transfer_item.expected_answer,
-                )
-            except MathValidationError:
-                raise LessonQualityError(
-                    "近迁移题未通过数学验证。"
-                ) from None
-
-        transfer_options = draft.transfer_item.options
-        if len(transfer_options) not in {3, 4}:
-            raise LessonQualityError(
-                "近迁移题必须提供 3 至 4 个诊断选项。"
-            )
-        if is_symbolic:
-            try:
-                equivalent_option_ids = []
-                for option in transfer_options:
-                    if not self.math_engine.answers_equivalent(
-                        option.canonical_answer,
-                        option.canonical_answer,
-                    ):
-                        raise MathValidationError(
-                            "Transfer option answer is not self-equivalent."
-                        )
-                    if self.math_engine.answers_equivalent(
-                        option.canonical_answer,
-                        draft.transfer_item.expected_answer,
-                    ):
-                        equivalent_option_ids.append(option.option_id)
-                if (
-                    len(equivalent_option_ids) != 1
-                    or draft.transfer_item.correct_option_id
-                    != equivalent_option_ids[0]
-                ):
-                    raise MathValidationError(
-                        "Transfer options must identify one correct answer."
-                    )
-            except MathValidationError:
-                raise LessonQualityError(
-                    "近迁移选项未通过数学验证。"
-                ) from None
-            expected_labels = [
-                self.math_engine.format_answer_label(option.canonical_answer)
-                for option in transfer_options
-            ]
-        else:
-            if any(option.label is None for option in transfer_options):
-                raise LessonQualityError("近迁移选项显示格式无效。")
-            normalized_labels = [
-                _normalize_grounded_choice_option_label(option.label)
-                for option in transfer_options
-            ]
-            if len(normalized_labels) != len(set(normalized_labels)):
-                raise LessonQualityError("近迁移选项显示格式无效。")
-            if draft.transfer_item.correct_option_id not in {
-                option.option_id for option in transfer_options
-            }:
-                raise LessonQualityError("近迁移题缺少唯一正确选项。")
-        if is_symbolic:
-            if (
-                any(
-                    option.label is None
-                    or option.label.strip() != expected_label
-                    for option, expected_label in zip(
-                        transfer_options,
-                        expected_labels,
-                    )
-                )
-                or len(expected_labels) != len(set(expected_labels))
-            ):
-                raise LessonQualityError("近迁移选项显示格式无效。")
-
-        interactions = [
-            moment.interaction
-            for moment in draft.moments
-            if moment.interaction is not None
-        ]
-        if len(interactions) not in {1, 2, 3}:
-            raise LessonQualityError(
-                "讲解只能设置 1 至 3 个学生互动。"
-            )
-
-        interaction_ids = [
-            interaction.interaction_id
-            for interaction in interactions
-        ]
-        if NEAR_TRANSFER_INTERACTION_ID in interaction_ids:
-            raise LessonQualityError(
-                "学生互动标识不能使用系统保留值。"
-            )
-        if len(interaction_ids) != len(set(interaction_ids)):
-            raise LessonQualityError("学生互动标识必须全课唯一。")
-
-        self._validate_pre_interaction_answer_leakage(draft.moments)
-
-        for interaction in interactions:
-            if interaction.kind != "choice":
-                raise LessonQualityError(
-                    "新讲解中的自动判分互动必须使用选择题。"
-                )
-            if len(interaction.options) not in {3, 4}:
-                raise LessonQualityError(
-                    "选择互动需要 3 至 4 个选项。"
-                )
-            option_labels = [
-                _normalize_choice_option_label(option.label)
-                for option in interaction.options
-            ]
-            if len(option_labels) != len(set(option_labels)):
-                raise LessonQualityError("选择互动选项标签不能重复。")
-            if any(
-                option.feedback is None
-                for option in interaction.options
-            ):
-                raise LessonQualityError("选择互动缺少诊断反馈。")
-            if any(
-                option.feedback_audio_url is not None
-                for option in interaction.options
-            ):
-                raise LessonQualityError(
-                    "选择互动不能预填反馈音频地址。"
-                )
-
-        if (
-            is_symbolic
-            and
-            required_method is not None
-            and required_method["operation"] not in {
-            step.operation for step in draft.math_steps
-            }
-        ):
-            raise LessonQualityError("讲解没有真正使用指定方法。")
-
-    def _validate_narrative_route(
-        self,
-        narrative: NarrativeDraft,
-        teaching_route: FrozenTeachingRoute,
-    ) -> None:
-        payload = teaching_route.to_prompt_payload()
-        board_evidence = []
-        for moment in narrative.moments:
-            for cue in moment.sync_cues:
-                board_evidence.extend(
-                    self._normalize_grounded_text(action.content)
-                    for action in cue.start_actions
-                    if action.surface == "board"
-                    and action.type in {"write", "transform"}
-                    and action.content is not None
-                )
-        expected_evidence = [
-            self._normalize_grounded_text(step["statement_after"])
-            for step in payload["steps"]
-        ]
-        expected_evidence.append(
-            self._normalize_grounded_text(
-                teaching_route.final_conclusion
-            )
-        )
-        position = 0
-        for expected in expected_evidence:
-            try:
-                position = board_evidence.index(expected, position) + 1
-            except ValueError:
-                raise LessonQualityError(
-                    "教学主线没有用结构化板书覆盖冻结路线。"
-                ) from None
-
-    def _validate_pre_interaction_answer_leakage(
-        self,
-        moments: Any,
-    ) -> None:
-        visible_parts = []
-        for moment in moments:
-            visible_parts.append(_moment_spoken_text(moment))
-            visible_parts.extend(
-                action.content
-                for action in _cue_actions(moment)
-                if action.content is not None
-            )
-            interaction = moment.interaction
-            if interaction is None or interaction.kind != "choice":
-                continue
-            correct_option = next(
-                (
-                    option
-                    for option in interaction.options
-                    if option.option_id == interaction.expected_answer
-                ),
-                None,
-            )
-            if correct_option is None:
-                continue
-
-            raw_visible = "|".join(
-                [*visible_parts, interaction.prompt]
-            )
-            if contains_explicit_choice_answer_leak(
-                raw_visible,
-                correct_option.option_id,
-                correct_option.label,
-            ):
-                raise LessonQualityError("互动前明确泄露了正确选项。")
-
-    @staticmethod
-    def _normalize_answer_leak_text(value: str) -> str:
-        return normalize_answer_leak_text(value)
-
-    def _validate_grounded_review_evidence(
-        self,
-        review: ReviewDecision,
-        teaching_route: FrozenTeachingRoute,
-        draft: LessonDraft,
-    ) -> None:
-        transfer_review = review.grounded_transfer_review
-        transfer_item = draft.transfer_item
-        if transfer_review is None:
-            raise LessonQualityError(
-                "审稿证据没有完整核对近迁移题。"
-            )
-        correct_option = next(
-            (
-                option
-                for option in transfer_item.options
-                if option.option_id == transfer_item.correct_option_id
-            ),
-            None,
-        )
-        if (
-            correct_option is None
-            or transfer_review.transfer_problem_text
-            != transfer_item.problem_text
-            or transfer_review.correct_option_id
-            != transfer_item.correct_option_id
-            or transfer_review.correct_canonical_answer
-            != correct_option.canonical_answer
-        ):
-            raise LessonQualityError(
-                "审稿证据没有完整核对近迁移题。"
-            )
-        expected_distractor_ids = {
-            option.option_id
-            for option in transfer_item.options
-            if option.option_id != transfer_item.correct_option_id
-        }
-        reviewed_distractor_ids = {
-            distractor.option_id
-            for distractor in transfer_review.distractors
-        }
-        if reviewed_distractor_ids != expected_distractor_ids:
-            raise LessonQualityError(
-                "审稿证据没有完整核对近迁移题。"
-            )
-
-    @staticmethod
-    def _normalize_grounded_text(value: str) -> str:
-        return normalize_reference_text(value)
-
     @staticmethod
     def _resolved_method_display_name(
         verified_route: _VerifiedMathRoute,
@@ -1613,46 +525,6 @@ class LessonGenerationService:
         if profile is None:
             raise LessonQualityError("已验证数学路线的方法族无效。")
         return profile["display_name"]
-
-    def _validate_math_route(
-        self,
-        problem: ProblemInput,
-        draft: LessonDraft,
-    ) -> None:
-        first_state = draft.math_steps[0].state_before
-        try:
-            if len(first_state) != 1:
-                raise MathValidationError(
-                    "The route must begin from one original equation."
-                )
-            self.math_engine.validate_problem(
-                first_state[0],
-                problem.reference_answer,
-            )
-            original_solutions = self.math_engine.solution_set(first_state)
-
-            for previous, current in zip(
-                draft.math_steps,
-                draft.math_steps[1:],
-            ):
-                if self._normalized_state(previous.state_after) != (
-                    self._normalized_state(current.state_before)
-                ):
-                    raise MathValidationError(
-                        "Consecutive route states do not connect."
-                    )
-
-            final_solutions = self.math_engine.solution_set(
-                draft.math_steps[-1].state_after
-            )
-            if final_solutions != original_solutions:
-                raise MathValidationError(
-                    "The final route does not preserve the original solutions."
-                )
-        except MathValidationError:
-            raise LessonQualityError(
-                "讲解中的数学路线未通过验证。"
-            ) from None
 
     def _validate_math_route_draft(
         self,
@@ -1779,28 +651,6 @@ class LessonGenerationService:
                 "数学路线未通过验证。",
             ) from None
         return method_family
-
-    def _assert_route_fingerprint(
-        self,
-        draft: LessonDraft,
-        teaching_route: FrozenTeachingRoute,
-    ) -> None:
-        try:
-            expected_payload = teaching_route.to_prompt_payload()
-        except TeachingRouteIntegrityError:
-            raise LessonQualityError(
-                "已验证教学路线的完整性检查失败。"
-            ) from None
-        actual_payload = dict(draft.teaching_route)
-        actual_fingerprint = actual_payload.pop(
-            "teaching_route_fingerprint",
-            None,
-        )
-        if (
-            actual_fingerprint != teaching_route.fingerprint
-            or actual_payload != expected_payload
-        ):
-            raise LessonQualityError("已验证数学路线的完整性检查失败。")
 
     def _normalized_state(self, state: Any) -> Any:
         if (

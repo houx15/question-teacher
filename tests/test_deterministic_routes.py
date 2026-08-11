@@ -1,22 +1,12 @@
 import asyncio
-import copy
-import json
 
 import pytest
 
 from app.generation import LessonGenerationService, LessonQualityError
 from app.math_engine import MathEngine
-from app.prompts import (
-    DIRECTOR_SYSTEM,
-    MATERIALS_SYSTEM,
-    MATH_ROUTE_SYSTEM,
-    REVIEWER_SYSTEM,
-)
 from app.schemas import ProblemInput
 from app.schemas import MathRouteDraft
 from tests.generation_fakes import FakeClient
-from tests.test_generation import approved_review
-from tests.test_generation_agents import materials_payload, narrative_payload
 
 
 def complete_square_problem() -> ProblemInput:
@@ -26,58 +16,6 @@ def complete_square_problem() -> ProblemInput:
         required_method="complete_the_square",
     )
 
-
-def complete_square_narrative():
-    payload = narrative_payload()
-    payload["method_introduction"] = {
-        "method_name": "配方法",
-        "student_definition": "把含未知数的部分凑成一个完全平方。",
-        "target_form": r"\((x-3)^2=4\)",
-        "why_it_helps": "开平方后就能得到两个一次方程。",
-    }
-    return payload
-
-
-def test_complete_square_demo_uses_deterministic_verified_route():
-    client = FakeClient(
-        [
-            complete_square_narrative(),
-            materials_payload(),
-            approved_review(),
-        ]
-    )
-
-    lesson = asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(
-            complete_square_problem()
-        )
-    )
-
-    assert client.route_calls == []
-    assert [call[0] for call in client.all_calls] == [
-        DIRECTOR_SYSTEM,
-        MATERIALS_SYSTEM,
-        REVIEWER_SYSTEM,
-    ]
-    verified = LessonGenerationService(
-        FakeClient([]),
-        MathEngine(),
-    )._create_deterministic_route(complete_square_problem())
-    assert verified is not None
-    assert [
-        step.operation for step in verified.thaw().math_steps
-    ] == [
-        "subtract_both_sides",
-        "complete_the_square",
-        "take_square_root_both_sides",
-        "subtract_both_sides",
-    ]
-    assert verified.thaw().math_steps[-1].state_after == ["x=1", "x=5"]
-    assert lesson.validation_report["math_route_source"] == "deterministic"
-    assert (
-        lesson.validation_report["math_route_method_family"]
-        == "complete_the_square"
-    )
 
 
 def test_complete_square_repeated_root_uses_one_zero_branch_and_exact_reason():
@@ -160,41 +98,6 @@ def test_deterministic_route_families_pass_existing_hard_validation(
     )
 
 
-def test_factor_route_is_explicitly_unsupported_and_falls_back_to_agent():
-    source = ProblemInput(
-        problem_text="用因式分解法解方程：x^2-5*x+6=0",
-        reference_answer="x=2 或 x=3",
-        required_method="factor",
-    )
-    route_payload = {
-        "math_steps": [
-            {
-                "purpose": "因式分解",
-                "operation": "factor",
-                "operands": [],
-                "state_before": ["x^2-5*x+6=0"],
-                "state_after": ["(x-2)*(x-3)=0"],
-                "reason": "把二次式写成两个一次因式的乘积。",
-            }
-        ]
-    }
-    client = FakeClient(
-        [
-            route_payload,
-            narrative_payload(),
-            materials_payload(),
-            approved_review(),
-        ]
-    )
-
-    lesson = asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(source)
-    )
-
-    assert len(client.route_calls) == 1
-    assert client.route_calls[0][0] == MATH_ROUTE_SYSTEM
-    assert lesson.validation_report["math_route_source"] == "agent"
-
 
 def test_invalid_deterministic_candidate_fails_closed_without_agent_fallback():
     class InvalidDeterministicPlanner:
@@ -214,7 +117,7 @@ def test_invalid_deterministic_candidate_fails_closed_without_agent_fallback():
                 }
             )
 
-    client = FakeClient([copy.deepcopy(materials_payload())])
+    client = FakeClient([])
     service = LessonGenerationService(
         client,
         MathEngine(),
@@ -240,106 +143,3 @@ def test_verified_route_thaw_is_deep_copy_and_fingerprint_protected():
 
     assert second.math_steps[0].state_after != ["x=999"]
     assert verified.fingerprint
-
-
-def test_unspecified_quadratic_resolved_method_reaches_all_teaching_agents():
-    source = ProblemInput(
-        problem_text="解方程：x^2-5*x+6=0",
-        reference_answer="x=2 或 x=3",
-    )
-    narrative = narrative_payload()
-    narrative["method_introduction"]["method_name"] = "公式法"
-    client = FakeClient(
-        [narrative, materials_payload(), approved_review()]
-    )
-
-    asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(source)
-    )
-
-    director = json.loads(client.all_calls[0][1])
-    materials = json.loads(client.all_calls[1][1])
-    reviewer = json.loads(client.all_calls[2][1])
-    expected_route_fingerprint = director["teaching_route"][
-        "teaching_route_fingerprint"
-    ]
-    assert director["teaching_route"]["method_name"] == "公式法"
-    assert director["teaching_route"]["symbolic_context"] == {
-        "equation_degree": 2,
-        "independent_solutions": ["2", "3"],
-        "math_steps": director["teaching_route"]["symbolic_context"][
-            "math_steps"
-        ],
-        "method_family": "quadratic_formula",
-    }
-    assert materials["teaching_route"] == director["teaching_route"]
-    assert reviewer["teaching_route"] == director["teaching_route"]
-    assert expected_route_fingerprint
-    assert materials["output_contract"]["transfer_item"][
-        "method_profile"
-    ]["required_method"] == "quadratic_formula"
-
-
-@pytest.mark.parametrize("wrong_method", ["因式分解法", "配方法"])
-def test_resolved_formula_route_rejects_other_method_narrative(
-    wrong_method,
-):
-    source = ProblemInput(
-        problem_text="解方程：x^2-5*x+6=0",
-        reference_answer="x=2 或 x=3",
-    )
-    invalid = narrative_payload()
-    invalid["method_introduction"]["method_name"] = wrong_method
-    client = FakeClient([invalid, copy.deepcopy(invalid)])
-
-    with pytest.raises(
-        LessonQualityError,
-        match="已验证数学路线",
-    ):
-        asyncio.run(
-            LessonGenerationService(client, MathEngine()).generate(source)
-        )
-
-    assert [call[0] for call in client.all_calls] == [
-        DIRECTOR_SYSTEM,
-        DIRECTOR_SYSTEM,
-    ]
-
-
-def test_unspecified_linear_resolved_method_reaches_reviewer_and_transfer():
-    source = ProblemInput(
-        problem_text="解方程：2*x+3=7",
-        reference_answer="x=2",
-    )
-    narrative = narrative_payload()
-    narrative["method_introduction"] = {
-        "method_name": "等式基本变形",
-        "student_definition": "等式两边做同一种运算，等式仍然成立。",
-        "target_form": r"\(x=2\)",
-        "why_it_helps": "逐步把未知数单独留在一边。",
-    }
-    client = FakeClient(
-        [narrative, materials_payload(), approved_review()]
-    )
-
-    asyncio.run(
-        LessonGenerationService(client, MathEngine()).generate(source)
-    )
-
-    materials = json.loads(client.all_calls[1][1])
-    reviewer = json.loads(client.all_calls[2][1])
-    profile = materials["output_contract"]["transfer_item"][
-        "method_profile"
-    ]
-    assert profile["resolved_method_family"] == "basic_equation_operations"
-    assert profile["required_method"] is None
-    assert profile["equation_template"] == "a*x+b=0"
-    assert reviewer["teaching_route"]["method_name"] == (
-        "等式基本变形"
-    )
-    assert reviewer["teaching_route"]["symbolic_context"][
-        "method_family"
-    ] == "basic_equation_operations"
-    assert reviewer["teaching_route"]["symbolic_context"][
-        "independent_solutions"
-    ] == ["2"]

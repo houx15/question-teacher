@@ -568,6 +568,17 @@ def test_full_generation_record_with_seven_role_calls_validates():
                 "reference_analyst", "teaching_designer", "script_teacher", "interaction_designer",
                 "classroom_director", "student_simulator", "lesson_reviewer",
             ]
-        ], "created_at": "2026-08-11T10:00:00+08:00",
+        ],
+        "cue_provenance": [
+            {
+                "episode_id": "episode-1",
+                "clause_id": "open-1",
+                "original_performance_cue_id": "cue-1",
+                "runtime_cue_id": "runtime-cue-1",
+                "spoken_text": "我们把等式两边同时减一。",
+            }
+        ],
+        "created_at": "2026-08-11T10:00:00+08:00",
     })
     assert len(record.role_calls) == 7
+    assert record.cue_provenance[0].clause_id == "open-1"

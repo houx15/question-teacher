@@ -471,6 +471,16 @@ class RoleCallRecord(SchemaModel):
         return self
 
 
+class RuntimeCueProvenanceRecord(SchemaModel):
+    """Private authored-clause link to one compiled runtime cue."""
+
+    episode_id: GeneratedId
+    clause_id: GeneratedId
+    original_performance_cue_id: GeneratedId
+    runtime_cue_id: GeneratedId
+    spoken_text: CueSpokenText
+
+
 class GenerationRecord(SchemaModel):
     generation_id: NonEmptyString
     lesson_id: NonEmptyString
@@ -478,5 +488,8 @@ class GenerationRecord(SchemaModel):
     prepared_lesson: PreparedLesson
     role_calls: List[RoleCallRecord] = Field(
         min_length=7, max_length=MAX_ARTIFACT_HISTORY_ITEMS
+    )
+    cue_provenance: List[RuntimeCueProvenanceRecord] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
     )
     created_at: NonEmptyString

@@ -125,6 +125,24 @@ class FakeAudioService:
         return lesson
 
 
+class PreparationStageGenerator(FakeGenerator):
+    async def generate(self, problem, on_stage=None):
+        self.calls += 1
+        for stage in [
+            "正在验证数学路线",
+            "整理参考解析",
+            "设计解题思维轨迹",
+            "编写讲稿",
+            "设计互动",
+            "编排板书与高亮",
+            "模拟学生并审核课程",
+            "正在编译课堂",
+        ]:
+            if on_stage:
+                on_stage(stage)
+        return runtime_lesson(problem)
+
+
 class SequentialIdGenerator(FakeGenerator):
     async def generate(self, problem, on_stage=None):
         lesson = await super().generate(problem, on_stage=on_stage)
@@ -250,6 +268,33 @@ def test_generation_job_completes_with_public_stage_sequence():
     ]
 
 
+def test_preparation_pipeline_stages_advance_public_progress_monotonically():
+    store = RecordingStore()
+    generator = PreparationStageGenerator()
+    client, _, audio_service = build_client(
+        store=store,
+        generator=generator,
+    )
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+
+    assert response.status_code == 202
+    assert generator.calls == 1
+    assert audio_service.calls == 1
+    assert store.seen_stages == [
+        "正在理解题目",
+        "正在核对题目材料",
+        "正在设计完整讲解",
+        "正在进行整篇审稿",
+        "正在修订并编译课堂",
+        "正在生成讲解语音",
+        "已完成",
+    ]
+
+
 @pytest.mark.parametrize(
     "internal_stage",
     [
@@ -290,7 +335,9 @@ def test_generation_failure_is_sanitized_and_has_no_lesson():
     private_error = RuntimeError(
         "provider body, api-key=secret, system prompt=private"
     )
-    client, _, _ = build_client(generator=FakeGenerator(private_error))
+    client, _, audio_service = build_client(
+        generator=FakeGenerator(private_error)
+    )
 
     response = client.post(
         "/api/lessons/generate",
@@ -303,6 +350,7 @@ def test_generation_failure_is_sanitized_and_has_no_lesson():
     assert job["stage"] == "生成失败"
     assert job["error"] == "课程生成失败，请稍后重试。"
     assert "secret" not in str(job)
+    assert audio_service.calls == 0
     assert "private" not in str(job)
     assert client.get("/api/lessons/lesson-1").status_code == 404
 

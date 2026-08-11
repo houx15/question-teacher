@@ -14,14 +14,30 @@ from app.tts_client import SpeechGenerationError
 from scripts.smoke_live import assert_generated_lesson_contract
 from scripts import smoke_live
 from app.prompts import (
-    DIRECTOR_SYSTEM,
-    MATERIALS_SYSTEM,
     MATH_ROUTE_SYSTEM,
     REFERENCE_AUDITOR_SYSTEM,
     REFERENCE_GROUNDING_SYSTEM,
-    REVIEWER_SYSTEM,
-    REVISION_SYSTEM,
 )
+from app.preparation_prompts import (
+    CLASSROOM_DIRECTOR_SYSTEM,
+    INTERACTION_DESIGNER_SYSTEM,
+    LESSON_REVIEWER_SYSTEM,
+    SCRIPT_TEACHER_SYSTEM,
+    SOLUTION_TRACE_SYSTEM,
+    STUDENT_SIMULATOR_SYSTEM,
+    TEACHING_DESIGNER_SYSTEM,
+)
+
+
+PREPARATION_SYSTEM_PROMPTS = [
+    SOLUTION_TRACE_SYSTEM,
+    TEACHING_DESIGNER_SYSTEM,
+    SCRIPT_TEACHER_SYSTEM,
+    INTERACTION_DESIGNER_SYSTEM,
+    CLASSROOM_DIRECTOR_SYSTEM,
+    STUDENT_SIMULATOR_SYSTEM,
+    LESSON_REVIEWER_SYSTEM,
+]
 
 
 def page_client():
@@ -594,503 +610,39 @@ def test_reference_audit_cli_passes_mode_to_model_call_contract(
     assert contract_modes == [(False, True)]
 
 
-def test_live_smoke_requires_deterministic_route_then_narrative_materials_review():
+def test_live_smoke_requires_the_complete_preparation_role_chain():
+    smoke_live.assert_model_call_contract(PREPARATION_SYSTEM_PROMPTS)
+
+
+def test_grounded_live_smoke_runs_grounder_before_preparation_roles():
     smoke_live.assert_model_call_contract(
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ]
-    )
-
-    with pytest.raises(
-        smoke_live.SmokeContractError,
-        match="确定性数学路线",
-    ):
-        smoke_live.assert_model_call_contract(
-            [
-                MATH_ROUTE_SYSTEM,
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ]
-        )
-
-
-@pytest.mark.parametrize(
-    ("calls", "with_reference_audit"),
-    [
-        (
-            [
-                *([DIRECTOR_SYSTEM] * 4),
-                *([MATERIALS_SYSTEM] * 4),
-                *([REVIEWER_SYSTEM] * 2),
-            ],
-            False,
-        ),
-        (
-            [
-                *([REFERENCE_AUDITOR_SYSTEM] * 2),
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-                *([REVISION_SYSTEM] * 4),
-                *([MATERIALS_SYSTEM] * 4),
-                *([REVIEWER_SYSTEM] * 2),
-            ],
-            True,
-        ),
-        (
-            [
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-                REVISION_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-                REVISION_SYSTEM,
-                REVISION_SYSTEM,
-                MATERIALS_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            False,
-        ),
-    ],
-)
-def test_live_smoke_allows_bounded_core_revision_traces(
-    calls,
-    with_reference_audit,
-):
-    smoke_live.assert_model_call_contract(
-        calls,
-        with_reference_audit=with_reference_audit,
-    )
-
-
-def test_grounded_live_smoke_requires_grounder_then_teaching_agents():
-    smoke_live.assert_model_call_contract(
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-        grounded_parameter_root=True,
-    )
-
-    with pytest.raises(
-        smoke_live.SmokeContractError,
-        match="参考材料路线",
-    ):
-        smoke_live.assert_model_call_contract(
-            [
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            grounded_parameter_root=True,
-        )
-
-
-@pytest.mark.parametrize(
-    "calls",
-    [
-        [
-            *([REFERENCE_GROUNDING_SYSTEM] * 2),
-            *([DIRECTOR_SYSTEM] * 4),
-            *([MATERIALS_SYSTEM] * 4),
-            *([REVIEWER_SYSTEM] * 2),
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            *([REVISION_SYSTEM] * 4),
-            *([MATERIALS_SYSTEM] * 4),
-            *([REVIEWER_SYSTEM] * 2),
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-            REVISION_SYSTEM,
-            MATERIALS_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-    ],
-)
-def test_grounded_live_smoke_allows_bounded_revision_traces(calls):
-    smoke_live.assert_model_call_contract(
-        calls,
+        [REFERENCE_GROUNDING_SYSTEM, *PREPARATION_SYSTEM_PROMPTS],
         grounded_parameter_root=True,
     )
 
 
-@pytest.mark.parametrize(
-    ("calls", "grounded"),
-    [
-        (
-            [
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                DIRECTOR_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            False,
-        ),
-        (
-            [
-                REFERENCE_GROUNDING_SYSTEM,
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                DIRECTOR_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            True,
-        ),
-    ],
-)
-def test_live_smoke_rejects_return_to_earlier_stage_before_review(
-    calls,
-    grounded,
-):
-    with pytest.raises(smoke_live.SmokeContractError):
-        smoke_live.assert_model_call_contract(
-            calls,
-            grounded_parameter_root=grounded,
-        )
-
-
-@pytest.mark.parametrize(
-    "calls",
-    [
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-            MATERIALS_SYSTEM,
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-    ],
-)
-def test_grounded_live_smoke_rejects_incomplete_revision_cycle(calls):
-    with pytest.raises(smoke_live.SmokeContractError):
-        smoke_live.assert_model_call_contract(
-            calls,
-            grounded_parameter_root=True,
-        )
-
-
-def test_grounded_live_smoke_rejects_third_revision_cycle():
-    calls = [
-        REFERENCE_GROUNDING_SYSTEM,
-        DIRECTOR_SYSTEM,
-        MATERIALS_SYSTEM,
-        REVIEWER_SYSTEM,
-    ]
-    calls.extend(
-        [REVISION_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM] * 3
+def test_reference_audit_live_smoke_runs_auditor_before_preparation_roles():
+    smoke_live.assert_model_call_contract(
+        [REFERENCE_AUDITOR_SYSTEM, *PREPARATION_SYSTEM_PROMPTS],
+        with_reference_audit=True,
     )
 
-    with pytest.raises(smoke_live.SmokeContractError):
-        smoke_live.assert_model_call_contract(
-            calls,
-            grounded_parameter_root=True,
-        )
-
 
 @pytest.mark.parametrize(
     "calls",
     [
+        PREPARATION_SYSTEM_PROMPTS[:-1],
         [
-            REFERENCE_GROUNDING_SYSTEM,
-            REFERENCE_GROUNDING_SYSTEM,
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
+            PREPARATION_SYSTEM_PROMPTS[1],
+            PREPARATION_SYSTEM_PROMPTS[0],
+            *PREPARATION_SYSTEM_PROMPTS[2:],
         ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            *([DIRECTOR_SYSTEM] * 5),
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            *([MATERIALS_SYSTEM] * 5),
-            REVIEWER_SYSTEM,
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            *([REVIEWER_SYSTEM] * 3),
-        ],
-        [
-            REFERENCE_GROUNDING_SYSTEM,
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            *([REVISION_SYSTEM] * 5),
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
+        [*PREPARATION_SYSTEM_PROMPTS, "obsolete-whole-lesson-agent"],
     ],
 )
-def test_grounded_live_smoke_rejects_excessive_stage_retries(calls):
-    with pytest.raises(smoke_live.SmokeContractError, match="重试"):
-        smoke_live.assert_model_call_contract(
-            calls,
-            grounded_parameter_root=True,
-        )
-
-
-@pytest.mark.parametrize(
-    "calls",
-    [
-        [DIRECTOR_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM],
-        [REFERENCE_GROUNDING_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM],
-        [REFERENCE_GROUNDING_SYSTEM, DIRECTOR_SYSTEM, REVIEWER_SYSTEM],
-        [REFERENCE_GROUNDING_SYSTEM, DIRECTOR_SYSTEM, MATERIALS_SYSTEM],
-    ],
-)
-def test_grounded_live_smoke_rejects_missing_initial_stage(calls):
-    with pytest.raises(smoke_live.SmokeContractError):
-        smoke_live.assert_model_call_contract(
-            calls,
-            grounded_parameter_root=True,
-        )
-
-
-def test_grounded_live_smoke_keeps_strict_unfiltered_stage_prefix():
-    with pytest.raises(
-        smoke_live.SmokeContractError,
-        match="未知",
-    ):
-        smoke_live.assert_model_call_contract(
-            [
-                REFERENCE_GROUNDING_SYSTEM,
-                DIRECTOR_SYSTEM,
-                "optional unrelated prompt",
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            grounded_parameter_root=True,
-        )
-
-
-@pytest.mark.parametrize(
-    "unexpected_prompt",
-    ("unknown provider prompt", REFERENCE_AUDITOR_SYSTEM),
-)
-def test_grounded_live_smoke_rejects_unknown_prompt_suffix(
-    unexpected_prompt,
-):
-    with pytest.raises(
-        smoke_live.SmokeContractError,
-        match="未知",
-    ):
-        smoke_live.assert_model_call_contract(
-            [
-                REFERENCE_GROUNDING_SYSTEM,
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-                unexpected_prompt,
-            ],
-            grounded_parameter_root=True,
-        )
-
-
-@pytest.mark.parametrize(
-    "calls",
-    [
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            DIRECTOR_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            MATERIALS_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            REVISION_SYSTEM,
-            MATERIALS_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            *(
-                [REVISION_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM]
-                * 3
-            ),
-        ],
-        [
-            *([DIRECTOR_SYSTEM] * 5),
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            *([MATERIALS_SYSTEM] * 5),
-            REVIEWER_SYSTEM,
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            *([REVIEWER_SYSTEM] * 3),
-        ],
-        [
-            DIRECTOR_SYSTEM,
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-            *([REVISION_SYSTEM] * 5),
-            MATERIALS_SYSTEM,
-            REVIEWER_SYSTEM,
-        ],
-    ],
-)
-def test_live_smoke_rejects_invalid_bounded_core_trace(calls):
+def test_live_smoke_rejects_incomplete_out_of_order_or_unknown_roles(calls):
     with pytest.raises(smoke_live.SmokeContractError):
         smoke_live.assert_model_call_contract(calls)
-
-
-@pytest.mark.parametrize(
-    ("calls", "with_reference_audit"),
-    [
-        (
-            [DIRECTOR_SYSTEM, MATERIALS_SYSTEM, REVIEWER_SYSTEM],
-            True,
-        ),
-        (
-            [
-                REFERENCE_AUDITOR_SYSTEM,
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            False,
-        ),
-        (
-            [
-                DIRECTOR_SYSTEM,
-                REFERENCE_AUDITOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            True,
-        ),
-        (
-            [
-                REFERENCE_AUDITOR_SYSTEM,
-                DIRECTOR_SYSTEM,
-                REFERENCE_AUDITOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            True,
-        ),
-        (
-            [
-                *([REFERENCE_AUDITOR_SYSTEM] * 3),
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            True,
-        ),
-        (
-            [
-                REFERENCE_GROUNDING_SYSTEM,
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            False,
-        ),
-        (
-            [
-                "unknown core prompt",
-                DIRECTOR_SYSTEM,
-                MATERIALS_SYSTEM,
-                REVIEWER_SYSTEM,
-            ],
-            False,
-        ),
-    ],
-)
-def test_live_smoke_rejects_invalid_core_prompt_identity(
-    calls,
-    with_reference_audit,
-):
-    with pytest.raises(smoke_live.SmokeContractError):
-        smoke_live.assert_model_call_contract(
-            calls,
-            with_reference_audit=with_reference_audit,
-        )
-
-
-def test_live_smoke_rejects_out_of_order_core_agents():
-    with pytest.raises(
-        smoke_live.SmokeContractError,
-        match="调用顺序",
-    ):
-        smoke_live.assert_model_call_contract(
-            [
-                MATERIALS_SYSTEM,
-                DIRECTOR_SYSTEM,
-                REVIEWER_SYSTEM,
-            ]
-        )
 
 
 @pytest.mark.parametrize(
@@ -1188,7 +740,7 @@ def test_live_smoke_real_generation_service_reaches_model_cli_category(
 
     assert str(exc_info.value) == "模型服务调用失败，请检查配置或稍后重试。"
     assert "private" not in str(exc_info.value)
-    assert model_client.complete_calls == 2
+    assert model_client.complete_calls >= 1
     assert model_client.close_calls == 1
     assert speech_client.close_calls == 1
 
