@@ -680,6 +680,42 @@ def test_live_smoke_accepts_one_fresh_final_review_call():
     )
 
 
+@pytest.mark.parametrize("review_call_count", [3, 4])
+def test_live_smoke_accepts_bounded_review_retries_after_a_complete_repair(
+    review_call_count,
+):
+    smoke_live.assert_model_call_contract(
+        [
+            *PREPARATION_SYSTEM_PROMPTS,
+            *PREPARATION_SYSTEM_PROMPTS[4:6],
+            *([LESSON_REVIEWER_SYSTEM] * review_call_count),
+        ]
+    )
+
+
+def test_live_smoke_rejects_three_reviews_without_a_repair_context():
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [
+                *PREPARATION_SYSTEM_PROMPTS[:-1],
+                LESSON_REVIEWER_SYSTEM,
+                LESSON_REVIEWER_SYSTEM,
+                LESSON_REVIEWER_SYSTEM,
+            ]
+        )
+
+
+def test_live_smoke_rejects_five_reviews_after_a_complete_repair():
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [
+                *PREPARATION_SYSTEM_PROMPTS,
+                *PREPARATION_SYSTEM_PROMPTS[4:6],
+                *([LESSON_REVIEWER_SYSTEM] * 5),
+            ]
+        )
+
+
 @pytest.mark.parametrize("role_index", range(7))
 def test_live_smoke_accepts_one_structural_retry_for_each_role(role_index):
     role_prompt = PREPARATION_SYSTEM_PROMPTS[role_index]

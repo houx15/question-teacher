@@ -122,7 +122,6 @@ def _prompt_runs(
             runs[-1] = (stage, runs[-1][1] + 1)
         else:
             runs.append((stage, 1))
-        _require_contract(runs[-1][1] <= 2, f"{stage} Agent 结构重试超限。")
     return runs
 
 
@@ -144,15 +143,19 @@ def assert_model_call_contract(
         ),
         unknown_message="smoke 出现未知 Agent 调用。",
     )
-    stages = [stage for stage, _count in runs]
     prefix = []
     if grounded_parameter_root:
         prefix = ["G"]
     elif with_reference_audit:
         prefix = ["A"]
+    stages = [stage for stage, _count in runs]
     _require_contract(
         stages[: len(prefix)] == prefix,
         "smoke 的路线审计阶段顺序不正确。",
+    )
+    _require_contract(
+        all(count <= 2 for _stage, count in runs[: len(prefix)]),
+        "smoke 的路线审计阶段重试超限。",
     )
     preparation_order = [
         "TRACE",
@@ -163,25 +166,40 @@ def assert_model_call_contract(
         "SIMULATION",
         "REVIEW",
     ]
-    preparation_runs = stages[len(prefix) :]
+    preparation_runs = runs[len(prefix) :]
+    initial_runs = preparation_runs[: len(preparation_order)]
     _require_contract(
-        preparation_runs[: len(preparation_order)]
+        [stage for stage, _count in initial_runs]
         == preparation_order,
         "smoke 未按依赖顺序完成首轮备课、模拟与审核。",
+    )
+    _require_contract(
+        all(count <= 2 for _stage, count in initial_runs),
+        "smoke 首轮备课或审核的结构重试超限。",
     )
     remaining = preparation_runs[len(preparation_order) :]
     repair_starts = preparation_order[:5]
     while remaining:
-        repair_start = remaining[0]
+        repair_start = remaining[0][0]
         _require_contract(
             repair_start in repair_starts,
             "smoke 出现非法的定向修复起点。",
         )
         start_index = preparation_order.index(repair_start)
         expected_suffix = preparation_order[start_index:]
+        actual_suffix = remaining[: len(expected_suffix)]
         _require_contract(
-            remaining[: len(expected_suffix)] == expected_suffix,
+            [stage for stage, _count in actual_suffix]
+            == expected_suffix,
             "smoke 的定向修复未完整重建下游并审核。",
+        )
+        _require_contract(
+            all(count <= 2 for _stage, count in actual_suffix[:-1]),
+            "smoke 的定向修复角色结构重试超限。",
+        )
+        _require_contract(
+            actual_suffix[-1][1] <= 4,
+            "smoke 定向修复后的审核重试超限。",
         )
         remaining = remaining[len(expected_suffix) :]
 
