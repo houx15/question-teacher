@@ -193,6 +193,25 @@ def test_reasoning_episodes_accept_interleaved_modes_and_require_contiguous_inde
         ReasoningTrajectory.model_validate(payload)
 
 
+def test_reasoning_trajectory_accepts_every_supported_mode_in_order():
+    modes = [
+        "understand", "plan", "explore", "execute", "monitor", "revise", "reflect",
+    ]
+    trajectory = ReasoningTrajectory.model_validate({
+        "trajectory_type": "hybrid", "lesson_purpose": "完整推理过程",
+        "episodes": [episode("episode-%d" % index, index, mode) for index, mode in enumerate(modes)],
+        "method_summary": "按需切换推理方式", "error_summary": "留意推理断点",
+    })
+    assert [item.mode for item in trajectory.episodes] == modes
+
+
+def test_reasoning_trajectory_rejects_duplicate_episode_ids():
+    payload = prepared_lesson()["reasoning_trajectory"]
+    payload["episodes"] = [episode("episode-1", 0), episode("episode-1", 1, "plan")]
+    with pytest.raises(ValidationError, match="episode ids"):
+        ReasoningTrajectory.model_validate(payload)
+
+
 def test_reasoning_mode_is_closed_literal():
     payload = episode(mode="lecture")
     with pytest.raises(ValidationError):
@@ -243,6 +262,10 @@ def test_script_sections_exist_in_order_and_do_not_overlap():
 def test_review_decision_literals_and_approval_rules():
     payload = prepared_lesson()["review"]
     payload["findings"][0]["severity"] = "blocking"
+    with pytest.raises(ValidationError, match="approved"):
+        LessonReviewDecision.model_validate(payload)
+    payload = prepared_lesson()["review"]
+    payload["findings"][0]["severity"] = "material"
     with pytest.raises(ValidationError, match="approved"):
         LessonReviewDecision.model_validate(payload)
     payload["status"] = "revision_required"
