@@ -727,6 +727,86 @@ def test_reviewer_rejects_mapping_simulation_report_bypass():
 
 
 @pytest.mark.parametrize(
+    "reviewer_context_id",
+    (
+        {"context_id": "reviewer-context-2"},
+        ["reviewer-context-2"],
+        2,
+    ),
+)
+def test_reviewer_rejects_non_string_context_ids(reviewer_context_id):
+    artifacts = {
+        "solution_trace": solution_trace(),
+        "reasoning_trajectory": reasoning_trajectory(),
+        "teaching_script": teaching_script(),
+        "interaction_plan": interaction_plan(),
+        "performance_score": performance_score(),
+    }
+
+    with pytest.raises(TypeError, match="reviewer_context_id"):
+        lesson_review_prompt(
+            artifacts,
+            simulation_report(),
+            reviewer_context_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "reviewer_context_id",
+    (
+        "",
+        "   ",
+        "-reviewer-context-2",
+        "reviewer context 2",
+        "reviewer.context.2",
+        " reviewer-context-2 ",
+        "r" * 65,
+    ),
+)
+def test_reviewer_rejects_blank_or_invalid_generated_context_ids(
+    reviewer_context_id,
+):
+    artifacts = {
+        "solution_trace": solution_trace(),
+        "reasoning_trajectory": reasoning_trajectory(),
+        "teaching_script": teaching_script(),
+        "interaction_plan": interaction_plan(),
+        "performance_score": performance_score(),
+    }
+
+    with pytest.raises(ValueError, match="reviewer_context_id"):
+        lesson_review_prompt(
+            artifacts,
+            simulation_report(),
+            reviewer_context_id,
+        )
+
+
+def test_reviewer_preserves_valid_context_id_and_serializes_deterministically():
+    artifacts = {
+        "solution_trace": solution_trace(),
+        "reasoning_trajectory": reasoning_trajectory(),
+        "teaching_script": teaching_script(),
+        "interaction_plan": interaction_plan(),
+        "performance_score": performance_score(),
+    }
+
+    first = lesson_review_prompt(
+        artifacts,
+        simulation_report(),
+        "reviewer-context-2",
+    )
+    second = lesson_review_prompt(
+        artifacts,
+        simulation_report(),
+        "reviewer-context-2",
+    )
+
+    assert first == second
+    assert _parse_envelope(first)[1]["reviewer_context_id"] == "reviewer-context-2"
+
+
+@pytest.mark.parametrize(
     ("artifact_name", "build_prompt"),
     (
         ("reasoning_trajectory", lambda value: teaching_script_prompt(value)),

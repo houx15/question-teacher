@@ -589,6 +589,17 @@ def student_simulation_prompt(
     )
 
 
+def _reviewer_context_id_projection(reviewer_context_id: str) -> str:
+    if type(reviewer_context_id) is not str:
+        raise TypeError("reviewer_context_id must be a string")
+    if (
+        reviewer_context_id.strip() != reviewer_context_id
+        or _GENERATED_ID_PATTERN.fullmatch(reviewer_context_id) is None
+    ):
+        raise ValueError("reviewer_context_id must be GeneratedId-compatible")
+    return reviewer_context_id
+
+
 def lesson_review_prompt(
     prepared_artifacts: Mapping[str, Any],
     simulation_report: SimulationReport,
@@ -602,7 +613,9 @@ def lesson_review_prompt(
             "simulation_report": _artifact_payload(
                 simulation_report, SimulationReport, "simulation_report"
             ),
-            "reviewer_context_id": reviewer_context_id,
+            "reviewer_context_id": _reviewer_context_id_projection(
+                reviewer_context_id
+            ),
             "pedagogy_rubric": rubric_payload(),
         },
     )
