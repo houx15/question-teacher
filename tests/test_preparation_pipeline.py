@@ -317,11 +317,41 @@ def downstream_simulation_payload():
     }
 
 
+REVIEW_ARTIFACT_ORDER = [
+    "solution_trace",
+    "reasoning_trajectory",
+    "teaching_script",
+    "interaction_plan",
+    "performance_score",
+    "simulation_report",
+]
+REVIEW_ROLE_ARTIFACT = {
+    "reference_analyst": "solution_trace",
+    "teaching_designer": "reasoning_trajectory",
+    "script_teacher": "teaching_script",
+    "interaction_designer": "interaction_plan",
+    "classroom_director": "performance_score",
+}
+
+
 def downstream_review_payload(status="approved", findings=None):
+    review_findings = list(findings or [])
+    material = [
+        item for item in review_findings if item["severity"] != "polish"
+    ]
+    retained = []
+    if material:
+        earliest_artifact = min(
+            (REVIEW_ROLE_ARTIFACT[item["responsible_role"]] for item in material),
+            key=REVIEW_ARTIFACT_ORDER.index,
+        )
+        retained = REVIEW_ARTIFACT_ORDER[
+            : REVIEW_ARTIFACT_ORDER.index(earliest_artifact)
+        ]
     return {
         "status": status,
-        "findings": list(findings or []),
-        "retained_artifacts": [],
+        "findings": review_findings,
+        "retained_artifacts": retained,
         "approval_summary": (
             "核心门槛通过" if status == "approved" else "需要定向修订"
         ),
@@ -337,6 +367,7 @@ def review_finding(role, criterion="learner_follows_why"):
         "classroom_director": ("performance_score", "cue-clause-open"),
     }
     artifact_type, artifact_id = artifact_by_role[role]
+    artifact_index = REVIEW_ARTIFACT_ORDER.index(artifact_type)
     return {
         "finding_id": "finding-%s-%s" % (role, criterion),
         "severity": "material",
@@ -346,7 +377,9 @@ def review_finding(role, criterion="learner_follows_why"):
         "evidence": "%s 缺少学生可追踪的理由。" % artifact_id,
         "responsible_role": role,
         "requested_change": "补充当前决定的理由和转移。",
-        "invalidated_downstream_artifacts": [],
+        "invalidated_downstream_artifacts": REVIEW_ARTIFACT_ORDER[
+            artifact_index + 1 :
+        ],
     }
 
 
@@ -539,6 +572,10 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
     assert run.audit.active_versions == expected_versions
     assert run.prepared_lesson.repair_count == 1
     assert run.prepared_lesson.artifact_history == run.audit.history
+    repaired_start = REVIEW_ARTIFACT_ORDER.index(finding["artifact_type"])
+    assert [
+        item.artifact_type for item in run.audit.history
+    ] == REVIEW_ARTIFACT_ORDER + REVIEW_ARTIFACT_ORDER[repaired_start:]
     assert [call.role for call in fake.calls].count("student_simulator") == 2
     assert [call.role for call in fake.calls].count("lesson_reviewer") == 2
     repair_call = [
@@ -981,6 +1018,7 @@ def test_multiple_material_findings_repair_from_earliest_responsible_role():
 def test_polish_only_review_approves_without_a_repair_cycle():
     polish = review_finding("script_teacher", "learner_follows_why")
     polish["severity"] = "polish"
+    polish["invalidated_downstream_artifacts"] = []
     fake = client(
         reviews=[downstream_review_payload("approved", [polish])]
     )

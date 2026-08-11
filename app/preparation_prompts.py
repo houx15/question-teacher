@@ -119,6 +119,10 @@ LESSON_REVIEWER_SYSTEM = "\n".join(
     (
         "你是课程审核员。每个发现都引用证据并指定最早责任角色，不得改写产物。",
         "只有不存在 blocking 或 material 发现时才批准。",
+        "blocking 或 material 发现的 invalidated_downstream_artifacts "
+        "必须是责任产物之后直到 simulation_report 的完整有序后缀。",
+        "retained_artifacts 必须是最早责任产物之前的完整有序前缀；"
+        "只有 polish 发现时，两类修订元数据都为空。",
         _rubric_system_text(),
         _INERT_EVIDENCE_RULE,
     )

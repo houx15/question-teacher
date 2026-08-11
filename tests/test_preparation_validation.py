@@ -1429,7 +1429,16 @@ def test_review_requires_each_finding_to_cite_an_existing_artifact_id():
                     "evidence": "审核声称该句缺失理由",
                     "responsible_role": "script_teacher",
                     "requested_change": "补充理由",
+                    "invalidated_downstream_artifacts": [
+                        "interaction_plan",
+                        "performance_score",
+                        "simulation_report",
+                    ],
                 }
+            ],
+            "retained_artifacts": [
+                "solution_trace",
+                "reasoning_trajectory",
             ],
             "approval_summary": "需修订",
         }
@@ -1459,8 +1468,16 @@ def test_review_can_cite_a_concrete_nested_source_anchor_id():
                     "evidence": "%s 的条件用途未说明" % anchor_id,
                     "responsible_role": "reference_analyst",
                     "requested_change": "标明条件的数学用途",
+                    "invalidated_downstream_artifacts": [
+                        "reasoning_trajectory",
+                        "teaching_script",
+                        "interaction_plan",
+                        "performance_score",
+                        "simulation_report",
+                    ],
                 }
             ],
+            "retained_artifacts": [],
             "approval_summary": "需修订",
         }
     )
@@ -1485,7 +1502,16 @@ def test_review_cannot_assign_a_role_later_than_the_cited_artifact_owner():
                     "evidence": "clause-1 缺少决定理由",
                     "responsible_role": "classroom_director",
                     "requested_change": "补充理由",
+                    "invalidated_downstream_artifacts": [
+                        "simulation_report"
+                    ],
                 }
+            ],
+            "retained_artifacts": [
+                "solution_trace",
+                "reasoning_trajectory",
+                "teaching_script",
+                "interaction_plan",
             ],
             "approval_summary": "需修订",
         }
@@ -1592,6 +1618,209 @@ def test_review_retained_and_invalidated_artifacts_follow_dependency_order():
 
 
 @pytest.mark.parametrize(
+    "invalidated",
+    (
+        None,
+        [],
+        ["interaction_plan", "performance_score"],
+        ["simulation_report", "performance_score", "interaction_plan"],
+    ),
+)
+def test_material_review_requires_exact_ordered_invalidated_suffix(invalidated):
+    trace, trajectory, script, plan, score, report, _ = models()
+    finding = {
+        "finding_id": "finding-script-exact-suffix",
+        "severity": "material",
+        "artifact_type": "teaching_script",
+        "artifact_id": "clause-1",
+        "criterion": "learner_follows_why",
+        "evidence": "clause-1 没有交代决定理由",
+        "responsible_role": "script_teacher",
+        "requested_change": "补充决定理由",
+    }
+    if invalidated is not None:
+        finding["invalidated_downstream_artifacts"] = invalidated
+    payload = {
+        "status": "revision_required",
+        "findings": [finding],
+        "retained_artifacts": ["solution_trace", "reasoning_trajectory"],
+        "approval_summary": "从讲稿开始修订",
+    }
+
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(payload),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+        ),
+    )
+
+
+def test_material_review_requires_exact_retained_prefix_for_earliest_finding():
+    trace, trajectory, script, plan, score, report, _ = models()
+    payload = {
+        "status": "revision_required",
+        "findings": [
+            {
+                "finding_id": "finding-director-exact-metadata",
+                "severity": "material",
+                "artifact_type": "performance_score",
+                "artifact_id": "cue-clause-1",
+                "criterion": "visual_action_alignment",
+                "evidence": "视觉动作错位",
+                "responsible_role": "classroom_director",
+                "requested_change": "对齐子句",
+                "invalidated_downstream_artifacts": ["simulation_report"],
+            },
+            {
+                "finding_id": "finding-script-earliest-metadata",
+                "severity": "blocking",
+                "artifact_type": "teaching_script",
+                "artifact_id": "clause-1",
+                "criterion": "learner_follows_why",
+                "evidence": "未说明决定理由",
+                "responsible_role": "script_teacher",
+                "requested_change": "补充理由",
+                "invalidated_downstream_artifacts": [
+                    "interaction_plan",
+                    "performance_score",
+                    "simulation_report",
+                ],
+            },
+        ],
+        "retained_artifacts": [],
+        "approval_summary": "从最早责任角色修订",
+    }
+
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(payload),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+        ),
+    )
+    payload["retained_artifacts"] = [
+        "solution_trace",
+        "reasoning_trajectory",
+    ]
+    validate_review_decision(
+        LessonReviewDecision.model_validate(payload),
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+    )
+
+
+@pytest.mark.parametrize(
+    "retained",
+    (
+        None,
+        [],
+        ["reasoning_trajectory", "solution_trace"],
+    ),
+)
+def test_material_review_rejects_omitted_incomplete_or_reordered_retained_prefix(
+    retained,
+):
+    trace, trajectory, script, plan, score, report, _ = models()
+    payload = {
+        "status": "revision_required",
+        "findings": [
+            {
+                "finding_id": "finding-script-retained-prefix",
+                "severity": "material",
+                "artifact_type": "teaching_script",
+                "artifact_id": "clause-1",
+                "criterion": "learner_follows_why",
+                "evidence": "未说明决定理由",
+                "responsible_role": "script_teacher",
+                "requested_change": "补充理由",
+                "invalidated_downstream_artifacts": [
+                    "interaction_plan",
+                    "performance_score",
+                    "simulation_report",
+                ],
+            }
+        ],
+        "approval_summary": "从讲稿开始修订",
+    }
+    if retained is not None:
+        payload["retained_artifacts"] = retained
+
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(payload),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+        ),
+    )
+
+
+def test_polish_only_approval_uses_empty_repair_metadata():
+    trace, trajectory, script, plan, score, report, _ = models()
+    payload = review_payload()
+    validate_review_decision(
+        LessonReviewDecision.model_validate(payload),
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+    )
+
+    retained = copy.deepcopy(payload)
+    retained["retained_artifacts"] = ["solution_trace"]
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(retained),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+        ),
+    )
+
+    invalidated = copy.deepcopy(payload)
+    invalidated["findings"][0]["invalidated_downstream_artifacts"] = [
+        "simulation_report"
+    ]
+    assert_code(
+        "review_dependency_invalid",
+        lambda: validate_review_decision(
+            LessonReviewDecision.model_validate(invalidated),
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
     "failed_ability",
     (
         "can_identify_attention_target",
@@ -1630,7 +1859,16 @@ def test_prepared_lesson_requires_an_approved_review_even_if_artifacts_validate(
                 "evidence": "clause-1 没有说明理由",
                 "responsible_role": "script_teacher",
                 "requested_change": "补充理由",
+                "invalidated_downstream_artifacts": [
+                    "interaction_plan",
+                    "performance_score",
+                    "simulation_report",
+                ],
             }
+        ],
+        "retained_artifacts": [
+            "solution_trace",
+            "reasoning_trajectory",
         ],
         "approval_summary": "需修订",
     }
@@ -1648,6 +1886,22 @@ def assert_history_invalid(payload):
         "artifact_history_invalid",
         lambda: validate_prepared_lesson(prepared, route(), []),
     )
+
+
+def revision(artifact_type, version):
+    roles = {
+        "solution_trace": "reference_analyst",
+        "reasoning_trajectory": "teaching_designer",
+        "teaching_script": "script_teacher",
+        "interaction_plan": "interaction_designer",
+        "performance_score": "classroom_director",
+        "simulation_report": "student_simulator",
+    }
+    return {
+        "artifact_type": artifact_type,
+        "version": version,
+        "responsible_role": roles[artifact_type],
+    }
 
 
 def test_prepared_history_requires_exactly_all_six_artifact_types():
@@ -1695,6 +1949,65 @@ def test_prepared_history_rejects_wrong_artifact_role():
 def test_prepared_history_simulation_versions_match_repair_count():
     payload = prepared_payload()
     payload["repair_count"] = 1
+    assert_history_invalid(payload)
+
+
+def test_prepared_history_accepts_dependency_suffix_for_each_repair_cycle():
+    payload = prepared_payload()
+    payload["repair_count"] = 2
+    payload["artifact_history"].extend(
+        [
+            revision("performance_score", 2),
+            revision("simulation_report", 2),
+            revision("teaching_script", 2),
+            revision("interaction_plan", 2),
+            revision("performance_score", 3),
+            revision("simulation_report", 3),
+        ]
+    )
+
+    validate_prepared_lesson(
+        PreparedLesson.model_validate(payload),
+        route(),
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    "repair_history",
+    (
+        [revision("solution_trace", 2)],
+        [
+            revision("performance_score", 2),
+            revision("performance_score", 3),
+            revision("simulation_report", 2),
+        ],
+        [
+            revision("teaching_script", 2),
+            revision("interaction_plan", 2),
+            revision("simulation_report", 2),
+        ],
+        [
+            revision("simulation_report", 2),
+            revision("performance_score", 2),
+        ],
+    ),
+)
+def test_prepared_history_rejects_non_state_machine_chronology(repair_history):
+    payload = prepared_payload()
+    payload["repair_count"] = 0 if len(repair_history) == 1 else 1
+    payload["artifact_history"].extend(copy.deepcopy(repair_history))
+
+    assert_history_invalid(payload)
+
+
+def test_prepared_history_rejects_reordered_initial_segment():
+    payload = prepared_payload()
+    payload["artifact_history"][0], payload["artifact_history"][1] = (
+        payload["artifact_history"][1],
+        payload["artifact_history"][0],
+    )
+
     assert_history_invalid(payload)
 
 

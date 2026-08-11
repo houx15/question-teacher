@@ -47,13 +47,24 @@ _REVIEW_ROLE_ORDER = {
     "interaction_designer": 3,
     "classroom_director": 4,
 }
+_ARTIFACT_DEPENDENCY_ORDER = (
+    "solution_trace",
+    "reasoning_trajectory",
+    "teaching_script",
+    "interaction_plan",
+    "performance_score",
+    "simulation_report",
+)
 _ARTIFACT_OWNER_ORDER = {
-    "solution_trace": 0,
-    "reasoning_trajectory": 1,
-    "teaching_script": 2,
-    "interaction_plan": 3,
-    "performance_score": 4,
-    "simulation_report": 5,
+    artifact_type: index
+    for index, artifact_type in enumerate(_ARTIFACT_DEPENDENCY_ORDER)
+}
+_REPAIR_ROLE_ARTIFACT = {
+    "reference_analyst": "solution_trace",
+    "teaching_designer": "reasoning_trajectory",
+    "script_teacher": "teaching_script",
+    "interaction_designer": "interaction_plan",
+    "classroom_director": "performance_score",
 }
 _ARTIFACT_HISTORY_ROLES = {
     "solution_trace": "reference_analyst",
@@ -1101,34 +1112,8 @@ def validate_review_decision(
                 finding.finding_id,
                 "Review finding must route to the earliest responsible role.",
             )
-        if any(
-            _ARTIFACT_OWNER_ORDER[item]
-            <= _REVIEW_ROLE_ORDER[finding.responsible_role]
-            for item in finding.invalidated_downstream_artifacts
-        ):
-            _fail(
-                "review_dependency_invalid",
-                finding.finding_id,
-                "Invalidated artifacts must be downstream of the responsible role.",
-            )
 
-    material_findings = [
-        item for item in decision.findings if item.severity != "polish"
-    ]
-    if material_findings:
-        earliest_order = min(
-            _REVIEW_ROLE_ORDER[item.responsible_role]
-            for item in material_findings
-        )
-        if any(
-            _ARTIFACT_OWNER_ORDER[item] >= earliest_order
-            for item in decision.retained_artifacts
-        ):
-            _fail(
-                "review_dependency_invalid",
-                "review",
-                "Retained artifacts must be strictly upstream of the earliest repair role.",
-            )
+    _validate_review_dependency_metadata(decision)
 
     novice_gate_failed = bool(report.blocking_findings) or any(
         not (
@@ -1144,6 +1129,51 @@ def validate_review_decision(
             "review_non_compensable_gate_invalid",
             "review",
             "Review cannot approve when a non-compensable novice gate fails.",
+        )
+
+
+def _validate_review_dependency_metadata(
+    decision: LessonReviewDecision,
+) -> None:
+    material_findings = [
+        item for item in decision.findings if item.severity != "polish"
+    ]
+    for finding in decision.findings:
+        expected_invalidated: List[str] = []
+        if finding.severity != "polish":
+            responsible_artifact = _REPAIR_ROLE_ARTIFACT[
+                finding.responsible_role
+            ]
+            start_index = (
+                _ARTIFACT_OWNER_ORDER[responsible_artifact] + 1
+            )
+            expected_invalidated = list(
+                _ARTIFACT_DEPENDENCY_ORDER[start_index:]
+            )
+        if finding.invalidated_downstream_artifacts != expected_invalidated:
+            _fail(
+                "review_dependency_invalid",
+                finding.finding_id,
+                "Invalidated artifacts must equal the complete ordered downstream suffix.",
+            )
+
+    expected_retained: List[str] = []
+    if material_findings:
+        earliest_role = min(
+            material_findings,
+            key=lambda item: _REVIEW_ROLE_ORDER[item.responsible_role],
+        ).responsible_role
+        earliest_artifact = _REPAIR_ROLE_ARTIFACT[earliest_role]
+        expected_retained = list(
+            _ARTIFACT_DEPENDENCY_ORDER[
+                : _ARTIFACT_OWNER_ORDER[earliest_artifact]
+            ]
+        )
+    if decision.retained_artifacts != expected_retained:
+        _fail(
+            "review_dependency_invalid",
+            "review",
+            "Retained artifacts must equal the complete ordered upstream prefix.",
         )
 
 
@@ -1233,52 +1263,82 @@ def _validate_artifact_history(
     prepared: PreparedLesson,
     active_versions: Optional[Dict[str, int]],
 ) -> None:
-    by_type = {
-        artifact_type: [
-            revision
-            for revision in prepared.artifact_history
-            if revision.artifact_type == artifact_type
-        ]
-        for artifact_type in _ARTIFACT_HISTORY_ROLES
-    }
-    if set(item.artifact_type for item in prepared.artifact_history) != set(
-        _ARTIFACT_HISTORY_ROLES
-    ):
-        _fail(
-            "artifact_history_invalid",
-            "artifact_history",
-            "Artifact history must represent exactly all authored artifact types.",
-        )
-    for artifact_type, revisions in by_type.items():
-        expected_role = _ARTIFACT_HISTORY_ROLES[artifact_type]
-        versions = [item.version for item in revisions]
-        if (
-            any(item.responsible_role != expected_role for item in revisions)
-            or versions != list(range(1, len(revisions) + 1))
-        ):
-            _fail(
-                "artifact_history_invalid",
-                artifact_type,
-                "Artifact history roles and versions must be contiguous and authoritative.",
-            )
     if not 0 <= prepared.repair_count <= MAX_REPAIR_CYCLES:
         _fail(
             "artifact_history_invalid",
             "repair_count",
             "Repair count exceeds the preparation convergence budget.",
         )
-    if len(by_type["simulation_report"]) != prepared.repair_count + 1:
+
+    history = prepared.artifact_history
+    initial_count = len(_ARTIFACT_DEPENDENCY_ORDER)
+    initial = history[:initial_count]
+    if len(initial) != initial_count or [
+        item.artifact_type for item in initial
+    ] != list(_ARTIFACT_DEPENDENCY_ORDER):
         _fail(
             "artifact_history_invalid",
-            "simulation_report",
-            "Simulation history must contain one version per reviewed lesson state.",
+            "artifact_history",
+            "Artifact history must begin with the complete ordered initial build.",
         )
+    current_versions = {
+        artifact_type: 1 for artifact_type in _ARTIFACT_DEPENDENCY_ORDER
+    }
+    for item in initial:
+        if (
+            item.version != 1
+            or item.responsible_role
+            != _ARTIFACT_HISTORY_ROLES[item.artifact_type]
+        ):
+            _fail(
+                "artifact_history_invalid",
+                item.artifact_type,
+                "Initial artifact revisions must be authoritative version one.",
+            )
+
+    cursor = initial_count
+    repairable = _ARTIFACT_DEPENDENCY_ORDER[:-1]
+    for _ in range(prepared.repair_count):
+        if cursor >= len(history) or history[cursor].artifact_type not in repairable:
+            _fail(
+                "artifact_history_invalid",
+                "artifact_history",
+                "Each repair cycle must start at one repairable artifact.",
+            )
+        start_index = _ARTIFACT_OWNER_ORDER[
+            history[cursor].artifact_type
+        ]
+        expected_types = _ARTIFACT_DEPENDENCY_ORDER[start_index:]
+        segment = history[cursor : cursor + len(expected_types)]
+        if [item.artifact_type for item in segment] != list(expected_types):
+            _fail(
+                "artifact_history_invalid",
+                "artifact_history",
+                "Each repair cycle must be one complete ordered dependency suffix.",
+            )
+        for item, artifact_type in zip(segment, expected_types):
+            expected_version = current_versions[artifact_type] + 1
+            if (
+                item.version != expected_version
+                or item.responsible_role
+                != _ARTIFACT_HISTORY_ROLES[artifact_type]
+            ):
+                _fail(
+                    "artifact_history_invalid",
+                    artifact_type,
+                    "Repair revisions must increment once under the authoritative role.",
+                )
+            current_versions[artifact_type] = expected_version
+        cursor += len(expected_types)
+    if cursor != len(history):
+        _fail(
+            "artifact_history_invalid",
+            "artifact_history",
+            "Artifact history contains revisions outside declared repair cycles.",
+        )
+
     if active_versions is not None:
-        latest_versions = {
-            artifact_type: revisions[-1].version
-            for artifact_type, revisions in by_type.items()
-        }
-        if type(active_versions) is not dict or active_versions != latest_versions:
+        if type(active_versions) is not dict or active_versions != current_versions:
             _fail(
                 "artifact_history_invalid",
                 "active_versions",

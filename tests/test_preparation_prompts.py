@@ -452,6 +452,14 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
             assert phrase in system_prompt
 
 
+def test_reviewer_system_requires_exact_dependency_metadata():
+    assert "invalidated_downstream_artifacts" in LESSON_REVIEWER_SYSTEM
+    assert "retained_artifacts" in LESSON_REVIEWER_SYSTEM
+    assert "完整有序后缀" in LESSON_REVIEWER_SYSTEM
+    assert "完整有序前缀" in LESSON_REVIEWER_SYSTEM
+    assert "polish" in LESSON_REVIEWER_SYSTEM
+
+
 def test_non_compensable_gates_are_verbatim_in_simulator_and_reviewer_inputs():
     simulator_prompt = prompts()[5]
     reviewer_prompt = prompts()[6]
