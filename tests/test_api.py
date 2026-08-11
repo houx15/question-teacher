@@ -13,8 +13,10 @@ from app.api import (
 )
 from app.compiler import LessonCompiler
 from app.config import Settings
-from app.generation import LessonInputError
+from app.generation import LessonGenerationService, LessonInputError
 from app.main import PROJECT_ROOT, create_app
+from app.math_engine import MathEngine
+from app.preparation_pipeline import PreparationFailure
 from app.schemas import (
     Interaction,
     InteractionOption,
@@ -27,6 +29,7 @@ from app.schemas import (
 )
 from app.store import MemoryStore
 from tests.test_generation import problem, valid_draft
+from tests.generation_fakes import FakeClient
 
 
 def problem_input() -> ProblemInput:
@@ -353,6 +356,57 @@ def test_generation_failure_is_sanitized_and_has_no_lesson():
     assert audio_service.calls == 0
     assert "private" not in str(job)
     assert client.get("/api/lessons/lesson-1").status_code == 404
+
+
+def test_nonconverged_preparation_never_reaches_compiler_or_audio_service():
+    class NonconvergedPipeline:
+        async def prepare_with_audit(self, *args, **kwargs):
+            raise PreparationFailure(
+                category="review_not_converged",
+                role="lesson_reviewer",
+                detail="private review findings",
+            )
+
+    class CompilerSpy:
+        def __init__(self):
+            self.calls = 0
+
+        def compile(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("compiler must not run")
+
+    compiler = CompilerSpy()
+    generator = LessonGenerationService(
+        FakeClient([]),
+        MathEngine(),
+        compiler=compiler,
+        preparation_pipeline=NonconvergedPipeline(),
+    )
+    audio_service = FakeAudioService()
+    store = RecordingStore()
+    job = store.create_job()
+    source_problem = ProblemInput(
+        problem_text="用配方法解方程：x^2-6*x+5=0",
+        reference_answer="x=1 或 x=5",
+        required_method="complete_the_square",
+    )
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            source_problem,
+            store,
+            generator,
+            audio_service,
+        )
+    )
+
+    failed = store.get_job(job.job_id)
+    assert failed.status == "failed"
+    assert failed.error == "课程生成失败，请稍后重试。"
+    assert "private review findings" not in failed.error
+    assert compiler.calls == 0
+    assert audio_service.calls == 0
 
 
 def test_generation_does_not_return_id_when_persistence_fails():

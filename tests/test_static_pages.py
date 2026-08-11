@@ -628,6 +628,93 @@ def test_reference_audit_live_smoke_runs_auditor_before_preparation_roles():
     )
 
 
+def test_live_smoke_rejects_an_unrequested_reference_audit_prefix():
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [REFERENCE_AUDITOR_SYSTEM, *PREPARATION_SYSTEM_PROMPTS]
+        )
+
+
+def test_grounded_live_smoke_rejects_an_auditor_after_the_grounder():
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [
+                REFERENCE_GROUNDING_SYSTEM,
+                REFERENCE_AUDITOR_SYSTEM,
+                *PREPARATION_SYSTEM_PROMPTS,
+            ],
+            grounded_parameter_root=True,
+            with_reference_audit=True,
+        )
+
+
+def test_live_smoke_rejects_a_stray_incomplete_repair_suffix():
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [
+                *PREPARATION_SYSTEM_PROMPTS,
+                CLASSROOM_DIRECTOR_SYSTEM,
+            ]
+        )
+
+
+def test_live_smoke_accepts_more_than_two_complete_targeted_repairs():
+    performance_repair = PREPARATION_SYSTEM_PROMPTS[4:]
+
+    smoke_live.assert_model_call_contract(
+        [
+            *PREPARATION_SYSTEM_PROMPTS,
+            *performance_repair,
+            *performance_repair,
+            *performance_repair,
+        ]
+    )
+
+
+def test_live_smoke_accepts_one_fresh_final_review_call():
+    smoke_live.assert_model_call_contract(
+        [
+            *PREPARATION_SYSTEM_PROMPTS,
+            LESSON_REVIEWER_SYSTEM,
+        ]
+    )
+
+
+@pytest.mark.parametrize("role_index", range(7))
+def test_live_smoke_accepts_one_structural_retry_for_each_role(role_index):
+    role_prompt = PREPARATION_SYSTEM_PROMPTS[role_index]
+
+    smoke_live.assert_model_call_contract(
+        [
+            *PREPARATION_SYSTEM_PROMPTS[:role_index],
+            role_prompt,
+            role_prompt,
+            *PREPARATION_SYSTEM_PROMPTS[role_index + 1 :],
+        ]
+    )
+
+
+@pytest.mark.parametrize("repair_start", range(5))
+def test_live_smoke_accepts_each_legal_targeted_repair_start(repair_start):
+    smoke_live.assert_model_call_contract(
+        [
+            *PREPARATION_SYSTEM_PROMPTS,
+            *PREPARATION_SYSTEM_PROMPTS[repair_start:],
+        ]
+    )
+
+
+def test_live_smoke_rejects_a_third_structural_retry():
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(
+            [
+                PREPARATION_SYSTEM_PROMPTS[0],
+                PREPARATION_SYSTEM_PROMPTS[0],
+                *PREPARATION_SYSTEM_PROMPTS,
+            ]
+        )
+
+
 @pytest.mark.parametrize(
     "calls",
     [

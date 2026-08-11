@@ -135,7 +135,6 @@ def assert_model_call_contract(
         MATH_ROUTE_SYSTEM not in system_prompts,
         "配方法 smoke 未使用确定性数学路线。",
     )
-    expected_route_stage = "G" if grounded_parameter_root else None
     runs = _prompt_runs(
         system_prompts,
         prompt_stages=(
@@ -146,11 +145,11 @@ def assert_model_call_contract(
         unknown_message="smoke 出现未知 Agent 调用。",
     )
     stages = [stage for stage, _count in runs]
-    prefix = (
-        [expected_route_stage]
-        if expected_route_stage is not None
-        else (["A"] if with_reference_audit else [])
-    )
+    prefix = []
+    if grounded_parameter_root:
+        prefix = ["G"]
+    elif with_reference_audit:
+        prefix = ["A"]
     _require_contract(
         stages[: len(prefix)] == prefix,
         "smoke 的路线审计阶段顺序不正确。",
@@ -164,15 +163,27 @@ def assert_model_call_contract(
         "SIMULATION",
         "REVIEW",
     ]
+    preparation_runs = stages[len(prefix) :]
     _require_contract(
-        all(stage in stages for stage in preparation_order),
-        "smoke 未完成全部备课、模拟与审核角色。",
+        preparation_runs[: len(preparation_order)]
+        == preparation_order,
+        "smoke 未按依赖顺序完成首轮备课、模拟与审核。",
     )
-    first_positions = [stages.index(stage) for stage in preparation_order]
-    _require_contract(
-        first_positions == sorted(first_positions),
-        "smoke 未按依赖顺序完成备课、模拟与审核。",
-    )
+    remaining = preparation_runs[len(preparation_order) :]
+    repair_starts = preparation_order[:5]
+    while remaining:
+        repair_start = remaining[0]
+        _require_contract(
+            repair_start in repair_starts,
+            "smoke 出现非法的定向修复起点。",
+        )
+        start_index = preparation_order.index(repair_start)
+        expected_suffix = preparation_order[start_index:]
+        _require_contract(
+            remaining[: len(expected_suffix)] == expected_suffix,
+            "smoke 的定向修复未完整重建下游并审核。",
+        )
+        remaining = remaining[len(expected_suffix) :]
 
 
 def assert_common_lesson_contract(

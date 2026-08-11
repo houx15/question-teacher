@@ -1,7 +1,19 @@
 import copy
+from dataclasses import dataclass
 
-from app.prompts import MATH_ROUTE_SYSTEM
+from app.prompts import (
+    MATH_ROUTE_SYSTEM,
+    REFERENCE_AUDITOR_SYSTEM,
+    REFERENCE_GROUNDING_SYSTEM,
+)
 from tests.preparation_fakes import role_for_system
+
+
+@dataclass(frozen=True)
+class RecordedGenerationCall:
+    role: str
+    system: str
+    user: str
 
 
 class CompositeGenerationClient:
@@ -10,6 +22,7 @@ class CompositeGenerationClient:
     def __init__(self, route_client, preparation_client):
         self.route_client = route_client
         self.preparation_client = preparation_client
+        self.calls = []
 
     @property
     def preparation_calls(self):
@@ -17,9 +30,23 @@ class CompositeGenerationClient:
 
     async def complete_json_with_metadata(self, system, user):
         try:
-            role_for_system(system)
+            role = role_for_system(system)
         except AssertionError:
+            self.calls.append(
+                RecordedGenerationCall(
+                    role=self._route_role(system),
+                    system=system,
+                    user=user,
+                )
+            )
             return await self.route_client.complete_json(system, user)
+        self.calls.append(
+            RecordedGenerationCall(
+                role=role,
+                system=system,
+                user=user,
+            )
+        )
         return await self.preparation_client.complete_json_with_metadata(
             system,
             user,
@@ -27,10 +54,32 @@ class CompositeGenerationClient:
 
     async def complete_json(self, system, user):
         try:
-            role_for_system(system)
+            role = role_for_system(system)
         except AssertionError:
+            self.calls.append(
+                RecordedGenerationCall(
+                    role=self._route_role(system),
+                    system=system,
+                    user=user,
+                )
+            )
             return await self.route_client.complete_json(system, user)
+        self.calls.append(
+            RecordedGenerationCall(
+                role=role,
+                system=system,
+                user=user,
+            )
+        )
         return await self.preparation_client.complete_json(system, user)
+
+    @staticmethod
+    def _route_role(system):
+        return {
+            REFERENCE_AUDITOR_SYSTEM: "reference_auditor",
+            REFERENCE_GROUNDING_SYSTEM: "reference_grounder",
+            MATH_ROUTE_SYSTEM: "math_route",
+        }.get(system, "unknown_route")
 
 
 class FakeClient:

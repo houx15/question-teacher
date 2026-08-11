@@ -3,12 +3,14 @@ import json
 
 import pytest
 
+from app.claim_checker import ClaimCheckerUnavailableError
 from app.generation import (
     GeneratedLessonBundle,
     LessonGenerationService,
     LessonInputError,
     LessonQualityError,
 )
+from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
 from app.prompts import REFERENCE_AUDITOR_SYSTEM
 from app.preparation_pipeline import (
@@ -200,7 +202,40 @@ def reference_audit_payload():
     }
 
 
-def _approved_preparation_client():
+def grounding_payload(check_requests=None):
+    frozen_payload = preparation_route().to_prompt_payload()
+    return {
+        "task_summary": "由参数根求m-n",
+        "target": "m-n",
+        "assumptions": frozen_payload["assumptions"],
+        "reference_conclusion": frozen_payload["final_conclusion"],
+        "method_name": frozen_payload["method_name"],
+        "reasoning_steps": [
+            {
+                key: value
+                for key, value in step.items()
+                if key != "evidence_status"
+            }
+            for step in frozen_payload["steps"]
+        ],
+        "check_requests": list(check_requests or []),
+        "audit_notes": [],
+    }
+
+
+def grounded_source_problem(reference_solution_text=None):
+    return preparation_problem().model_copy(
+        update={
+            "problem_text": (
+                "若$2n$ ($n\\ne 0$)是关于 x的方程 "
+                "$x^2-2mx+2n=0$的根，则m-n的值为"
+            ),
+            "reference_solution_text": reference_solution_text,
+        }
+    )
+
+
+def _approved_preparation_client(route_responses=None):
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace_payload()],
@@ -212,7 +247,10 @@ def _approved_preparation_client():
             "lesson_reviewer": [downstream_review_payload()],
         }
     )
-    return CompositeGenerationClient(FakeClient([]), preparation_client)
+    return CompositeGenerationClient(
+        FakeClient(route_responses or []),
+        preparation_client,
+    )
 
 
 def test_reference_auditor_receives_raw_reference_as_untrusted_input():
@@ -294,6 +332,163 @@ class _RecordingPreparationPipeline(LessonPreparationPipeline):
             problem_focus_targets,
             on_stage,
         )
+
+
+def test_real_grounder_precedes_preparation_and_freezes_route_and_focus_targets():
+    client = _approved_preparation_client([grounding_payload()])
+    pipeline = _RecordingPreparationPipeline(client, [])
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        preparation_pipeline=pipeline,
+    )
+    source_problem = grounded_source_problem(reference_solution_text=None)
+
+    bundle = asyncio.run(service.generate_bundle(source_problem))
+
+    assert [call.role for call in client.calls] == [
+        "reference_grounder",
+        "reference_analyst",
+        "teaching_designer",
+        "script_teacher",
+        "interaction_designer",
+        "classroom_director",
+        "student_simulator",
+        "lesson_reviewer",
+    ]
+    received_problem, received_route, received_targets = pipeline.received
+    assert received_problem == source_problem
+    assert received_route.fingerprint == preparation_route().fingerprint
+    assert received_targets == compile_problem_focus_targets(
+        source_problem.problem_text
+    )
+    assert [target.math_text for target in received_targets] == [
+        "2n",
+        "n\\ne 0",
+        "x^2-2mx+2n=0",
+    ]
+    assert bundle.lesson.validation_report["verification_mode"] == (
+        "reference_grounded"
+    )
+
+
+def test_grounded_raw_reference_reaches_only_grounder_and_reference_analyst():
+    marker = "PRIVATE-GROUNDED-REFERENCE-TASK7"
+    client = _approved_preparation_client([grounding_payload()])
+    service = LessonGenerationService(client, MathEngine())
+
+    asyncio.run(
+        service.generate_bundle(
+            grounded_source_problem(reference_solution_text=marker)
+        )
+    )
+
+    assert [call.role for call in client.calls if marker in call.user] == [
+        "reference_grounder",
+        "reference_analyst",
+    ]
+
+
+def test_checker_unavailability_softly_degrades_the_real_grounded_route():
+    check_request = {
+        "check_id": "divide-by-n",
+        "kind": "nonzero_division",
+        "expression": "2*n*(2*n-2*m+1)",
+        "expected": "2*n-2*m+1",
+        "substitutions": {},
+        "nonzero_symbols": ["n"],
+        "conclusion_linked": True,
+    }
+
+    class UnavailableChecker:
+        def check(self, request):
+            del request
+            raise ClaimCheckerUnavailableError("private checker outage")
+
+    client = _approved_preparation_client(
+        [grounding_payload([check_request])]
+    )
+    lesson = asyncio.run(
+        LessonGenerationService(
+            client,
+            MathEngine(),
+            claim_checker=UnavailableChecker(),
+        ).generate(grounded_source_problem())
+    )
+
+    assert lesson.validation_report["verification_mode"] == (
+        "reference_grounded"
+    )
+    assert lesson.validation_report["consistency_status"] == "warning"
+
+
+@pytest.mark.parametrize("checker_error", [MemoryError(), PermissionError()])
+def test_unexpected_checker_errors_propagate_before_preparation(checker_error):
+    check_request = {
+        "check_id": "divide-by-n",
+        "kind": "nonzero_division",
+        "expression": "2*n*(2*n-2*m+1)",
+        "expected": "2*n-2*m+1",
+        "substitutions": {},
+        "nonzero_symbols": ["n"],
+        "conclusion_linked": True,
+    }
+
+    class BrokenChecker:
+        def check(self, request):
+            del request
+            raise checker_error
+
+    client = _approved_preparation_client(
+        [grounding_payload([check_request])]
+    )
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        claim_checker=BrokenChecker(),
+    )
+
+    with pytest.raises(type(checker_error)) as captured:
+        asyncio.run(service.generate_bundle(grounded_source_problem()))
+
+    assert captured.value is checker_error
+    assert [call.role for call in client.calls] == ["reference_grounder"]
+
+
+def test_reference_audit_provider_failure_retries_before_preparation():
+    marker = "PRIVATE-SYMBOLIC-REFERENCE-TASK7"
+    audit = reference_audit_payload()
+    audit["claimed_answer"] = "x=1 或 x=5"
+    audit["key_steps"] = []
+    client = _approved_preparation_client(
+        [ModelResponseError("temporary provider failure"), audit]
+    )
+    pipeline = _RecordingPreparationPipeline(client, [])
+    source_problem = ProblemInput(
+        problem_text="用配方法解方程：x^2-6*x+5=0",
+        reference_answer="x=1 或 x=5",
+        reference_solution_text=marker,
+        required_method="complete_the_square",
+    )
+    service = LessonGenerationService(
+        client,
+        MathEngine(),
+        preparation_pipeline=pipeline,
+    )
+
+    with pytest.raises(PreparationFailure, match="参考解析轨迹"):
+        asyncio.run(service.generate_bundle(source_problem))
+
+    assert [call.role for call in client.calls[:3]] == [
+        "reference_auditor",
+        "reference_auditor",
+        "reference_analyst",
+    ]
+    assert [call.role for call in client.calls if marker in call.user] == [
+        "reference_auditor",
+        "reference_auditor",
+        "reference_analyst",
+    ]
 
 
 def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_out_of_runtime():
@@ -415,6 +610,7 @@ def test_symbolic_verified_route_is_frozen_before_preparation():
     class CapturingPipeline:
         def __init__(self):
             self.route = None
+            self.problem_focus_targets = None
 
         async def prepare_with_audit(
             self,
@@ -423,8 +619,9 @@ def test_symbolic_verified_route_is_frozen_before_preparation():
             problem_focus_targets,
             on_stage=None,
         ):
-            del source_problem, problem_focus_targets, on_stage
+            del source_problem, on_stage
             self.route = teaching_route
+            self.problem_focus_targets = list(problem_focus_targets)
             raise PreparationFailure(
                 category="review_not_converged",
                 role="lesson_reviewer",
@@ -433,7 +630,7 @@ def test_symbolic_verified_route_is_frozen_before_preparation():
 
     pipeline = CapturingPipeline()
     source_problem = ProblemInput(
-        problem_text="用配方法解方程：x^2-6*x+5=0",
+        problem_text="关注$x$，用配方法解方程：x^2-6*x+5=0",
         reference_answer="x=1 或 x=5",
         required_method="complete_the_square",
     )
@@ -449,6 +646,12 @@ def test_symbolic_verified_route_is_frozen_before_preparation():
     assert pipeline.route.mode == TeachingRouteMode.SYMBOLIC_VERIFIED
     assert pipeline.route.fingerprint
     assert pipeline.route.to_prompt_payload()["steps"]
+    assert pipeline.problem_focus_targets == compile_problem_focus_targets(
+        source_problem.problem_text
+    )
+    assert [
+        target.math_text for target in pipeline.problem_focus_targets
+    ] == ["x"]
 
 
 def test_nonconverged_preparation_never_reaches_compiler():
