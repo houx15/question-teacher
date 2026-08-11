@@ -1,6 +1,6 @@
 from typing import Dict, List, Literal, Optional
 
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import Field, PositiveInt, field_validator, model_validator
 
 from app.schemas import (
     CueSpokenText,
@@ -23,6 +23,16 @@ DiagnosticKind = Literal["conception", "execution"]
 ArtifactType = Literal["solution_trace", "reasoning_trajectory", "teaching_script", "interaction_plan", "performance_score", "simulation_report"]
 ResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director"]
 RoleName = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator", "lesson_reviewer"]
+ROLE_CALL_TOKEN_USAGE_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+    }
+)
+MAX_ROLE_CALL_TOKEN_COUNTER = 1_000_000_000
 
 
 def _require_unique(values: List[str], label: str) -> None:
@@ -323,12 +333,30 @@ class RoleCallRecord(SchemaModel):
     token_usage: Optional[Dict[str, int]] = None
     review_finding_ids: List[GeneratedId] = Field(default_factory=list)
 
+    @field_validator("token_usage", mode="before")
+    @classmethod
+    def validate_token_usage_vocabulary(
+        cls,
+        value: object,
+    ) -> object:
+        if value is None:
+            return None
+        if type(value) is not dict:
+            raise ValueError("token usage must be an exact mapping")
+        if not set(value).issubset(ROLE_CALL_TOKEN_USAGE_KEYS):
+            raise ValueError("token usage contains an unknown counter")
+        if any(
+            type(item) is not int
+            or not 0 <= item <= MAX_ROLE_CALL_TOKEN_COUNTER
+            for item in value.values()
+        ):
+            raise ValueError("token usage values must be bounded integers")
+        return dict(value)
+
     @model_validator(mode="after")
     def validate_output_and_tokens(self) -> "RoleCallRecord":
         if (self.output_artifact_type is None) != (self.output_artifact_version is None):
             raise ValueError("output type and version must be present or absent together")
-        if self.token_usage is not None and any(value < 0 for value in self.token_usage.values()):
-            raise ValueError("token usage values cannot be negative")
         return self
 
 

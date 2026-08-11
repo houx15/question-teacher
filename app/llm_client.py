@@ -1,5 +1,7 @@
 import json
 import re
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
@@ -9,6 +11,37 @@ from app.config import Settings
 
 class ModelResponseError(RuntimeError):
     """Raised when a model request or response cannot be used safely."""
+
+
+class ModelStructureError(ModelResponseError):
+    """Raised when provider output cannot be decoded as the requested shape."""
+
+    def __init__(
+        self,
+        code: str,
+        detail: Optional[str] = None,
+        token_usage: Optional[Dict[str, int]] = None,
+    ) -> None:
+        super().__init__(detail or "Model response structure is invalid.")
+        self.code = code
+        self.token_usage = deepcopy(token_usage)
+
+
+@dataclass(frozen=True)
+class ModelCompletion:
+    """Atomically binds one completion payload to its optional usage counters."""
+
+    payload: object
+    token_usage: Optional[Dict[str, int]] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", deepcopy(self.payload))
+        if self.token_usage is not None:
+            object.__setattr__(
+                self,
+                "token_usage",
+                deepcopy(self.token_usage),
+            )
 
 
 class OpenAICompatibleClient:
@@ -31,29 +64,38 @@ class OpenAICompatibleClient:
     @staticmethod
     def parse_json_content(content: str) -> Dict[str, Any]:
         if not isinstance(content, str) or not content.strip():
-            raise ModelResponseError("Model response content is missing.")
+            raise ModelStructureError(
+                "missing_content",
+                "Model response content is missing.",
+            )
 
         normalized = content.strip()
         if normalized.startswith("```"):
             fenced = OpenAICompatibleClient._FENCED_CONTENT.fullmatch(normalized)
             if fenced is None:
-                raise ModelResponseError(
-                    "Model response content has an invalid JSON code fence."
+                raise ModelStructureError(
+                    "invalid_json_fence",
+                    "Model response content has an invalid JSON code fence.",
                 )
             normalized = fenced.group("content").strip()
             if not normalized:
-                raise ModelResponseError("Model response content is missing.")
+                raise ModelStructureError(
+                    "missing_content",
+                    "Model response content is missing.",
+                )
 
         try:
             parsed = json.loads(normalized)
         except (TypeError, ValueError):
-            raise ModelResponseError(
-                "Model response content is not valid JSON."
+            raise ModelStructureError(
+                "invalid_json",
+                "Model response content is not valid JSON.",
             ) from None
 
         if not isinstance(parsed, dict):
-            raise ModelResponseError(
-                "Model response content must be a top-level JSON object."
+            raise ModelStructureError(
+                "non_object_json",
+                "Model response content must be a top-level JSON object.",
             )
         return parsed
 
@@ -86,13 +128,33 @@ class OpenAICompatibleClient:
 
         try:
             response_payload = response.json()
+        except (TypeError, ValueError):
+            raise ModelStructureError(
+                "invalid_response_envelope",
+                "Model response content is missing or invalid.",
+            ) from None
+        usage = (
+            response_payload.get("usage")
+            if type(response_payload) is dict
+            else None
+        )
+        try:
             content = response_payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError):
-            raise ModelResponseError(
-                "Model response content is missing or invalid."
+        except (KeyError, IndexError, TypeError):
+            raise ModelStructureError(
+                "invalid_response_envelope",
+                "Model response content is missing or invalid.",
+                token_usage=usage,
             ) from None
 
-        return self.parse_json_content(content)
+        try:
+            return self.parse_json_content(content)
+        except ModelStructureError as error:
+            raise ModelStructureError(
+                error.code,
+                str(error),
+                token_usage=usage,
+            ) from None
 
     async def close(self) -> None:
         await self._client.aclose()

@@ -2,6 +2,7 @@ import copy
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from app.llm_client import ModelCompletion
 from app.preparation_prompts import (
     CLASSROOM_DIRECTOR_SYSTEM,
     INTERACTION_DESIGNER_SYSTEM,
@@ -51,8 +52,6 @@ class PreparationFakeClient:
             for role, responses in responses_by_role.items()
         }
         self.calls: List[RecordedCall] = []
-        self.last_token_usage: Optional[Dict[str, int]] = None
-
     async def complete_json(self, system: str, user: str) -> object:
         role = role_for_system(system)
         self.calls.append(RecordedCall(role=role, system=system, user=user))
@@ -61,10 +60,10 @@ class PreparationFakeClient:
         except (KeyError, IndexError):
             raise AssertionError("no fake response remaining for %s" % role) from None
         if isinstance(response, BaseException):
-            self.last_token_usage = None
             raise response
         if isinstance(response, PreparationFakeResponse):
-            self.last_token_usage = copy.deepcopy(response.token_usage)
-            return copy.deepcopy(response.payload)
-        self.last_token_usage = None
+            return ModelCompletion(
+                payload=copy.deepcopy(response.payload),
+                token_usage=copy.deepcopy(response.token_usage),
+            )
         return copy.deepcopy(response)

@@ -9,7 +9,11 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.llm_client import ModelResponseError, OpenAICompatibleClient
+from app.llm_client import (
+    ModelResponseError,
+    ModelStructureError,
+    OpenAICompatibleClient,
+)
 
 
 def configured_settings(**overrides):
@@ -211,6 +215,33 @@ def test_parse_json_content_rejects_malformed_json_safely():
 
     assert "JSONDecodeError" not in str(exc_info.value)
 
+
+def test_invalid_json_error_atomically_carries_response_usage():
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"answer":'}}],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 2,
+                    "total_tokens": 9,
+                },
+            },
+        )
+    )
+    client = OpenAICompatibleClient(configured_settings(), transport=transport)
+
+    with pytest.raises(ModelStructureError) as captured:
+        asyncio.run(client.complete_json("system", "user"))
+
+    asyncio.run(client.close())
+    assert captured.value.code == "invalid_json"
+    assert captured.value.token_usage == {
+        "prompt_tokens": 7,
+        "completion_tokens": 2,
+        "total_tokens": 9,
+    }
 
 @pytest.mark.parametrize("content", ['["answer"]', '"answer"', "42", "null"])
 def test_parse_json_content_rejects_non_object_json(content):

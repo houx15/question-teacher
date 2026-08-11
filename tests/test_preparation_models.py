@@ -325,6 +325,45 @@ def test_role_call_output_pair_and_nonnegative_token_usage():
         RoleCallRecord.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "token_usage",
+    [
+        {"api_secret": 1},
+        {"prompt_tokens": True},
+        {"prompt_tokens": 1_000_000_001},
+    ],
+)
+def test_role_call_token_usage_is_a_bounded_fixed_vocabulary(token_usage):
+    with pytest.raises(ValidationError, match="token usage"):
+        RoleCallRecord.model_validate(
+            {
+                "role": "reference_analyst",
+                "duration_ms": 0,
+                "retry_count": 0,
+                "token_usage": token_usage,
+            }
+        )
+
+
+def test_role_call_accepts_supported_token_usage_counters():
+    record = RoleCallRecord.model_validate(
+        {
+            "role": "reference_analyst",
+            "duration_ms": 0,
+            "retry_count": 0,
+            "token_usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+                "cached_tokens": 3,
+                "reasoning_tokens": 1,
+            },
+        }
+    )
+
+    assert record.token_usage["total_tokens"] == 12
+
+
 @pytest.mark.parametrize("version", [0, -1])
 def test_role_call_input_artifact_versions_must_be_positive(version):
     payload = {

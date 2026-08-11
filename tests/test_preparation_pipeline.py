@@ -3,17 +3,23 @@ import json
 
 import pytest
 
-from app.llm_client import ModelResponseError
-from app.preparation_models import ReasoningTrajectory, SolutionTrace
+from app.llm_client import ModelCompletion, ModelResponseError, ModelStructureError
+from app.preparation_models import (
+    ReasoningTrajectory,
+    RoleCallRecord,
+    SolutionTrace,
+)
 from app.preparation_pipeline import (
     LessonPreparationPipeline,
     PreparationFailure,
+    PreparationState,
 )
 from app.schemas import ProblemFocusTarget, ProblemInput, ReferenceGroundingBrief
 from app.teaching_route import freeze_grounded_route
 from tests.preparation_fakes import (
     PreparationFakeClient,
     PreparationFakeResponse,
+    role_for_system,
 )
 
 
@@ -41,19 +47,19 @@ def problem() -> ProblemInput:
     )
 
 
-def route():
+def route(final_conclusion="m-n=1/2"):
     statements = (
         ("题目给出x=2n是根", "把x=2n代入原方程", "4n^2-4mn+2n=0"),
         ("4n^2-4mn+2n=0", "观察目标只需要m-n的关系", "2n(2n-2m+1)=0"),
         ("2n(2n-2m+1)=0", "利用n不等于0约去2n", "2n-2m+1=0"),
-        ("2n-2m+1=0", "整理并回到目标m-n", "m-n=1/2"),
+        ("2n-2m+1=0", "整理并回到目标m-n", final_conclusion),
     )
     brief = ReferenceGroundingBrief.validate_for_reference_answer(
         {
             "task_summary": "由参数根求m-n",
             "target": "m-n",
             "assumptions": ["n不等于0", "x=2n是原方程的根"],
-            "reference_conclusion": "m-n=1/2",
+            "reference_conclusion": final_conclusion,
             "method_name": "代入法",
             "reasoning_steps": [
                 {
@@ -67,7 +73,7 @@ def route():
             "check_requests": [],
             "audit_notes": [],
         },
-        "m-n=1/2",
+        final_conclusion,
     )
     return freeze_grounded_route(brief, [])
 
@@ -187,10 +193,18 @@ def client(trace=None, trajectory=None):
 
 
 def run_early(pipeline, on_stage=None):
+    return asyncio.run(
+        pipeline.prepare_early(
+            problem(), route(), focus_targets(), on_stage=on_stage
+        )
+    )
+
+
+def test_public_prepare_cannot_return_a_partial_prepared_lesson():
     with pytest.raises(NotImplementedError, match="downstream preparation"):
         asyncio.run(
-            pipeline.prepare(
-                problem(), route(), focus_targets(), on_stage=on_stage
+            LessonPreparationPipeline(client()).prepare(
+                problem(), route(), focus_targets()
             )
         )
 
@@ -200,19 +214,16 @@ def test_trace_and_trajectory_stages_run_in_dependency_order():
     stages = []
     pipeline = LessonPreparationPipeline(fake)
 
-    run_early(pipeline, on_stage=stages.append)
+    result = run_early(pipeline, on_stage=stages.append)
 
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
         "teaching_designer",
     ]
     assert stages == ["整理参考解析", "设计解题思维轨迹"]
-    assert pipeline.last_state is not None
-    assert isinstance(pipeline.last_state.solution_trace, SolutionTrace)
-    assert isinstance(
-        pipeline.last_state.reasoning_trajectory, ReasoningTrajectory
-    )
-    assert pipeline.last_state.versions == {
+    assert isinstance(result.solution_trace, SolutionTrace)
+    assert isinstance(result.reasoning_trajectory, ReasoningTrajectory)
+    assert result.versions == {
         "solution_trace": 1,
         "reasoning_trajectory": 1,
     }
@@ -238,7 +249,7 @@ def test_each_role_gets_one_structure_retry():
     )
     pipeline = LessonPreparationPipeline(fake)
 
-    run_early(pipeline)
+    result = run_early(pipeline)
 
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
@@ -246,8 +257,8 @@ def test_each_role_gets_one_structure_retry():
         "teaching_designer",
         "teaching_designer",
     ]
-    assert [record.retry_count for record in pipeline.role_calls] == [1, 1]
-    assert [record.failure_category for record in pipeline.role_calls] == [None, None]
+    assert [record.retry_count for record in result.role_calls] == [1, 1]
+    assert [record.failure_category for record in result.role_calls] == [None, None]
 
 
 @pytest.mark.parametrize(
@@ -274,7 +285,7 @@ def test_second_invalid_structure_fails_with_safe_role(failing_role, responses):
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
-            pipeline.prepare(problem(), route(), focus_targets())
+            pipeline.prepare_early(problem(), route(), focus_targets())
         )
 
     failure = captured.value
@@ -282,26 +293,37 @@ def test_second_invalid_structure_fails_with_safe_role(failing_role, responses):
     assert failure.role == failing_role
     assert failure.detail == "模型输出结构无效。"
     assert RAW_REFERENCE_MARKER not in str(failure)
-    assert pipeline.role_calls[-1].failure_category == "invalid_structure"
-    assert pipeline.role_calls[-1].output_artifact_type is None
+    assert failure.audit is not None
+    assert failure.audit.role_calls[-1].failure_category == "invalid_structure"
+    assert failure.audit.role_calls[-1].output_artifact_type is None
 
 
 def test_invalid_json_response_gets_the_same_single_structure_retry():
     fake = PreparationFakeClient(
         {
             "reference_analyst": [
-                ModelResponseError("Model response content is not valid JSON."),
-                trace_payload(),
+                ModelStructureError(
+                    "invalid_json",
+                    token_usage={"prompt_tokens": 4, "total_tokens": 4},
+                ),
+                PreparationFakeResponse(
+                    trace_payload(),
+                    {"prompt_tokens": 6, "total_tokens": 6},
+                ),
             ],
             "teaching_designer": [trajectory_payload()],
         }
     )
     pipeline = LessonPreparationPipeline(fake)
 
-    run_early(pipeline)
+    result = run_early(pipeline)
 
     assert [call.role for call in fake.calls].count("reference_analyst") == 2
-    assert pipeline.role_calls[0].retry_count == 1
+    assert result.role_calls[0].retry_count == 1
+    assert result.role_calls[0].token_usage == {
+        "prompt_tokens": 10,
+        "total_tokens": 10,
+    }
 
 
 def test_provider_failure_is_not_misclassified_or_structure_retried():
@@ -316,7 +338,7 @@ def test_provider_failure_is_not_misclassified_or_structure_retried():
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
-            pipeline.prepare(problem(), route(), focus_targets())
+            pipeline.prepare_early(problem(), route(), focus_targets())
         )
 
     assert captured.value.category == "provider_error"
@@ -324,7 +346,11 @@ def test_provider_failure_is_not_misclassified_or_structure_retried():
     assert captured.value.detail == "模型服务暂时不可用。"
     assert provider_message not in str(captured.value)
     assert len(fake.calls) == 1
-    assert pipeline.role_calls[-1].failure_category == "provider_error"
+    assert captured.value.audit.role_calls[-1].failure_category == "provider_error"
+    returned_calls = captured.value.audit.role_calls
+    returned_calls[-1].failure_category = "tampered"
+    assert captured.value.audit.role_calls[-1].failure_category == "provider_error"
+    assert RAW_REFERENCE_MARKER not in repr(captured.value.audit)
 
 
 def test_deterministic_trace_failure_stops_before_designer_without_retry():
@@ -333,15 +359,15 @@ def test_deterministic_trace_failure_stops_before_designer_without_retry():
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
-            pipeline.prepare(problem(), route(), focus_targets())
+            pipeline.prepare_early(problem(), route(), focus_targets())
         )
 
     assert captured.value.category == "reference_trace_failed"
     assert captured.value.role == "reference_analyst"
     assert [call.role for call in fake.calls] == ["reference_analyst"]
-    assert pipeline.last_state.versions == {}
-    assert pipeline.role_calls[-1].failure_category == "reference_trace_failed"
-    assert pipeline.role_calls[-1].output_artifact_version is None
+    assert captured.value.audit.versions == {}
+    assert captured.value.audit.role_calls[-1].failure_category == "reference_trace_failed"
+    assert captured.value.audit.role_calls[-1].output_artifact_version is None
 
 
 def test_deterministic_trajectory_failure_is_not_a_structure_retry():
@@ -352,7 +378,7 @@ def test_deterministic_trajectory_failure_is_not_a_structure_retry():
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
-            pipeline.prepare(problem(), route(), focus_targets())
+            pipeline.prepare_early(problem(), route(), focus_targets())
         )
 
     assert captured.value.category == "reasoning_design_failed"
@@ -361,18 +387,18 @@ def test_deterministic_trajectory_failure_is_not_a_structure_retry():
         "reference_analyst",
         "teaching_designer",
     ]
-    assert pipeline.last_state.versions == {"solution_trace": 1}
-    assert pipeline.role_calls[-1].failure_category == "reasoning_design_failed"
+    assert captured.value.audit.versions == {"solution_trace": 1}
+    assert captured.value.audit.role_calls[-1].failure_category == "reasoning_design_failed"
 
 
 def test_plan_execute_monitor_revise_execute_trajectory_is_accepted():
     pipeline = LessonPreparationPipeline(client())
 
-    run_early(pipeline)
+    result = run_early(pipeline)
 
     assert [
         episode.mode
-        for episode in pipeline.last_state.reasoning_trajectory.episodes
+        for episode in result.reasoning_trajectory.episodes
     ] == ["plan", "execute", "monitor", "revise", "execute"]
 
 
@@ -394,9 +420,9 @@ def test_trajectory_type_does_not_force_every_reasoning_mode(
     )
     pipeline = LessonPreparationPipeline(fake)
 
-    run_early(pipeline)
+    result = run_early(pipeline)
 
-    accepted = pipeline.last_state.reasoning_trajectory
+    accepted = result.reasoning_trajectory
     assert accepted.trajectory_type == trajectory_type
     assert tuple(episode.mode for episode in accepted.episodes) == modes
 
@@ -404,9 +430,9 @@ def test_trajectory_type_does_not_force_every_reasoning_mode(
 def test_parameter_root_trajectory_preserves_four_indispensable_moves():
     pipeline = LessonPreparationPipeline(client())
 
-    run_early(pipeline)
+    result = run_early(pipeline)
 
-    trajectory = pipeline.last_state.reasoning_trajectory
+    trajectory = result.reasoning_trajectory
     covered = {
         step_id
         for episode in trajectory.episodes
@@ -430,7 +456,11 @@ def test_role_records_are_versioned_only_after_validation_and_are_content_safe()
             "reference_analyst": [
                 PreparationFakeResponse(
                     payload=trace_payload(),
-                    token_usage={"input": 321, "output": 123},
+                    token_usage={
+                        "prompt_tokens": 321,
+                        "completion_tokens": 123,
+                        "total_tokens": 444,
+                    },
                 )
             ],
             "teaching_designer": [trajectory_payload()],
@@ -438,18 +468,22 @@ def test_role_records_are_versioned_only_after_validation_and_are_content_safe()
     )
     pipeline = LessonPreparationPipeline(fake)
 
-    run_early(pipeline)
+    result = run_early(pipeline)
 
-    analyst, designer = pipeline.role_calls
+    analyst, designer = result.role_calls
     assert analyst.input_artifact_versions == {}
     assert analyst.output_artifact_type == "solution_trace"
     assert analyst.output_artifact_version == 1
-    assert analyst.token_usage == {"input": 321, "output": 123}
+    assert analyst.token_usage == {
+        "prompt_tokens": 321,
+        "completion_tokens": 123,
+        "total_tokens": 444,
+    }
     assert designer.input_artifact_versions == {"solution_trace": 1}
     assert designer.output_artifact_type == "reasoning_trajectory"
     assert designer.output_artifact_version == 1
     serialized = json.dumps(
-        [record.model_dump(mode="json") for record in pipeline.role_calls],
+        [record.model_dump(mode="json") for record in result.role_calls],
         ensure_ascii=False,
     )
     assert RAW_REFERENCE_MARKER not in serialized
@@ -484,12 +518,212 @@ def test_concurrent_preparations_do_not_share_active_state():
     async def scenario():
         pipeline = LessonPreparationPipeline(InterleavingClient())
         return await asyncio.gather(
-            pipeline.prepare(problem(), route(), focus_targets()),
-            pipeline.prepare(problem(), route(), focus_targets()),
-            return_exceptions=True,
+            pipeline.prepare_early(problem(), route(), focus_targets()),
+            pipeline.prepare_early(problem(), route(), focus_targets()),
         )
 
     results = asyncio.run(scenario())
 
     assert len(results) == 2
-    assert all(isinstance(result, NotImplementedError) for result in results)
+    assert all(result.versions["reasoning_trajectory"] == 1 for result in results)
+
+
+def test_reversed_concurrent_completion_keeps_distinct_artifacts_and_usage():
+    class ReversedCompletionClient:
+        def __init__(self):
+            self.release_a = asyncio.Event()
+            self.finished = []
+
+        async def complete_json(self, system, user):
+            role = role_for_system(system)
+            is_a = "REQUEST-A" in user
+            if is_a and role == "reference_analyst":
+                await self.release_a.wait()
+            if role == "reference_analyst":
+                conclusion = "m-n=1/2" if is_a else "m-n=3/2"
+                usage = 11 if is_a else 21
+                return ModelCompletion(
+                    trace_payload(final_conclusion=conclusion),
+                    {"prompt_tokens": usage, "total_tokens": usage},
+                )
+            usage = 12 if is_a else 22
+            if not is_a:
+                self.finished.append("B")
+                self.release_a.set()
+            else:
+                self.finished.append("A")
+            return ModelCompletion(
+                trajectory_payload(),
+                {"prompt_tokens": usage, "total_tokens": usage},
+            )
+
+    async def scenario():
+        fake = ReversedCompletionClient()
+        pipeline = LessonPreparationPipeline(fake)
+        problem_a = problem().model_copy(
+            update={"problem_text": problem().problem_text + " REQUEST-A"}
+        )
+        problem_b = problem().model_copy(
+            update={
+                "problem_text": problem().problem_text + " REQUEST-B",
+                "reference_answer": "m-n=3/2",
+            }
+        )
+        results = await asyncio.gather(
+            pipeline.prepare_early(
+                problem_a, route("m-n=1/2"), focus_targets()
+            ),
+            pipeline.prepare_early(
+                problem_b, route("m-n=3/2"), focus_targets()
+            ),
+        )
+        return fake, results
+
+    fake, (result_a, result_b) = asyncio.run(scenario())
+
+    assert fake.finished == ["B", "A"]
+    assert result_a.solution_trace.reference_conclusion == "m-n=1/2"
+    assert result_b.solution_trace.reference_conclusion == "m-n=3/2"
+    assert [
+        call.token_usage["prompt_tokens"] for call in result_a.role_calls
+    ] == [11, 12]
+    assert [
+        call.token_usage["prompt_tokens"] for call in result_b.role_calls
+    ] == [21, 22]
+
+
+def test_retry_usage_is_summed_and_unknown_or_secret_keys_are_omitted():
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [
+                PreparationFakeResponse(
+                    payload={},
+                    token_usage={
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "total_tokens": 12,
+                        "api_secret": 999,
+                    },
+                ),
+                PreparationFakeResponse(
+                    payload=trace_payload(),
+                    token_usage={
+                        "prompt_tokens": 20,
+                        "completion_tokens": 3,
+                        "total_tokens": 23,
+                        "unknown_counter": 10,
+                    },
+                ),
+            ],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    result = run_early(LessonPreparationPipeline(fake))
+
+    assert result.role_calls[0].token_usage == {
+        "prompt_tokens": 30,
+        "completion_tokens": 5,
+        "total_tokens": 35,
+    }
+
+
+def test_provider_failure_does_not_inherit_usage_from_an_earlier_call():
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [
+                PreparationFakeResponse(
+                    trace_payload(),
+                    {"prompt_tokens": 11, "total_tokens": 11},
+                )
+            ],
+            "teaching_designer": [ModelResponseError("provider unavailable")],
+        }
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_early(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    analyst, designer = captured.value.audit.role_calls
+    assert analyst.token_usage == {"prompt_tokens": 11, "total_tokens": 11}
+    assert designer.token_usage is None
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [AssertionError("fake exhausted"), TypeError("programmer defect")],
+)
+def test_unexpected_internal_errors_are_not_mapped_to_provider_failure(unexpected):
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [unexpected],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    with pytest.raises(type(unexpected), match=str(unexpected)):
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_early(
+                problem(), route(), focus_targets()
+            )
+        )
+
+
+def test_cancellation_propagates_without_a_failure_record():
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [asyncio.CancelledError()],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_early(
+                problem(), route(), focus_targets()
+            )
+        )
+
+
+def test_run_snapshot_returns_defensive_copies_of_audit_and_artifacts():
+    result = run_early(LessonPreparationPipeline(client()))
+
+    first_calls = result.role_calls
+    first_calls[0].failure_category = "tampered"
+    first_versions = result.versions
+    first_versions["solution_trace"] = 99
+    first_trace = result.solution_trace
+    first_trace.task_target = "tampered"
+
+    assert result.role_calls[0].failure_category is None
+    assert result.versions["solution_trace"] == 1
+    assert result.solution_trace.task_target == "求m-n"
+
+
+def test_accept_artifact_checks_record_before_mutating_state():
+    pipeline = LessonPreparationPipeline(client())
+    state = PreparationState(
+        role_calls=[
+            RoleCallRecord(
+                role="teaching_designer",
+                duration_ms=0,
+                retry_count=0,
+            )
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        pipeline._accept_artifact(
+            state,
+            artifact_type="solution_trace",
+            responsible_role="reference_analyst",
+            artifact=SolutionTrace.model_validate(trace_payload()),
+        )
+
+    assert state.solution_trace is None
+    assert state.versions == {}
+    assert state.history == []

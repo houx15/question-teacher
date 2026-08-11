@@ -10,6 +10,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -17,13 +18,19 @@ from typing import (
 
 from pydantic import BaseModel, ValidationError
 
-from app.llm_client import ModelResponseError
+from app.llm_client import (
+    ModelCompletion,
+    ModelResponseError,
+    ModelStructureError,
+)
 from app.preparation_models import (
     ArtifactRevision,
     InteractionPlan,
     LessonReviewDecision,
+    MAX_ROLE_CALL_TOKEN_COUNTER,
     PerformanceScore,
     PreparedLesson,
+    ROLE_CALL_TOKEN_USAGE_KEYS,
     ReasoningTrajectory,
     RoleCallRecord,
     SimulationReport,
@@ -47,8 +54,6 @@ from app.teaching_route import FrozenTeachingRoute
 
 StageCallback = Callable[[str], Union[None, Awaitable[None]]]
 _ModelType = TypeVar("_ModelType", bound=BaseModel)
-
-
 DEFAULT_PREPARATION_CAPABILITIES = {
     "interaction_kinds": ["choice"],
     "surfaces": ["problem", "board"],
@@ -75,6 +80,12 @@ class PreparationFailure(RuntimeError):
         self.category = category
         self.role = role
         self.detail = detail
+        self.audit: Optional["PreparationAuditSnapshot"] = None
+
+    def _attach_audit(self, audit: "PreparationAuditSnapshot") -> None:
+        if self.audit is not None:
+            raise RuntimeError("preparation failure audit is already attached")
+        self.audit = audit
 
 
 @dataclass
@@ -89,6 +100,94 @@ class PreparationState:
     versions: Dict[str, int] = field(default_factory=dict)
     history: List[ArtifactRevision] = field(default_factory=list)
     role_calls: List[RoleCallRecord] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparationAuditSnapshot:
+    """Content-free, immutable storage for one request's audit metadata."""
+
+    _version_items: Tuple[Tuple[str, int], ...]
+    _history_json: Tuple[str, ...]
+    _role_call_json: Tuple[str, ...]
+
+    @classmethod
+    def from_state(
+        cls,
+        state: PreparationState,
+    ) -> "PreparationAuditSnapshot":
+        return cls(
+            _version_items=tuple(sorted(state.versions.items())),
+            _history_json=tuple(
+                item.model_dump_json() for item in state.history
+            ),
+            _role_call_json=tuple(
+                item.model_dump_json() for item in state.role_calls
+            ),
+        )
+
+    @property
+    def versions(self) -> Dict[str, int]:
+        return dict(self._version_items)
+
+    @property
+    def history(self) -> List[ArtifactRevision]:
+        return [
+            ArtifactRevision.model_validate_json(item)
+            for item in self._history_json
+        ]
+
+    @property
+    def role_calls(self) -> List[RoleCallRecord]:
+        return [
+            RoleCallRecord.model_validate_json(item)
+            for item in self._role_call_json
+        ]
+
+
+@dataclass(frozen=True)
+class PreparationRunSnapshot:
+    """Request-scoped Task 4 result; it is not a complete PreparedLesson."""
+
+    _solution_trace_json: str
+    _reasoning_trajectory_json: str
+    audit: PreparationAuditSnapshot
+
+    @classmethod
+    def from_state(
+        cls,
+        state: PreparationState,
+    ) -> "PreparationRunSnapshot":
+        if state.solution_trace is None or state.reasoning_trajectory is None:
+            raise RuntimeError("early preparation artifacts are incomplete")
+        return cls(
+            _solution_trace_json=state.solution_trace.model_dump_json(),
+            _reasoning_trajectory_json=(
+                state.reasoning_trajectory.model_dump_json()
+            ),
+            audit=PreparationAuditSnapshot.from_state(state),
+        )
+
+    @property
+    def solution_trace(self) -> SolutionTrace:
+        return SolutionTrace.model_validate_json(self._solution_trace_json)
+
+    @property
+    def reasoning_trajectory(self) -> ReasoningTrajectory:
+        return ReasoningTrajectory.model_validate_json(
+            self._reasoning_trajectory_json
+        )
+
+    @property
+    def versions(self) -> Dict[str, int]:
+        return self.audit.versions
+
+    @property
+    def history(self) -> List[ArtifactRevision]:
+        return self.audit.history
+
+    @property
+    def role_calls(self) -> List[RoleCallRecord]:
+        return self.audit.role_calls
 
 
 class LessonPreparationPipeline:
@@ -106,17 +205,10 @@ class LessonPreparationPipeline:
             if capabilities is None
             else capabilities
         )
-        self.last_state: Optional[PreparationState] = None
         self._active_state: ContextVar[Optional[PreparationState]] = ContextVar(
             "active_preparation_state_%x" % id(self),
             default=None,
         )
-
-    @property
-    def role_calls(self) -> List[RoleCallRecord]:
-        if self.last_state is None:
-            return []
-        return list(self.last_state.role_calls)
 
     async def prepare(
         self,
@@ -125,8 +217,48 @@ class LessonPreparationPipeline:
         problem_focus_targets: List[ProblemFocusTarget],
         on_stage: Optional[StageCallback] = None,
     ) -> PreparedLesson:
+        state = await self._prepare_early_state(
+            problem,
+            teaching_route,
+            problem_focus_targets,
+            on_stage,
+        )
+        state_token = self._active_state.set(state)
+        try:
+            return await self._continue_preparation(
+                state,
+                problem,
+                teaching_route,
+                problem_focus_targets,
+                on_stage,
+            )
+        finally:
+            self._active_state.reset(state_token)
+
+    async def prepare_early(
+        self,
+        problem: ProblemInput,
+        teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: List[ProblemFocusTarget],
+        on_stage: Optional[StageCallback] = None,
+    ) -> PreparationRunSnapshot:
+        """Run Task 4 only and return a defensive, request-scoped snapshot."""
+        state = await self._prepare_early_state(
+            problem,
+            teaching_route,
+            problem_focus_targets,
+            on_stage,
+        )
+        return PreparationRunSnapshot.from_state(state)
+
+    async def _prepare_early_state(
+        self,
+        problem: ProblemInput,
+        teaching_route: FrozenTeachingRoute,
+        problem_focus_targets: List[ProblemFocusTarget],
+        on_stage: Optional[StageCallback],
+    ) -> PreparationState:
         state = PreparationState()
-        self.last_state = state
         state_token = self._active_state.set(state)
         try:
             await self._create_solution_trace(
@@ -141,13 +273,10 @@ class LessonPreparationPipeline:
                 problem,
                 on_stage,
             )
-            return await self._continue_preparation(
-                state,
-                problem,
-                teaching_route,
-                problem_focus_targets,
-                on_stage,
-            )
+            return state
+        except PreparationFailure as failure:
+            failure._attach_audit(PreparationAuditSnapshot.from_state(state))
+            raise
         finally:
             self._active_state.reset(state_token)
 
@@ -259,7 +388,7 @@ class LessonPreparationPipeline:
         state = self._current_state()
         started = time.monotonic()
         retry_count = 0
-        token_usage = None
+        token_usage: Dict[str, int] = {}
         for attempt in range(self.MAX_STRUCTURE_ATTEMPTS):
             attempt_prompt = prompt
             if attempt:
@@ -269,40 +398,39 @@ class LessonPreparationPipeline:
                     + "请仅返回符合 Schema 的 JSON 对象。"
                 )
             try:
-                payload = await self.client.complete_json(system, attempt_prompt)
-                token_usage = self._safe_token_usage()
-                model = model_type.model_validate(payload)
-            except ModelResponseError as error:
-                token_usage = self._safe_token_usage()
-                if self._is_structure_response_error(error):
-                    if attempt + 1 < self.MAX_STRUCTURE_ATTEMPTS:
-                        retry_count += 1
-                        continue
-                    self._append_call_record(
-                        state,
-                        role,
-                        started,
-                        retry_count,
-                        "invalid_structure",
+                completion = await self.client.complete_json(
+                    system,
+                    attempt_prompt,
+                )
+                if isinstance(completion, ModelCompletion):
+                    payload = completion.payload
+                    token_usage = self._merge_token_usage(
                         token_usage,
+                        completion.token_usage,
                     )
-                    raise PreparationFailure(
-                        category="invalid_structure",
-                        role=role,
-                        detail="模型输出结构无效。",
-                    ) from None
+                else:
+                    payload = completion
+                model = model_type.model_validate(payload)
+            except ModelStructureError as error:
+                token_usage = self._merge_token_usage(
+                    token_usage,
+                    error.token_usage,
+                )
+                if attempt + 1 < self.MAX_STRUCTURE_ATTEMPTS:
+                    retry_count += 1
+                    continue
                 self._append_call_record(
                     state,
                     role,
                     started,
                     retry_count,
-                    "provider_error",
-                    token_usage,
+                    "invalid_structure",
+                    self._optional_token_usage(token_usage),
                 )
                 raise PreparationFailure(
-                    category="provider_error",
+                    category="invalid_structure",
                     role=role,
-                    detail="模型服务暂时不可用。",
+                    detail="模型输出结构无效。",
                 ) from None
             except ValidationError:
                 if attempt + 1 < self.MAX_STRUCTURE_ATTEMPTS:
@@ -314,21 +442,21 @@ class LessonPreparationPipeline:
                     started,
                     retry_count,
                     "invalid_structure",
-                    token_usage,
+                    self._optional_token_usage(token_usage),
                 )
                 raise PreparationFailure(
                     category="invalid_structure",
                     role=role,
                     detail="模型输出结构无效。",
                 ) from None
-            except Exception:
+            except ModelResponseError:
                 self._append_call_record(
                     state,
                     role,
                     started,
                     retry_count,
                     "provider_error",
-                    token_usage,
+                    self._optional_token_usage(token_usage),
                 )
                 raise PreparationFailure(
                     category="provider_error",
@@ -342,7 +470,7 @@ class LessonPreparationPipeline:
                 started,
                 retry_count,
                 None,
-                token_usage,
+                self._optional_token_usage(token_usage),
             )
             return model
         raise AssertionError("unreachable model completion state")
@@ -354,26 +482,46 @@ class LessonPreparationPipeline:
         responsible_role: str,
         artifact: BaseModel,
     ) -> None:
-        version = state.versions.get(artifact_type, 0) + 1
-        setattr(state, artifact_type, artifact)
-        state.versions[artifact_type] = version
-        state.history.append(
-            ArtifactRevision(
-                artifact_type=artifact_type,
-                version=version,
-                responsible_role=responsible_role,
-                finding_ids=[],
-            )
-        )
+        if artifact_type not in {
+            "solution_trace",
+            "reasoning_trajectory",
+            "teaching_script",
+            "interaction_plan",
+            "performance_score",
+            "simulation_report",
+        }:
+            raise RuntimeError("unknown preparation artifact type")
+        if not state.role_calls:
+            raise RuntimeError("accepted artifact has no model call record")
         record = state.role_calls[-1]
         if record.role != responsible_role or record.failure_category is not None:
             raise RuntimeError("model call record does not match accepted artifact")
-        state.role_calls[-1] = record.model_copy(
-            update={
+        version = state.versions.get(artifact_type, 0) + 1
+        revision = ArtifactRevision(
+            artifact_type=artifact_type,
+            version=version,
+            responsible_role=responsible_role,
+            finding_ids=[],
+        )
+        updated_record_payload = record.model_dump(mode="python")
+        updated_record_payload.update(
+            {
                 "output_artifact_type": artifact_type,
                 "output_artifact_version": version,
             }
         )
+        updated_record = RoleCallRecord.model_validate(updated_record_payload)
+        versions = dict(state.versions)
+        versions[artifact_type] = version
+        history = list(state.history)
+        history.append(revision)
+        role_calls = list(state.role_calls)
+        role_calls[-1] = updated_record
+
+        setattr(state, artifact_type, artifact)
+        state.versions = versions
+        state.history = history
+        state.role_calls = role_calls
 
     @staticmethod
     def _mark_last_call_failed(
@@ -381,12 +529,17 @@ class LessonPreparationPipeline:
         role: str,
         category: str,
     ) -> None:
+        if not state.role_calls:
+            raise RuntimeError("failed artifact has no model call record")
         record = state.role_calls[-1]
         if record.role != role or record.output_artifact_type is not None:
             raise RuntimeError("model call record does not match failed artifact")
-        state.role_calls[-1] = record.model_copy(
-            update={"failure_category": category}
-        )
+        payload = record.model_dump(mode="python")
+        payload["failure_category"] = category
+        updated_record = RoleCallRecord.model_validate(payload)
+        role_calls = list(state.role_calls)
+        role_calls[-1] = updated_record
+        state.role_calls = role_calls
 
     @staticmethod
     def _append_call_record(
@@ -410,22 +563,33 @@ class LessonPreparationPipeline:
             )
         )
 
-    def _safe_token_usage(self) -> Optional[Dict[str, int]]:
-        usage = getattr(self.client, "last_token_usage", None)
-        if type(usage) is not dict:
-            return None
-        if any(
-            type(key) is not str
-            or type(value) is not int
-            or value < 0
-            for key, value in usage.items()
-        ):
-            return None
-        return dict(usage)
+    @staticmethod
+    def _merge_token_usage(
+        accumulated: Dict[str, int],
+        supplied: Optional[Dict[str, int]],
+    ) -> Dict[str, int]:
+        merged = dict(accumulated)
+        if type(supplied) is not dict:
+            return merged
+        for key, value in supplied.items():
+            if (
+                key not in ROLE_CALL_TOKEN_USAGE_KEYS
+                or type(value) is not int
+                or not 0 <= value <= MAX_ROLE_CALL_TOKEN_COUNTER
+            ):
+                continue
+            total = merged.get(key, 0) + value
+            if total <= MAX_ROLE_CALL_TOKEN_COUNTER:
+                merged[key] = total
+            else:
+                merged.pop(key, None)
+        return merged
 
     @staticmethod
-    def _is_structure_response_error(error: ModelResponseError) -> bool:
-        return str(error).startswith("Model response content")
+    def _optional_token_usage(
+        usage: Dict[str, int],
+    ) -> Optional[Dict[str, int]]:
+        return dict(usage) if usage else None
 
     def _require_active_state(self, state: PreparationState) -> None:
         if self._active_state.get() is not state:
