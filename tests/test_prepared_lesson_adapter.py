@@ -730,6 +730,11 @@ def grouped_provenance_run():
     return prepared, run
 
 
+def test_prepared_draft_run_zero_argument_constructor_names_factory():
+    with pytest.raises(TypeError, match="^use from_prepared_lesson$"):
+        prepared_adapter.PreparedDraftRun()
+
+
 @pytest.mark.parametrize(
     "attack",
     ("unchanged", "episode_id", "original_cue_id", "text_repartition"),
@@ -777,7 +782,7 @@ def test_prepared_draft_run_direct_constructor_cannot_inject_provenance(
         clause.clause_id for clause in prepared.teaching_script.clauses
     )
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="^use from_prepared_lesson$"):
         prepared_adapter.PreparedDraftRun(run.draft, records, expected)
 
 

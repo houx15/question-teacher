@@ -74,6 +74,9 @@ class PreparedDraftRun:
     _cue_provenance: Tuple[CueProvenanceRecord, ...]
     _expected_clause_ids: Tuple[str, ...]
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("use from_prepared_lesson")
+
     @classmethod
     def from_prepared_lesson(
         cls,
