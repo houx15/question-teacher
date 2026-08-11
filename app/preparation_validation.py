@@ -137,7 +137,7 @@ def validate_solution_trace(
         )
 
     route_assumptions = {
-        item["assumption_id"]: item["expression"]
+        item["assumption_id"]: item
         for item in route_payload["assumptions"]
     }
     trace_assumptions = {
@@ -145,8 +145,8 @@ def validate_solution_trace(
     }
     if set(trace_assumptions) != set(route_assumptions) or any(
         normalize_cross_artifact_math_identity(trace_assumptions[item_id])
-        != normalize_cross_artifact_math_identity(expression)
-        for item_id, expression in route_assumptions.items()
+        != normalize_cross_artifact_math_identity(item["expression"])
+        for item_id, item in route_assumptions.items()
     ):
         _fail(
             "trace_assumption_mismatch",
@@ -154,8 +154,16 @@ def validate_solution_trace(
             "Solution trace assumptions must match the frozen route.",
         )
     assumption_ids = set(trace_assumptions)
+    for assumption in trace.assumptions:
+        if assumption.source_anchor.source_kind != route_assumptions[
+            assumption.assumption_id
+        ]["source_kind"]:
+            _fail(
+                "trace_assumption_provenance_mismatch",
+                assumption.assumption_id,
+                "Trace assumption provenance does not match the frozen route.",
+            )
     route_steps = route_payload["steps"]
-    route_step_ids = {item["step_id"] for item in route_steps}
     trace_step_ids = [item.source_step_id for item in trace.source_steps]
     if trace_step_ids != [item["step_id"] for item in route_steps]:
         _fail(
@@ -163,20 +171,15 @@ def validate_solution_trace(
             "solution_trace",
             "Solution trace steps must exactly match frozen route order.",
         )
-    anchors = [item.source_anchor for item in trace.assumptions]
-    anchors.extend(item.source_anchor for item in trace.source_steps)
-    for anchor in anchors:
-        # Only frozen-route IDs have an authoritative ID set in this API.
-        # Problem, answer, and solution IDs remain structurally opaque here.
-        consistent = (
-            anchor.source_kind != "verified_route"
-            or anchor.source_id in route_step_ids
-        )
-        if not consistent:
+    for step in trace.source_steps:
+        if (
+            step.source_anchor.source_kind != "verified_route"
+            or step.source_anchor.source_id != step.source_step_id
+        ):
             _fail(
                 "trace_source_anchor_invalid",
-                anchor.source_id,
-                "Source anchor is inconsistent with its declared source kind.",
+                step.source_step_id,
+                "Trace step must bind exactly to its frozen route step.",
             )
     for step, route_step in zip(trace.source_steps, route_steps):
         if (
@@ -201,6 +204,34 @@ def validate_solution_trace(
                 step.source_step_id,
                 "Trace step references an undeclared assumption.",
             )
+        route_operands = [
+            normalize_cross_artifact_math_identity(item)
+            for item in route_step["operands"]
+        ]
+        trace_operands = [
+            normalize_cross_artifact_math_identity(item)
+            for item in step.operands
+        ]
+        if (
+            step.operation_kind != route_step["operation_kind"]
+            or trace_operands != route_operands
+            or step.assumption_ids_used
+            != route_step.get("assumption_ids_used", [])
+            or step.evidence_status != "verified_route"
+        ):
+            _fail(
+                "trace_typed_decision_mismatch",
+                step.source_step_id,
+                "Trace typed decision does not match the frozen route.",
+            )
+        if not set(step.reasoning_gap_codes) <= set(
+            route_step.get("allowed_reasoning_gap_codes", [])
+        ):
+            _fail(
+                "trace_gap_basis_invalid",
+                step.source_step_id,
+                "Trace reasoning gap lacks a frozen route basis.",
+            )
 
 
 def validate_reasoning_trajectory(
@@ -214,8 +245,30 @@ def validate_reasoning_trajectory(
         for index, step in enumerate(trace.source_steps)
     }
     covered = set()
+    selected_gaps = {
+        (step.source_step_id, gap_code)
+        for step in trace.source_steps
+        for gap_code in step.reasoning_gap_codes
+    }
+    resolved_gaps = set()
     last_position = -1
     for episode in trajectory.episodes:
+        episode_must_teach_ids = {
+            item.must_teach_id for item in episode.must_teach
+        }
+        for gap_ref in episode.resolved_gap_refs:
+            key = (gap_ref.source_step_id, gap_ref.gap_code)
+            if (
+                gap_ref.source_step_id not in episode.source_step_ids
+                or gap_ref.must_teach_id not in episode_must_teach_ids
+                or key not in selected_gaps
+            ):
+                _fail(
+                    "trajectory_gap_ref_invalid",
+                    episode.episode_id,
+                    "Reasoning gap reference is not bound to this episode and must-teach item.",
+                )
+            resolved_gaps.add(key)
         for step_id in episode.source_step_ids:
             if step_id not in trace_order:
                 _fail(
@@ -233,6 +286,12 @@ def validate_reasoning_trajectory(
                     )
                 last_position = position
             covered.add(step_id)
+    if selected_gaps - resolved_gaps:
+        _fail(
+            "trajectory_gap_unresolved",
+            "reasoning_trajectory",
+            "Every selected reasoning gap requires explicit must-teach coverage.",
+        )
     for step_id in trace_order:
         if step_id not in covered and not _contains_exact_id_token(
             trace.audit_notes, step_id

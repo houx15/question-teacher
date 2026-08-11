@@ -136,8 +136,16 @@ def test_grounded_route_preserves_assumptions_and_conclusion():
     assert route.method_name == "代入法"
     assert route.final_conclusion == REFERENCE_ANSWER
     assert payload["assumptions"] == [
-        {"assumption_id": "nonzero-n", "expression": r"\(n\ne0\)"},
-        {"assumption_id": "given-root", "expression": r"\(x=2n\)"},
+        {
+            "assumption_id": "nonzero-n",
+            "expression": r"\(n\ne0\)",
+            "source_kind": "problem",
+        },
+        {
+            "assumption_id": "given-root",
+            "expression": r"\(x=2n\)",
+            "source_kind": "problem",
+        },
     ]
     assert payload["steps"][0]["evidence_status"] == "reference_only"
     assert payload["check_evidence"] == [

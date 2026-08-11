@@ -12,6 +12,7 @@ from app.claim_checker import (
 )
 from app.math_expression import (
     StrictMathExpressionError,
+    allowed_gap_codes_for_operation,
     deterministic_method_name,
     validate_operation_operands,
     validate_strict_math_expression,
@@ -245,6 +246,7 @@ def _freeze_route(
                 "expression": validate_strict_math_expression(
                     item["expression"]
                 ),
+                "source_kind": "problem",
             }
             for item in assumptions
         ]
@@ -264,6 +266,12 @@ def _freeze_route(
                 "assumption_ids_used": list(
                     step.get("assumption_ids_used", [])
                 ),
+                "allowed_reasoning_gap_codes": (
+                    allowed_gap_codes_for_operation(
+                        step["operation_kind"]
+                    )
+                ),
+                "source_kind": "verified_route",
             }
             for step in steps
         ]

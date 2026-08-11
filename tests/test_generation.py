@@ -215,14 +215,25 @@ def grounding_payload(check_requests=None):
     return {
         "task_summary": "由参数根求m-n",
         "target": "m-n",
-        "assumptions": frozen_payload["assumptions"],
+        "assumptions": [
+            {
+                "assumption_id": item["assumption_id"],
+                "expression": item["expression"],
+            }
+            for item in frozen_payload["assumptions"]
+        ],
         "reference_conclusion": frozen_payload["final_conclusion"],
         "method_name": frozen_payload["method_name"],
         "reasoning_steps": [
             {
                 key: value
                 for key, value in step.items()
-                if key != "evidence_status"
+                if key
+                not in {
+                    "allowed_reasoning_gap_codes",
+                    "evidence_status",
+                    "source_kind",
+                }
             }
             for step in frozen_payload["steps"]
         ],

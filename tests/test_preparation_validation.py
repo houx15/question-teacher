@@ -27,7 +27,12 @@ from app.preparation_validation import (
     validate_solution_trace,
     validate_teaching_script,
 )
-from app.schemas import ProblemFocusTarget, ReferenceGroundingBrief
+from app.reference_safety import ReferenceSafetyPolicy
+from app.schemas import (
+    ProblemFocusTarget,
+    ProblemInput,
+    ReferenceGroundingBrief,
+)
 from app.teaching_route import freeze_grounded_route
 
 
@@ -432,6 +437,90 @@ def test_parameter_root_full_traceability_matrix_validates():
     validate_prepared_lesson(prepared, route(), targets)
 
 
+def test_text_only_geometry_trace_and_route_cross_boundary_safely():
+    source = ProblemInput(
+        problem_text="已知AB=AC，求角A。",
+        reference_answer=r"\angle A=60^\circ",
+        reference_solution_text=(
+            r"AB=AC，依据已核对的几何关系可得\angle A=60^\circ"
+        ),
+    )
+    policy = ReferenceSafetyPolicy.from_problem(source)
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        {
+            "task_summary": "由等腰三角形条件确定角",
+            "target": r"\angle A",
+            "assumptions": [
+                {"assumption_id": "equal-sides", "expression": "AB=AC"}
+            ],
+            "reference_conclusion": r"\angle A=60^\circ",
+            "method_name": "几何关系",
+            "reasoning_steps": [
+                {
+                    "step_id": "geometry-step",
+                    "statement_before": "AB=AC",
+                    "operation_kind": "derive",
+                    "operands": [],
+                    "statement_after": r"\angle A=60^\circ",
+                    "assumption_ids_used": ["equal-sides"],
+                }
+            ],
+            "check_requests": [],
+            "audit_notes": [],
+        },
+        r"\angle A=60^\circ",
+    )
+    brief = policy.sanitize_grounding_brief(
+        brief,
+        source.reference_answer,
+    )
+    geometry_route = freeze_grounded_route(brief, [])
+    trace = SolutionTrace.model_validate(
+        {
+            "task_target": r"\angle A",
+            "reference_conclusion": r"\angle A=60^\circ",
+            "assumptions": [
+                {
+                    "assumption_id": "equal-sides",
+                    "content": "AB=AC",
+                    "source_anchor": {
+                        "source_kind": "problem",
+                        "source_id": "problem-equal-sides",
+                        "excerpt": "题目结构依据",
+                    },
+                }
+            ],
+            "source_steps": [
+                {
+                    "source_step_id": "geometry-step",
+                    "source_anchor": {
+                        "source_kind": "verified_route",
+                        "source_id": "geometry-step",
+                        "excerpt": "已验证路线结构依据",
+                    },
+                    "state_before": "AB=AC",
+                    "operation_kind": "derive",
+                    "operands": [],
+                    "mathematical_action": "依据等腰关系推导",
+                    "justification": "几何条件支持",
+                    "state_after": r"\angle A=60^\circ",
+                    "new_information": r"\angle A=60^\circ",
+                    "assumption_ids_used": ["equal-sides"],
+                    "reasoning_gap_codes": [],
+                    "evidence_status": "verified_route",
+                }
+            ],
+            "audit_notes": [],
+        }
+    )
+
+    trace = policy.sanitize_solution_trace(trace, geometry_route)
+    validate_solution_trace(trace, geometry_route)
+    assert geometry_route.to_prompt_payload()["steps"][0][
+        "statement_before"
+    ] == "AB=AC"
+
+
 def test_solution_trace_rejects_conclusion_mismatch_and_missing_assumption():
     payload = trace_payload()
     payload["reference_conclusion"] = "m-n=2"
@@ -441,6 +530,54 @@ def test_solution_trace_rejects_conclusion_mismatch_and_missing_assumption():
     payload["source_steps"][0]["assumption_ids_used"] = ["assumption-missing"]
     trace = SolutionTrace.model_validate(payload)
     assert_code("trace_assumption_missing", lambda: validate_solution_trace(trace, route()))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda step: step.update(operation_kind="factor", operands=["999"]),
+        lambda step: step.update(assumption_ids_used=[]),
+        lambda step: step.update(evidence_status="quoted"),
+        lambda step: step["source_anchor"].update(source_kind="solution"),
+        lambda step: step["source_anchor"].update(source_id="return-target"),
+        lambda step: step.update(reasoning_gap_codes=["implicit_identity"]),
+    ],
+)
+def test_solution_trace_rejects_typed_decision_and_provenance_tampering(
+    tamper,
+):
+    payload = trace_payload()
+    step = payload["source_steps"][1]
+    tamper(step)
+    invalid = SolutionTrace.model_validate(payload)
+
+    with pytest.raises(PreparationValidationError):
+        validate_solution_trace(invalid, route())
+
+
+def test_reasoning_trajectory_must_resolve_every_selected_trace_gap():
+    trace_data = trace_payload()
+    trace_data["source_steps"][1]["reasoning_gap_codes"] = [
+        "implicit_substitution"
+    ]
+    trace = SolutionTrace.model_validate(trace_data)
+    trajectory = ReasoningTrajectory.model_validate(trajectory_payload())
+
+    assert_code(
+        "trajectory_gap_unresolved",
+        lambda: validate_reasoning_trajectory(trajectory, trace),
+    )
+
+    trajectory_data = trajectory_payload()
+    trajectory_data["episodes"][1]["resolved_gap_refs"] = [
+        {
+            "source_step_id": "substitute-root",
+            "gap_code": "implicit_substitution",
+            "must_teach_id": "must-2",
+        }
+    ]
+    resolved = ReasoningTrajectory.model_validate(trajectory_data)
+    validate_reasoning_trajectory(resolved, trace)
 
 
 def test_solution_trace_does_not_collapse_set_grouping_into_digits():
@@ -481,7 +618,7 @@ def test_solution_trace_does_not_collapse_set_grouping_into_digits():
 def test_solution_trace_accepts_presentation_only_conclusion_variants():
     payload = trace_payload()
     payload["reference_conclusion"] = (
-        r"\(\left m−n\right=\tfrac{1}{2}\)"
+        r"\(m−n=\tfrac{1}{2}\)"
     )
     validate_solution_trace(SolutionTrace.model_validate(payload), route())
 

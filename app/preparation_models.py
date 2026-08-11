@@ -136,6 +136,12 @@ class MustTeachItem(SchemaModel):
     why_it_matters: NonEmptyString
 
 
+class ResolvedReasoningGap(SchemaModel):
+    source_step_id: GeneratedId
+    gap_code: ReasoningGapCode
+    must_teach_id: GeneratedId
+
+
 class ReasoningEpisode(SchemaModel):
     episode_id: GeneratedId
     sequence_index: int = Field(ge=0)
@@ -158,6 +164,10 @@ class ReasoningEpisode(SchemaModel):
     must_teach: List[MustTeachItem] = Field(
         min_length=1, max_length=MAX_DETAIL_ITEMS
     )
+    resolved_gap_refs: List[ResolvedReasoningGap] = Field(
+        default_factory=list,
+        max_length=MAX_DETAIL_ITEMS,
+    )
     likely_misconceptions: List[NonEmptyString] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
@@ -167,6 +177,13 @@ class ReasoningEpisode(SchemaModel):
     @model_validator(mode="after")
     def validate_must_teach_ids(self) -> "ReasoningEpisode":
         _require_unique([item.must_teach_id for item in self.must_teach], "must-teach ids")
+        _require_unique(
+            [
+                "%s:%s" % (item.source_step_id, item.gap_code)
+                for item in self.resolved_gap_refs
+            ],
+            "resolved gap refs",
+        )
         return self
 
 

@@ -1115,14 +1115,19 @@ def test_three_repairs_can_converge_without_fixed_two_round_acceptance():
 def test_reference_analyst_typed_repair_changes_downstream_projection():
     repaired_trace = trace_payload()
     repaired_trace["source_steps"][0].update(
-        operation_kind="derive",
-        operands=[],
-        assumption_ids_used=[],
         reasoning_gap_codes=["implicit_substitution"],
     )
+    repaired_trajectory = trajectory_payload()
+    repaired_trajectory["episodes"][0]["resolved_gap_refs"] = [
+        {
+            "source_step_id": "substitute-root",
+            "gap_code": "implicit_substitution",
+            "must_teach_id": "must-1",
+        }
+    ]
     fake = client(
         traces=[trace_payload(), repaired_trace],
-        trajectories=[trajectory_payload(), trajectory_payload()],
+        trajectories=[trajectory_payload(), repaired_trajectory],
         scripts=[downstream_script_payload(), downstream_script_payload()],
         interactions=[
             downstream_interaction_payload(),
@@ -1152,16 +1157,16 @@ def test_reference_analyst_typed_repair_changes_downstream_projection():
     )
 
     first_step = result.prepared_lesson.solution_trace.source_steps[0]
-    assert first_step.operation_kind == "derive"
-    assert first_step.assumption_ids_used == []
+    assert first_step.operation_kind == "substitute"
+    assert first_step.assumption_ids_used == ["assumption-root"]
     assert first_step.reasoning_gap_codes == ["implicit_substitution"]
     designer_calls = [
         item for item in fake.calls if item.role == "teaching_designer"
     ]
     repaired_prompt = prompt_payload(designer_calls[1])
     projected_step = repaired_prompt["solution_trace"]["source_steps"][0]
-    assert projected_step["operation_kind"] == "derive"
-    assert projected_step["mathematical_action"] == "依据已知数学关系推导"
+    assert projected_step["operation_kind"] == "substitute"
+    assert projected_step["mathematical_action"] == "代入已知数学量：x=2n"
     assert projected_step["reasoning_gap_codes"] == [
         "implicit_substitution"
     ]
