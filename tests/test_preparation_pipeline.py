@@ -198,6 +198,7 @@ def downstream_script_payload():
         ("clause-open", "episode-1", ["must-1"], "先找到题目要求的关系。", ["m-n"]),
         ("clause-method", "episode-1", [], "根一定满足原方程，所以先代入。", ["x=2n"]),
         ("clause-2", "episode-2", ["must-2"], "代入后先观察它与目标的关系。", ["4n^2-4mn+2n=0"]),
+        ("clause-2-resume", "episode-2", [], "现在用刚才的判断继续整理。", ["4n^2-4mn+2n=0"]),
         ("clause-3", "episode-3", ["must-3"], "注意n不等于零，这一步才能约去因式。", ["2n-2m+1=0"]),
         ("clause-4", "episode-4", ["must-4"], "约去之后检查新关系是否能继续。", ["2n-2m+1=0"]),
         ("clause-close", "episode-5", ["must-5"], "最后整理并回到m减n这个目标。", ["m-n=1/2"]),
@@ -253,6 +254,31 @@ def downstream_transfer_payload():
 
 def downstream_interaction_payload():
     return {"interactions": [], "transfer_item": downstream_transfer_payload()}
+
+
+def downstream_planned_interaction(interaction_id="interaction-1"):
+    return {
+        "interaction_id": interaction_id,
+        "episode_id": "episode-2",
+        "after_clause_id": "clause-2",
+        "diagnostic_target": "是否知道要继续整理",
+        "diagnostic_kind": "execution",
+        "prompt": "下一步应该怎样做？",
+        "options": [
+            {"option_id": "option-a", "display_text": "继续整理", "canonical_answer": "simplify"},
+            {"option_id": "option-b", "display_text": "停在原式", "canonical_answer": "stop", "misconception": "没有推进"},
+            {"option_id": "option-c", "display_text": "猜测结论", "canonical_answer": "guess", "misconception": "跳步"},
+        ],
+        "correct_option_id": "option-a",
+        "correct_feedback": "对，继续整理才能推进。",
+        "incorrect_feedback_by_option": {
+            "option-b": "还需要整理。",
+            "option-c": "先完成数学步骤。",
+        },
+        "hint": "看看当前等式。",
+        "resume_clause_id": "clause-2-resume",
+        "concealed_targets": [],
+    }
 
 
 def downstream_score_payload():
@@ -357,9 +383,9 @@ def test_zero_interactions_and_cues_without_highlights_are_accepted():
 
 def test_script_dependency_reordering_fails_without_structure_retry():
     invalid = downstream_script_payload()
-    invalid["clauses"][2], invalid["clauses"][3] = (
+    invalid["clauses"][3], invalid["clauses"][4] = (
+        invalid["clauses"][4],
         invalid["clauses"][3],
-        invalid["clauses"][2],
     )
     fake = client(script=invalid)
 
@@ -469,7 +495,10 @@ def test_problem_highlight_must_be_bound_to_a_clause_discussing_the_target():
     script = downstream_script_payload()
     script["clauses"][1]["math_references"] = ["x^2-2mx+2n=0"]
     invalid = downstream_score_payload()
-    invalid["cues"][4]["lead_actions"] = [
+    clause_4_cue = next(
+        cue for cue in invalid["cues"] if cue["clause_ids"] == ["clause-4"]
+    )
+    clause_4_cue["lead_actions"] = [
         {
             "clause_id": "clause-4",
             "action": {
@@ -546,6 +575,114 @@ def test_board_object_can_be_emphasized_and_faded_after_introduction():
                 client(script=script, performance=valid)
             ).prepare(problem(), route(), focus_targets())
         )
+
+
+def test_multiple_interactions_in_one_episode_fail_before_performance_stage():
+    interaction = downstream_planned_interaction()
+    duplicate = downstream_planned_interaction("interaction-2")
+    plan = {
+        "interactions": [interaction, duplicate],
+        "transfer_item": downstream_transfer_payload(),
+    }
+    fake = client(interaction=plan)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "interaction_plan_failed"
+    assert captured.value.role == "interaction_designer"
+    assert [call.role for call in fake.calls].count("interaction_designer") == 1
+    assert "classroom_director" not in [call.role for call in fake.calls]
+
+
+def test_overlay_history_does_not_hide_sole_base_object_emphasis():
+    score = downstream_score_payload()
+    score["board_objects"] = [
+        {"board_object_id": "base-target", "content": "m-n"},
+        {
+            "board_object_id": "overlay-target",
+            "content": "4n^2-4mn+2n=0",
+            "layer": "comparison",
+        },
+    ]
+    score["cues"][0]["start_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "base-target",
+                "content": "m-n",
+            },
+        }
+    ]
+    score["overlay_transitions"] = [
+        {
+            "transition_id": "enter-comparison",
+            "after_clause_id": "clause-method",
+            "action": "enter",
+            "layer": "comparison",
+        },
+        {
+            "transition_id": "return-comparison",
+            "after_clause_id": "clause-2",
+            "action": "return",
+            "layer": "comparison",
+        },
+    ]
+    clause_2 = next(
+        cue for cue in score["cues"] if cue["clause_ids"] == ["clause-2"]
+    )
+    clause_2["start_actions"] = [
+        {
+            "clause_id": "clause-2",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "overlay-target",
+                "content": "4n^2-4mn+2n=0",
+            },
+        }
+    ]
+    resume = next(
+        cue
+        for cue in score["cues"]
+        if cue["clause_ids"] == ["clause-2-resume"]
+    )
+    resume["start_actions"] = [
+        {
+            "clause_id": "clause-2-resume",
+            "action": {
+                "surface": "board",
+                "type": "emphasize",
+                "target": "base-target",
+                "emphasis_style": "highlight",
+            },
+        }
+    ]
+    resume["end_actions"] = [
+        {
+            "clause_id": "clause-2-resume",
+            "action": {
+                "surface": "board",
+                "type": "fade",
+                "target": "base-target",
+            },
+        }
+    ]
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(client(performance=score)).prepare(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "performance_score_failed"
 
 
 def test_prepare_return_annotation_remains_prepared_lesson():

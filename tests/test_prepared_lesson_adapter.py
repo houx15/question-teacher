@@ -114,16 +114,14 @@ def test_adapter_unwraps_clause_actions_and_keeps_audio_empty():
     assert all(beat.audio_url is None for beat in lesson.beats)
 
 
-def test_adapter_maps_one_interaction_episode_to_one_runtime_moment_privately():
+def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
     prepared = approved_prepared()
 
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())
 
-    interaction_moments = [
-        moment for moment in draft.moments if moment.interaction is not None
-    ]
-    assert len(interaction_moments) == 1
-    runtime = interaction_moments[0].interaction
+    assert all(moment.interaction is None for moment in draft.moments)
+    assert len(draft.fixed_section_interactions_after_cue) == 1
+    runtime = next(iter(draft.fixed_section_interactions_after_cue.values()))
     plan = prepared.interaction_plan.interactions[0]
     assert runtime.prompt == plan.prompt
     assert runtime.expected_answer == plan.correct_option_id
@@ -143,6 +141,28 @@ def test_adapter_maps_one_interaction_episode_to_one_runtime_moment_privately():
         and "correct" not in option.model_dump()
         for option in runtime.options
     )
+
+
+def test_runtime_interaction_occurs_after_boundary_and_before_resume_clause():
+    prepared = approved_prepared()
+    lesson = LessonCompiler(lesson_id_factory=lambda: "boundary-order").compile(
+        source_problem(),
+        prepared_lesson_to_draft(source_problem(), prepared, route()),
+        {"review_status": "approved"},
+    )
+
+    events = []
+    for beat in lesson.beats:
+        events.extend(cue.cue_id for cue in beat.sync_cues)
+        if beat.interaction is not None:
+            events.append("interaction:%s" % beat.interaction.interaction_id)
+
+    after = events.index("cue-clause-2")
+    interaction = events.index("interaction:interaction-1")
+    resume = events.index("cue-clause-2-resume")
+    assert after < interaction < resume
+    assert interaction == after + 1
+    assert resume == interaction + 1
 
 
 def test_adapter_allows_zero_interactions_and_merges_adjacent_free_episodes():
@@ -240,7 +260,7 @@ def test_overlay_enters_for_one_teaching_point_then_returns_to_base():
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())
 
     assert [moment.layer for moment in draft.moments] == [
-        "interaction",
+        "base",
         "comparison",
         "base",
     ]
@@ -288,3 +308,114 @@ def test_compiled_prepared_lesson_adds_only_fixed_runtime_navigation_speech():
         planned.incorrect_feedback_by_option["option-b"],
         planned.incorrect_feedback_by_option["option-c"],
     ]
+    transfer = lesson.beats[-1].interaction
+    transfer_plan = prepared.interaction_plan.transfer_item
+    correct = next(
+        option
+        for option in transfer_plan.options
+        if option.option_id == transfer_plan.correct_option_id
+    )
+    assert transfer.explanation_after_correct == ""
+    assert transfer.correct_audio_url is None
+    assert next(
+        option.feedback
+        for option in transfer.options
+        if option.option_id == transfer.expected_answer
+    ) == correct.feedback
+
+
+def _merge_score_cues(payload, first_index, second_index):
+    first = payload["performance_score"]["cues"][first_index]
+    second = payload["performance_score"]["cues"].pop(second_index)
+    first["clause_ids"].extend(second["clause_ids"])
+    for phase in ("lead_actions", "start_actions", "end_actions"):
+        first.setdefault(phase, []).extend(second.get(phase, []))
+
+
+def test_adapter_splits_a_contiguous_cue_crossing_runtime_sections():
+    payload = prepared_payload()
+    _merge_score_cues(payload, 0, 1)
+    prepared = PreparedLesson.model_validate(payload)
+
+    draft = prepared_lesson_to_draft(source_problem(), prepared, route())
+    lesson = LessonCompiler(lesson_id_factory=lambda: "section-split").compile(
+        source_problem(), draft, {"review_status": "approved"}
+    )
+
+    assert "".join(beat.narration for beat in lesson.beats[:-1]) == "".join(
+        clause.spoken_text for clause in prepared.teaching_script.clauses
+    )
+
+
+def test_adapter_splits_a_contiguous_cue_crossing_adjacent_episodes():
+    payload = prepared_payload()
+    _merge_score_cues(payload, 2, 3)
+    prepared = PreparedLesson.model_validate(payload)
+
+    draft = prepared_lesson_to_draft(source_problem(), prepared, route())
+
+    assert "".join(
+        cue.spoken_text for moment in draft.moments for cue in moment.sync_cues
+    ) == "".join(
+        clause.spoken_text
+        for clause in prepared.teaching_script.clauses
+        if clause.clause_id
+        not in {
+            *prepared.teaching_script.opening_clause_ids,
+            *prepared.teaching_script.method_introduction_clause_ids,
+            *prepared.teaching_script.closing_summary_clause_ids,
+        }
+    )
+
+
+def test_adapter_splits_more_than_five_adjacent_free_cues_into_moments():
+    payload = prepared_payload()
+    payload["interaction_plan"]["interactions"] = []
+    closing = payload["teaching_script"]["clauses"].pop()
+    closing_cue = payload["performance_score"]["cues"].pop()
+    for index in range(2):
+        clause_id = "clause-6-extra-%d" % index
+        payload["teaching_script"]["clauses"].append(
+            {
+                **payload["teaching_script"]["clauses"][-1],
+                "clause_id": clause_id,
+                "must_teach_refs": [],
+                "spoken_text": "我们再检查一次当前关系。",
+            }
+        )
+        payload["performance_score"]["cues"].append(
+            {
+                "cue_id": "cue-%s" % clause_id,
+                "clause_ids": [clause_id],
+                "start_actions": [
+                    {
+                        "clause_id": clause_id,
+                        "action": {
+                            "surface": "board",
+                            "type": "focus",
+                            "target": "board-6",
+                        },
+                    }
+                ],
+            }
+        )
+    payload["teaching_script"]["clauses"].append(closing)
+    payload["performance_score"]["cues"].append(closing_cue)
+    prepared = PreparedLesson.model_validate(payload)
+
+    draft = prepared_lesson_to_draft(source_problem(), prepared, route())
+
+    assert len(draft.moments) >= 2
+    assert all(len(moment.sync_cues) <= 5 for moment in draft.moments)
+    assert "".join(
+        cue.spoken_text for moment in draft.moments for cue in moment.sync_cues
+    ) == "".join(
+        clause.spoken_text
+        for clause in prepared.teaching_script.clauses
+        if clause.clause_id
+        not in {
+            *prepared.teaching_script.opening_clause_ids,
+            *prepared.teaching_script.method_introduction_clause_ids,
+            *prepared.teaching_script.closing_summary_clause_ids,
+        }
+    )

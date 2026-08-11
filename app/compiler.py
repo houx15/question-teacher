@@ -81,6 +81,41 @@ def _runtime_beat(
     )
 
 
+def _authored_section_beats(
+    *,
+    purpose: str,
+    layer: LessonLayer,
+    cues: List[RuntimeSyncCue],
+    interactions_after_cue: Dict[str, Interaction],
+) -> List[RuntimeBeat]:
+    """Split an authored fixed section only at explicit interaction boundaries."""
+    beats = []
+    pending = []
+    for cue in cues:
+        pending.append(cue)
+        interaction = interactions_after_cue.get(cue.cue_id)
+        if interaction is None:
+            continue
+        beats.append(
+            _runtime_beat(
+                purpose=purpose,
+                layer=layer,
+                sync_cues=pending,
+                interaction=interaction,
+            )
+        )
+        pending = []
+    if pending:
+        beats.append(
+            _runtime_beat(
+                purpose=purpose,
+                layer=layer,
+                sync_cues=pending,
+            )
+        )
+    return beats
+
+
 class LessonCompileError(RuntimeError):
     """Raised when a validated lesson cannot be compiled safely."""
 
@@ -134,13 +169,14 @@ class LessonCompiler:
                 )
             ]
         )
-        beats: List[RuntimeBeat] = [
-            _runtime_beat(
-                purpose="进入问题",
-                layer="base",
-                sync_cues=opening_cues,
-            )
-        ]
+        beats: List[RuntimeBeat] = _authored_section_beats(
+            purpose="进入问题",
+            layer="base",
+            cues=opening_cues,
+            interactions_after_cue=(
+                draft.fixed_section_interactions_after_cue
+            ),
+        )
 
         method_introduction = draft.method_introduction
         method_narration = method_introduction.spoken_narration
@@ -178,11 +214,14 @@ class LessonCompiler:
                 )
             ]
         )
-        beats.append(
-            _runtime_beat(
+        beats.extend(
+            _authored_section_beats(
                 purpose="先认识方法",
                 layer="micro_explanation",
-                sync_cues=method_cues,
+                cues=method_cues,
+                interactions_after_cue=(
+                    draft.fixed_section_interactions_after_cue
+                ),
             )
         )
 
@@ -222,7 +261,11 @@ class LessonCompiler:
                     for option in transfer_item.options
                 ],
                 hints=[transfer_item.method_signal],
-                explanation_after_correct="你已经识别并使用了同一方法结构。",
+                explanation_after_correct=(
+                    ""
+                    if draft.transfer_feedback_is_authoritative
+                    else "你已经识别并使用了同一方法结构。"
+                ),
             )
             if transfer_item.options
             else Interaction(
@@ -231,51 +274,59 @@ class LessonCompiler:
                 prompt=transfer_item.problem_text,
                 expected_answer=transfer_item.expected_answer,
                 hints=[transfer_item.method_signal],
-                explanation_after_correct="你已经识别并使用了同一方法结构。",
+                explanation_after_correct=(
+                    ""
+                    if draft.transfer_feedback_is_authoritative
+                    else "你已经识别并使用了同一方法结构。"
+                ),
             )
         )
 
-        beats.extend(
+        summary_cues = (
             [
-                _runtime_beat(
-                    purpose="压缩方法",
-                    sync_cues=(
-                        [
-                            _copy_runtime_cue(cue)
-                            for cue in draft.summary_sync_cues
-                        ]
-                        if draft.summary_sync_cues is not None
-                        else [
-                            RuntimeSyncCue(
-                                cue_id=_FIXED_CUE_IDS["summary"],
-                                spoken_text=draft.summary,
-                                start_actions=[
-                                    SyncVisualAction(
-                                        surface="board",
-                                        type="write",
-                                        target="method_summary",
-                                        content=draft.summary,
-                                    )
-                                ],
-                            )
-                        ]
-                    ),
-                    layer="base",
-                ),
-                _runtime_beat(
-                    purpose="完成近迁移",
-                    sync_cues=[
-                        RuntimeSyncCue(
-                            cue_id=_FIXED_CUE_IDS["transfer_intro"],
-                            spoken_text=(
-                                "现在换一道表面不同、结构相同的题。"
-                            ),
+                _copy_runtime_cue(cue)
+                for cue in draft.summary_sync_cues
+            ]
+            if draft.summary_sync_cues is not None
+            else [
+                RuntimeSyncCue(
+                    cue_id=_FIXED_CUE_IDS["summary"],
+                    spoken_text=draft.summary,
+                    start_actions=[
+                        SyncVisualAction(
+                            surface="board",
+                            type="write",
+                            target="method_summary",
+                            content=draft.summary,
                         )
                     ],
-                    layer="interaction",
-                    interaction=transfer_interaction,
-                ),
+                )
             ]
+        )
+        beats.extend(
+            _authored_section_beats(
+                purpose="压缩方法",
+                layer="base",
+                cues=summary_cues,
+                interactions_after_cue=(
+                    draft.fixed_section_interactions_after_cue
+                ),
+            )
+        )
+        beats.append(
+            _runtime_beat(
+                purpose="完成近迁移",
+                sync_cues=[
+                    RuntimeSyncCue(
+                        cue_id=_FIXED_CUE_IDS["transfer_intro"],
+                        spoken_text=(
+                            "现在换一道表面不同、结构相同的题。"
+                        ),
+                    )
+                ],
+                layer="interaction",
+                interaction=transfer_interaction,
+            )
         )
 
         numbered_beats = []

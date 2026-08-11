@@ -186,6 +186,19 @@ def validate_teaching_script(
         for episode in trajectory.episodes
         for item in episode.must_teach
     }
+    section_clause_ids = {
+        *script.opening_clause_ids,
+        *script.method_introduction_clause_ids,
+        *script.closing_summary_clause_ids,
+    }
+    if all(
+        clause.clause_id in section_clause_ids for clause in script.clauses
+    ):
+        _fail(
+            "script_body_missing",
+            "teaching_script",
+            "Teaching script requires at least one explanatory body clause.",
+        )
     covered = set()
     last_episode_position = -1
     for clause in script.clauses:
@@ -323,6 +336,15 @@ def validate_interaction_plan(
     clause_positions = {
         item.clause_id: index for index, item in enumerate(script.clauses)
     }
+    interaction_episode_ids = [
+        interaction.episode_id for interaction in plan.interactions
+    ]
+    if len(interaction_episode_ids) != len(set(interaction_episode_ids)):
+        _fail(
+            "interaction_episode_duplicate",
+            "interaction_plan",
+            "An episode may contain at most one runtime interaction.",
+        )
     for interaction in plan.interactions:
         after = clauses.get(interaction.after_clause_id)
         resume = clauses.get(interaction.resume_clause_id)
@@ -332,7 +354,8 @@ def validate_interaction_plan(
             or resume is None
             or after.episode_id != interaction.episode_id
             or resume.episode_id != interaction.episode_id
-            or clause_positions[resume.clause_id] <= clause_positions[after.clause_id]
+            or clause_positions[resume.clause_id]
+            != clause_positions[after.clause_id] + 1
         ):
             _fail(
                 "interaction_clause_invalid",
@@ -745,6 +768,12 @@ def validate_performance_score(
                 )
     score_moments = _score_moments(score, script_positions)
     _validate_score_layers(score_moments, board_objects)
+    layer_by_clause = {
+        clause_id: moment.layer
+        for moment in score_moments
+        for cue in moment.sync_cues
+        for clause_id in cue.clause_ids
+    }
     try:
         validate_visual_action_references(
             score_moments,
@@ -782,11 +811,21 @@ def validate_performance_score(
                 first_position = position
                 break
         problem_first_reference_position[target_id] = first_position
-    current_board_content = {}
+    visible_board_content_by_layer = {"base": {}}
+
+    def active_visible_content(layer: str) -> dict:
+        visible = dict(visible_board_content_by_layer["base"])
+        if layer != "base":
+            visible.update(
+                visible_board_content_by_layer.get(layer, {})
+            )
+        return visible
+
     for cue in score.cues:
         for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions):
             action = bound.action
             bound_position = script_positions[bound.clause_id]
+            active_layer = layer_by_clause[bound.clause_id]
             if action.surface == "problem":
                 first_position = problem_first_reference_position[action.target]
                 if first_position is None or first_position > bound_position:
@@ -820,14 +859,18 @@ def validate_performance_score(
                         bound.clause_id,
                         "Visual content appears before its bound clause references it.",
                     )
-                current_board_content[action.target] = action.content or ""
+                target_layer = board_objects[action.target].layer
+                visible_board_content_by_layer.setdefault(
+                    target_layer,
+                    {},
+                )[action.target] = action.content or ""
             elif (
                 action.surface == "board"
-                and action.target in current_board_content
+                and action.target in active_visible_content(active_layer)
                 and action.type not in {"clear_focus", "fade"}
                 and first_reference_position.get(
                     normalize_cross_artifact_math_identity(
-                        current_board_content[action.target]
+                        active_visible_content(active_layer)[action.target]
                     ),
                     len(script.clauses),
                 )
@@ -838,11 +881,12 @@ def validate_performance_score(
                     bound.clause_id,
                     "Board visual target appears before its bound clause references it.",
                 )
+            visible_content = active_visible_content(active_layer)
             if (
                 action.type == "emphasize"
                 and action.surface == "board"
-                and len(current_board_content) == 1
-                and action.target in current_board_content
+                and len(visible_content) == 1
+                and action.target in visible_content
             ):
                 _fail(
                     "non_discriminating_emphasis",
@@ -853,11 +897,11 @@ def validate_performance_score(
                 action.type == "annotate"
                 and action.annotation == "label"
                 and action.content is not None
-                and len(current_board_content) == 1
-                and action.target in current_board_content
+                and len(visible_content) == 1
+                and action.target in visible_content
                 and normalize_cross_artifact_math_identity(action.content)
                 == normalize_cross_artifact_math_identity(
-                    current_board_content[action.target]
+                    visible_content[action.target]
                 )
             ):
                 _fail(

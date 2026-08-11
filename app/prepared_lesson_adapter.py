@@ -1,11 +1,11 @@
 """Adapt an approved private lesson preparation to the runtime draft."""
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 
 from app.preparation_models import (
-    InteractionPlan,
     PerformanceCue,
+    PlannedInteraction,
     PreparedLesson,
     TeachingScript,
 )
@@ -31,60 +31,102 @@ class _AdaptedCue:
     episode_id: str
     layer: LessonLayer
     cue: NarrativeSyncCue
+    interaction: Optional[Interaction] = None
 
 
-def _narrative_cue(
+_COMPILER_RESERVED_CUE_IDS = {
+    "runtime-opening-cue",
+    "runtime-method-introduction-cue",
+    "runtime-summary-cue",
+    "runtime-transfer-intro-cue",
+}
+
+
+def _runtime_cue_id(
+    original_id: str,
+    score_index: int,
+    part_index: int,
+    reserved_ids: Set[str],
+    allocated_ids: Set[str],
+) -> str:
+    if (
+        part_index == 0
+        and original_id not in _COMPILER_RESERVED_CUE_IDS
+        and original_id not in allocated_ids
+    ):
+        allocated_ids.add(original_id)
+        return original_id
+    suffix = 0
+    while True:
+        candidate = "prepared-cue-%03d-%03d-%03d" % (
+            score_index,
+            part_index,
+            suffix,
+        )
+        if (
+            candidate not in reserved_ids
+            and candidate not in allocated_ids
+            and candidate not in _COMPILER_RESERVED_CUE_IDS
+        ):
+            allocated_ids.add(candidate)
+            return candidate
+        suffix += 1
+
+
+def _narrative_cue_part(
     cue: PerformanceCue,
     script: TeachingScript,
+    clause_ids: Tuple[str, ...],
+    cue_id: str,
 ) -> NarrativeSyncCue:
     clauses = {item.clause_id: item for item in script.clauses}
+    included = set(clause_ids)
     return NarrativeSyncCue(
-        cue_id=cue.cue_id,
+        cue_id=cue_id,
         spoken_text="".join(
-            clauses[clause_id].spoken_text for clause_id in cue.clause_ids
+            clauses[clause_id].spoken_text for clause_id in clause_ids
         ),
         lead_actions=[
-            item.action.model_copy(deep=True) for item in cue.lead_actions
+            item.action.model_copy(deep=True)
+            for item in cue.lead_actions
+            if item.clause_id in included
         ],
         start_actions=[
-            item.action.model_copy(deep=True) for item in cue.start_actions
+            item.action.model_copy(deep=True)
+            for item in cue.start_actions
+            if item.clause_id in included
         ],
         end_actions=[
-            item.action.model_copy(deep=True) for item in cue.end_actions
+            item.action.model_copy(deep=True)
+            for item in cue.end_actions
+            if item.clause_id in included
         ],
     )
 
 
-def _interaction_by_episode(plan: InteractionPlan) -> dict:
-    result = {}
-    for planned in plan.interactions:
-        if planned.episode_id in result:
-            raise ValueError(
-                "one runtime moment cannot contain multiple interactions"
+def _runtime_interaction(planned: PlannedInteraction) -> Interaction:
+    return Interaction(
+        interaction_id=planned.interaction_id,
+        kind="choice",
+        prompt=planned.prompt,
+        expected_answer=planned.correct_option_id,
+        options=[
+            InteractionOption(
+                option_id=option.option_id,
+                label=option.display_text,
+                feedback=(
+                    planned.correct_feedback
+                    if option.option_id == planned.correct_option_id
+                    else planned.incorrect_feedback_by_option[
+                        option.option_id
+                    ]
+                ),
             )
-        result[planned.episode_id] = Interaction(
-            interaction_id=planned.interaction_id,
-            kind="choice",
-            prompt=planned.prompt,
-            expected_answer=planned.correct_option_id,
-            options=[
-                InteractionOption(
-                    option_id=option.option_id,
-                    label=option.display_text,
-                    feedback=(
-                        planned.correct_feedback
-                        if option.option_id == planned.correct_option_id
-                        else planned.incorrect_feedback_by_option[
-                            option.option_id
-                        ]
-                    ),
-                )
-                for option in planned.options
-            ],
-            hints=[planned.hint],
-            explanation_after_correct=planned.correct_feedback,
-        )
-    return result
+            for option in planned.options
+        ],
+        hints=[planned.hint],
+        explanation_after_correct=planned.correct_feedback,
+    )
 
 
 def _layer_by_clause(prepared: PreparedLesson) -> dict:
@@ -106,50 +148,90 @@ def _layer_by_clause(prepared: PreparedLesson) -> dict:
 def _runtime_sections(prepared: PreparedLesson) -> tuple:
     script = prepared.teaching_script
     clauses = {item.clause_id: item for item in script.clauses}
-    opening = set(script.opening_clause_ids)
-    method = set(script.method_introduction_clause_ids)
-    summary = set(script.closing_summary_clause_ids)
+    opening_ids = set(script.opening_clause_ids)
+    method_ids = set(script.method_introduction_clause_ids)
+    summary_ids = set(script.closing_summary_clause_ids)
     layer_by_clause = _layer_by_clause(prepared)
     section_cues = {"opening": [], "method": [], "body": [], "summary": []}
+    interactions_after_clause = {
+        item.after_clause_id: _runtime_interaction(item)
+        for item in prepared.interaction_plan.interactions
+    }
+    reserved_ids = {
+        cue.cue_id for cue in prepared.performance_score.cues
+    }
+    allocated_ids = set()
+    fixed_interactions = {}
 
-    for score_cue in prepared.performance_score.cues:
-        sections = {
-            "opening"
-            if clause_id in opening
-            else "method"
-            if clause_id in method
-            else "summary"
-            if clause_id in summary
-            else "body"
-            for clause_id in score_cue.clause_ids
-        }
-        if len(sections) != 1:
-            raise ValueError(
-                "performance cue cannot cross a runtime section boundary"
+    def clause_section(clause_id: str) -> str:
+        if clause_id in opening_ids:
+            return "opening"
+        if clause_id in method_ids:
+            return "method"
+        if clause_id in summary_ids:
+            return "summary"
+        return "body"
+
+    for score_index, score_cue in enumerate(prepared.performance_score.cues):
+        parts = []
+        current = []
+        current_key = None
+        current_length = 0
+        for clause_id in score_cue.clause_ids:
+            clause = clauses[clause_id]
+            key = (
+                clause_section(clause_id),
+                clause.episode_id,
+                layer_by_clause[clause_id],
             )
-        section = sections.pop()
-        narrative_cue = _narrative_cue(score_cue, script)
-        if section != "body":
-            section_cues[section].append(narrative_cue)
-            continue
-        episode_ids = {
-            clauses[clause_id].episode_id
-            for clause_id in score_cue.clause_ids
-        }
-        cue_layers = {
-            layer_by_clause[clause_id] for clause_id in score_cue.clause_ids
-        }
-        if len(episode_ids) != 1 or len(cue_layers) != 1:
-            raise ValueError(
-                "body performance cue cannot cross episode or overlay boundaries"
+            spoken_length = len(clause.spoken_text)
+            if current and (
+                key != current_key or current_length + spoken_length > 90
+            ):
+                parts.append(tuple(current))
+                current = []
+                current_length = 0
+            current.append(clause_id)
+            current_key = key
+            current_length += spoken_length
+            if clause_id in interactions_after_clause:
+                parts.append(tuple(current))
+                current = []
+                current_key = None
+                current_length = 0
+        if current:
+            parts.append(tuple(current))
+
+        for part_index, clause_ids in enumerate(parts):
+            first_clause = clauses[clause_ids[0]]
+            section = clause_section(clause_ids[0])
+            cue_id = _runtime_cue_id(
+                score_cue.cue_id,
+                score_index,
+                part_index,
+                reserved_ids,
+                allocated_ids,
             )
-        section_cues["body"].append(
-            _AdaptedCue(
-                episode_id=episode_ids.pop(),
-                layer=cue_layers.pop(),
-                cue=narrative_cue,
+            narrative_cue = _narrative_cue_part(
+                score_cue,
+                script,
+                clause_ids,
+                cue_id,
             )
-        )
+            interaction = interactions_after_clause.get(clause_ids[-1])
+            if section == "body":
+                section_cues["body"].append(
+                    _AdaptedCue(
+                        episode_id=first_clause.episode_id,
+                        layer=layer_by_clause[clause_ids[0]],
+                        cue=narrative_cue,
+                        interaction=interaction,
+                    )
+                )
+            else:
+                section_cues[section].append(narrative_cue)
+                if interaction is not None:
+                    fixed_interactions[cue_id] = interaction
     if any(not section_cues[name] for name in ("opening", "method", "summary")):
         raise ValueError("prepared script section has no performance cue")
     if not section_cues["body"]:
@@ -159,6 +241,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         section_cues["method"],
         section_cues["body"],
         section_cues["summary"],
+        fixed_interactions,
     )
 
 
@@ -166,34 +249,13 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
     episodes = {
         item.episode_id: item for item in prepared.reasoning_trajectory.episodes
     }
-    interactions = _interaction_by_episode(prepared.interaction_plan)
     moments = []
-    index = 0
-    while index < len(body):
-        first = body[index]
-        interaction = interactions.get(first.episode_id)
-        group = [first]
-        index += 1
-        if interaction is not None:
-            while index < len(body) and body[index].episode_id == first.episode_id:
-                if body[index].layer != first.layer:
-                    raise ValueError(
-                        "interaction episode cannot cross an overlay boundary"
-                    )
-                group.append(body[index])
-                index += 1
-        else:
-            while index < len(body):
-                candidate = body[index]
-                if (
-                    candidate.layer != first.layer
-                    or candidate.episode_id in interactions
-                ):
-                    break
-                group.append(candidate)
-                index += 1
-        if len(group) > 5:
-            raise ValueError("runtime moment exceeds the supported cue count")
+    group = []
+
+    def flush(interaction: Optional[Interaction] = None) -> None:
+        nonlocal group
+        if not group:
+            return
         episode_order = []
         for item in group:
             if item.episode_id not in episode_order:
@@ -203,15 +265,25 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
             LessonMoment(
                 purpose=purpose,
                 sync_cues=[item.cue for item in group],
-                layer="interaction" if interaction is not None else first.layer,
+                layer=(
+                    "interaction"
+                    if interaction is not None
+                    else group[0].layer
+                ),
                 interaction=interaction,
             )
         )
-    missing_interactions = set(interactions) - {
-        item.episode_id for item in body
-    }
-    if missing_interactions:
-        raise ValueError("interaction episode has no runtime body cue")
+        group = []
+
+    for adapted in body:
+        if group and (
+            adapted.layer != group[0].layer or len(group) == 5
+        ):
+            flush()
+        group.append(adapted)
+        if adapted.interaction is not None:
+            flush(adapted.interaction)
+    flush()
     return moments
 
 
@@ -261,7 +333,9 @@ def prepared_lesson_to_draft(
 
     problem_targets = compile_problem_focus_targets(problem.problem_text)
     validate_prepared_lesson(prepared, teaching_route, problem_targets)
-    opening, method, body, summary = _runtime_sections(prepared)
+    opening, method, body, summary, fixed_interactions = _runtime_sections(
+        prepared
+    )
     route_payload["teaching_route_fingerprint"] = teaching_route.fingerprint
     script = prepared.teaching_script
     return LessonDraft(
@@ -273,6 +347,8 @@ def prepared_lesson_to_draft(
         opening_sync_cues=opening,
         method_introduction_sync_cues=method,
         summary_sync_cues=summary,
+        fixed_section_interactions_after_cue=fixed_interactions,
+        transfer_feedback_is_authoritative=True,
         math_steps=math_steps,
         teaching_route=route_payload,
         moments=_lesson_moments(prepared, body),

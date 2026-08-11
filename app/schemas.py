@@ -986,6 +986,11 @@ class LessonDraft(SchemaModel):
         default=None,
         min_length=1,
     )
+    fixed_section_interactions_after_cue: Dict[
+        GeneratedId,
+        Interaction,
+    ] = Field(default_factory=dict)
+    transfer_feedback_is_authoritative: bool = False
     math_steps: List[MathStep] = Field(default_factory=list)
     teaching_route: Dict[str, object] = Field(
         default_factory=lambda: {
@@ -1045,6 +1050,21 @@ class LessonDraft(SchemaModel):
         ]
         if len(cue_ids) != len(set(cue_ids)):
             raise ValueError("lesson cue ids must be unique")
+        fixed_cue_ids = {
+            cue.cue_id
+            for cues in (
+                self.opening_sync_cues or [],
+                self.method_introduction_sync_cues or [],
+                self.summary_sync_cues or [],
+            )
+            for cue in cues
+        }
+        if not set(self.fixed_section_interactions_after_cue).issubset(
+            fixed_cue_ids
+        ):
+            raise ValueError(
+                "fixed-section interaction must follow an authored fixed cue"
+            )
         mode = self.teaching_route.get("verification_mode")
         if mode == "symbolic_verified" and not self.math_steps:
             raise ValueError("symbolic lessons require math_steps")

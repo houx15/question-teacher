@@ -588,6 +588,10 @@ def test_compiler_appends_summary_then_transfer_interaction():
     assert transfer.interaction.hints == [
         draft["transfer_item"]["method_signal"]
     ]
+    assert (
+        transfer.interaction.explanation_after_correct
+        == "你已经识别并使用了同一方法结构。"
+    )
 
 
 def test_compiler_emits_grounded_transfer_as_normal_choice():
