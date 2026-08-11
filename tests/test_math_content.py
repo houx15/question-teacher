@@ -1,6 +1,9 @@
+import time
+
 import pytest
 from pydantic import ValidationError
 
+from app import math_content
 from app.math_content import (
     contains_explicit_choice_answer_leak,
     contains_internal_control_syntax,
@@ -206,9 +209,44 @@ def test_legacy_normalizers_keep_their_exact_results():
     assert normalize_reference_text(r"\(\dfrac{1}{2}\)") == "1/2"
 
 
+def test_cross_artifact_identity_preserves_semantic_grouping_and_equivalences():
+    normalizer = getattr(
+        math_content,
+        "normalize_cross_artifact_math_identity",
+        None,
+    )
+    assert normalizer is not None
+    assert normalizer("x={1,2}") != normalizer("x=12")
+    assert normalizer(r"\frac{1+2}{3}") != normalizer("1+2/3")
+    equivalents = (
+        r"\(\left m−n \right=\dfrac{1}{2}\)",
+        r"$m-n=\tfrac{1}{2}$",
+        "m - n = 1/2",
+    )
+    assert len({normalizer(item) for item in equivalents}) == 1
+
+
+def test_generated_display_content_has_an_explicit_length_limit():
+    assert not is_valid_generated_display_content("x" * 501)
+
+
+def test_internal_control_detection_is_bounded_for_unclosed_tag_prefix():
+    adversarial = "<a" + (" " * 10000)
+    started = time.perf_counter()
+    assert not contains_internal_control_syntax(adversarial)
+    assert time.perf_counter() - started < 0.25
+
+
 def test_bounded_answer_leak_detection_requires_explicit_short_answer_context():
     assert contains_explicit_choice_answer_leak("正确答案是A", "A", "x=1")
     assert not contains_explicit_choice_answer_leak("A出现在代数式中", "A", "x=1")
+    assert not contains_explicit_choice_answer_leak(
+        "a variable appears in ordinary prose", "a", "x=1"
+    )
+    assert contains_explicit_choice_answer_leak("correct:A", "A", "x=1")
+    assert not contains_explicit_choice_answer_leak(
+        "答案是x=10", "option-a", "x=1"
+    )
     assert contains_explicit_choice_answer_leak(
         r"答案应为 \(x=1\)", "option-a", r"\(x=1\)"
     )

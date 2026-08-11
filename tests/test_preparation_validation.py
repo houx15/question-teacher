@@ -391,6 +391,47 @@ def test_solution_trace_rejects_conclusion_mismatch_and_missing_assumption():
     assert_code("trace_assumption_missing", lambda: validate_solution_trace(trace, route()))
 
 
+def test_solution_trace_does_not_collapse_set_grouping_into_digits():
+    brief = ReferenceGroundingBrief.validate_for_reference_answer(
+        {
+            "task_summary": "区分集合解与两位数",
+            "target": "x",
+            "assumptions": [],
+            "reference_conclusion": "x=12",
+            "method_name": "比较法",
+            "reasoning_steps": [
+                {
+                    "step_id": "is-root",
+                    "statement_before": "题目条件",
+                    "operation_explanation": "保留集合分隔符",
+                    "statement_after": "x=12",
+                }
+            ],
+            "check_requests": [],
+            "audit_notes": [],
+        },
+        "x=12",
+    )
+    payload = trace_payload()
+    payload["reference_conclusion"] = "x={1,2}"
+    invalid = SolutionTrace.model_validate(payload)
+    assert_code(
+        "trace_conclusion_mismatch",
+        lambda: validate_solution_trace(
+            invalid,
+            freeze_grounded_route(brief, []),
+        ),
+    )
+
+
+def test_solution_trace_accepts_presentation_only_conclusion_variants():
+    payload = trace_payload()
+    payload["reference_conclusion"] = (
+        r"\(\left m−n\right=\tfrac{1}{2}\)"
+    )
+    validate_solution_trace(SolutionTrace.model_validate(payload), route())
+
+
 def test_solution_trace_rejects_structurally_inconsistent_verified_route_anchor():
     payload = trace_payload()
     payload["source_steps"][0]["source_anchor"]["source_id"] = "route-step-missing"
@@ -450,6 +491,20 @@ def test_teaching_script_rejects_invalid_or_cross_episode_must_teach_reference()
     assert_code("must_teach_ref_invalid", lambda: validate_teaching_script(invalid, trajectory))
 
 
+def test_teaching_script_rejects_duplicate_must_teach_ids_across_episodes():
+    _, trajectory, script, *_ = models()
+    trajectory_value = trajectory.model_dump()
+    trajectory_value["episodes"][1]["must_teach"][0]["must_teach_id"] = "must-1"
+    trajectory = ReasoningTrajectory.model_validate(trajectory_value)
+    script_value = script.model_dump()
+    script_value["clauses"][1]["must_teach_refs"] = []
+    script = TeachingScript.model_validate(script_value)
+    assert_code(
+        "must_teach_id_duplicate",
+        lambda: validate_teaching_script(script, trajectory),
+    )
+
+
 def test_teaching_script_rejects_episode_reordering_and_spoken_markup():
     _, trajectory, script, *_ = models()
     payload = script.model_dump()
@@ -490,6 +545,43 @@ def test_interaction_plan_rejects_correct_answer_leakage_in_wrong_label_and_unkn
     payload["interactions"][0]["options"][1]["display_text"] = "错误项却写了代入已知根"
     invalid = InteractionPlan.model_validate(payload)
     assert_code("interaction_answer_leakage", lambda: validate_interaction_plan(invalid, trajectory, script))
+
+
+def test_interaction_plan_does_not_treat_x1_as_substring_of_x10():
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["options"][0].update(
+        display_text="x=1",
+        canonical_answer="x=1",
+    )
+    interaction["options"][1].update(
+        display_text="x=10",
+        canonical_answer="x=10",
+    )
+    validate_interaction_plan(
+        InteractionPlan.model_validate(payload),
+        trajectory,
+        script,
+    )
+
+
+def test_interaction_plan_short_option_id_requires_answer_announcement():
+    _, trajectory, script, plan, *_ = models()
+    payload = plan.model_dump()
+    interaction = payload["interactions"][0]
+    interaction["options"][0]["option_id"] = "a"
+    interaction["correct_option_id"] = "a"
+    interaction["prompt"] = "a variable appears in ordinary prose"
+    validate_interaction_plan(
+        InteractionPlan.model_validate(payload), trajectory, script
+    )
+    interaction["prompt"] = "correct:A"
+    invalid = InteractionPlan.model_validate(payload)
+    assert_code(
+        "interaction_answer_leakage",
+        lambda: validate_interaction_plan(invalid, trajectory, script),
+    )
 
 
 @pytest.mark.parametrize("visible_field", ("prompt", "hint", "wrong_option"))
@@ -606,6 +698,38 @@ def test_performance_score_rejects_write_content_that_disagrees_with_declared_ob
     payload["cues"][0]["end_actions"] = [action]
     invalid = PerformanceScore.model_validate(payload)
     assert_code("visual_target_invalid", lambda: validate_performance_score(invalid, [], script, plan))
+
+
+def test_performance_score_preserves_grouping_for_first_introduction_identity():
+    _, _, script, plan, score, *_ = models()
+    script_value = script.model_dump()
+    script_value["clauses"][0]["math_references"] = ["x={1,2}"]
+    script = TeachingScript.model_validate(script_value)
+    score_value = score.model_dump()
+    score_value["board_objects"][0]["content"] = "x=12"
+    score_value["cues"][0]["start_actions"][0]["action"]["content"] = "x=12"
+    invalid = PerformanceScore.model_validate(score_value)
+    assert_code(
+        "visual_action_too_early",
+        lambda: validate_performance_score(invalid, [], script, plan),
+    )
+
+
+def test_performance_score_accepts_presentation_only_first_introduction_variants():
+    _, _, script, plan, score, *_ = models()
+    script_value = script.model_dump()
+    script_value["clauses"][0]["math_references"] = [
+        r"\(\left x=\tfrac{1}{2}\right\)"
+    ]
+    script = TeachingScript.model_validate(script_value)
+    score_value = score.model_dump()
+    score_value["board_objects"][0]["content"] = r"$x=\dfrac{1}{2}$"
+    score_value["cues"][0]["start_actions"][0]["action"]["content"] = (
+        r"$x=\dfrac{1}{2}$"
+    )
+    validate_performance_score(
+        PerformanceScore.model_validate(score_value), [], script, plan
+    )
 
 
 def test_performance_score_requires_exact_problem_target_models():
@@ -823,6 +947,119 @@ def test_overlay_transition_must_align_to_cue_boundary_and_cannot_nest():
     assert_code("overlay_transition_invalid", lambda: validate_performance_score(invalid, [], script, plan))
 
 
+def test_overlay_enter_and_return_require_an_intervening_cue():
+    _, _, script, plan, score, *_ = models()
+    payload = score.model_dump()
+    payload["overlay_transitions"] = [
+        {
+            "transition_id": "enter-1",
+            "after_clause_id": "clause-1",
+            "action": "enter",
+            "layer": "comparison",
+        },
+        {
+            "transition_id": "return-1",
+            "after_clause_id": "clause-1",
+            "action": "return",
+            "layer": "comparison",
+        },
+    ]
+    invalid = PerformanceScore.model_validate(payload)
+    assert_code(
+        "overlay_transition_invalid",
+        lambda: validate_performance_score(invalid, [], script, plan),
+    )
+
+
+def large_performance_models(clause_count):
+    script_value = script_payload()
+    clauses = []
+    board_objects = []
+    cues = []
+    for index in range(clause_count):
+        clause_id = "large-clause-%d" % index
+        content = "x=%d" % index
+        clauses.append(
+            clause_payload(
+                0,
+                clause_id=clause_id,
+                episode_id="episode-1",
+                math_reference=content,
+            )
+        )
+        clauses[-1]["must_teach_refs"] = []
+        board_id = "large-board-%d" % index
+        board_objects.append(
+            {"board_object_id": board_id, "content": content}
+        )
+        cues.append(
+            {
+                "cue_id": "large-cue-%d" % index,
+                "clause_ids": [clause_id],
+                "start_actions": [
+                    {
+                        "clause_id": clause_id,
+                        "action": {
+                            "surface": "board",
+                            "type": "write",
+                            "target": board_id,
+                            "content": content,
+                        },
+                    }
+                ],
+            }
+        )
+    script_value.update(
+        clauses=clauses,
+        opening_clause_ids=[clauses[0]["clause_id"]],
+        method_introduction_clause_ids=[clauses[1]["clause_id"]],
+        closing_summary_clause_ids=[clauses[-1]["clause_id"]],
+    )
+    return (
+        TeachingScript.model_validate(script_value),
+        PerformanceScore.model_validate(
+            {
+                "cues": cues,
+                "board_objects": board_objects,
+                "overlay_transitions": [],
+            }
+        ),
+    )
+
+
+def test_performance_score_handles_large_valid_artifact_with_bounded_state():
+    _, _, _, plan, *_ = models()
+    script, score = large_performance_models(128)
+    validate_performance_score(score, [], script, plan)
+
+
+def test_performance_score_rejects_artifacts_over_explicit_count_bound():
+    _, _, _, plan, *_ = models()
+    script, score = large_performance_models(257)
+    assert_code(
+        "artifact_size_invalid",
+        lambda: validate_performance_score(score, [], script, plan),
+    )
+
+
+def test_performance_score_rejects_excessive_math_reference_count():
+    _, _, script, plan, score, *_ = models()
+    script_value = script.model_dump()
+    script_value["clauses"][0]["math_references"] = [STATES[0]] + [
+        "extra-reference-%d" % index for index in range(2048)
+    ]
+    invalid_script = TeachingScript.model_validate(script_value)
+    assert_code(
+        "artifact_size_invalid",
+        lambda: validate_performance_score(
+            score,
+            [],
+            invalid_script,
+            plan,
+        ),
+    )
+
+
 def test_simulation_report_requires_exact_episode_coverage_and_no_private_answers():
     _, trajectory, _, plan, _, report, _ = models()
     payload = report.model_dump()
@@ -866,6 +1103,45 @@ def test_simulation_report_accepts_nonleaking_incorrect_option_observation():
     ]
     validate_simulation_report(
         SimulationReport.model_validate(payload), trajectory, plan
+    )
+
+
+def test_simulation_private_answers_use_bounded_math_tokens():
+    _, trajectory, _, plan, _, report, _ = models()
+    plan_value = plan.model_dump()
+    transfer = plan_value["transfer_item"]
+    transfer["expected_answer"] = "x=1"
+    transfer["options"][0].update(
+        label=r"\(x=1\)",
+        canonical_answer="x=1",
+    )
+    plan = InteractionPlan.model_validate(plan_value)
+    report_value = report.model_dump()
+    report_value["interaction_results"] = ["learner tested x=10 first"]
+    validate_simulation_report(
+        SimulationReport.model_validate(report_value), trajectory, plan
+    )
+
+
+def test_simulation_short_private_option_id_requires_explicit_announcement():
+    _, trajectory, _, plan, _, report, _ = models()
+    plan_value = plan.model_dump()
+    transfer = plan_value["transfer_item"]
+    transfer["options"][0]["option_id"] = "a"
+    transfer["correct_option_id"] = "a"
+    plan = InteractionPlan.model_validate(plan_value)
+    report_value = report.model_dump()
+    report_value["interaction_results"] = [
+        "learner made a careful choice"
+    ]
+    validate_simulation_report(
+        SimulationReport.model_validate(report_value), trajectory, plan
+    )
+    report_value["interaction_results"] = ["correct:A"]
+    invalid = SimulationReport.model_validate(report_value)
+    assert_code(
+        "simulation_private_answer_invalid",
+        lambda: validate_simulation_report(invalid, trajectory, plan),
     )
 
 
@@ -1003,6 +1279,40 @@ def test_blocking_signature_uses_only_sorted_material_identity_fields():
     assert blocking_signature(first) == blocking_signature(second)
     assert len(blocking_signature(first)) == 64
     assert blocking_signature(first).islower()
+
+
+def test_blocking_signature_ignores_duplicate_semantic_findings():
+    finding = {
+        "finding_id": "one",
+        "severity": "material",
+        "artifact_type": "teaching_script",
+        "artifact_id": "clause-2",
+        "criterion": "必须解释理由",
+        "evidence": "wording one",
+        "responsible_role": "script_teacher",
+        "requested_change": "change one",
+    }
+    single = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [finding],
+            "approval_summary": "revise",
+        }
+    )
+    duplicate = copy.deepcopy(finding)
+    duplicate.update(
+        finding_id="two",
+        evidence="wording two",
+        requested_change="change two",
+    )
+    repeated = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [finding, duplicate],
+            "approval_summary": "revise",
+        }
+    )
+    assert blocking_signature(single) == blocking_signature(repeated)
 
 
 def test_prepared_lesson_rejects_misaligned_rubric_version():

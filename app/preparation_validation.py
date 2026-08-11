@@ -7,13 +7,15 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Set, Tuple, Union
 
 from app.math_content import (
+    contains_bounded_answer_token,
+    contains_cross_artifact_math_identity,
     contains_explicit_choice_answer_leak,
     contains_internal_control_syntax,
     contains_math_markup,
     is_valid_generated_display_content,
     normalize_answer_leak_text,
     normalize_grounded_choice_option_label,
-    normalize_reference_text,
+    normalize_cross_artifact_math_identity,
 )
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.preparation_models import (
@@ -32,6 +34,9 @@ from app.teaching_route import FrozenTeachingRoute
 
 ProblemTargets = Union[List[ProblemFocusTarget], Tuple[ProblemFocusTarget, ...]]
 ActionKey = Tuple[str, str]
+MAX_PERFORMANCE_CLAUSES = 256
+MAX_PERFORMANCE_ACTIONS = 2048
+MAX_PERFORMANCE_MATH_REFERENCES = 2048
 
 
 class PreparationValidationError(ValueError):
@@ -74,7 +79,9 @@ def validate_solution_trace(
     _require_exact(trace, SolutionTrace, "trace")
     _require_exact(teaching_route, FrozenTeachingRoute, "teaching_route")
     route_payload = teaching_route.to_prompt_payload()
-    if normalize_reference_text(trace.reference_conclusion) != normalize_reference_text(
+    if normalize_cross_artifact_math_identity(
+        trace.reference_conclusion
+    ) != normalize_cross_artifact_math_identity(
         teaching_route.final_conclusion
     ):
         _fail(
@@ -161,6 +168,17 @@ def validate_teaching_script(
         episode.episode_id: index
         for index, episode in enumerate(trajectory.episodes)
     }
+    must_teach_ids = [
+        item.must_teach_id
+        for episode in trajectory.episodes
+        for item in episode.must_teach
+    ]
+    if len(must_teach_ids) != len(set(must_teach_ids)):
+        _fail(
+            "must_teach_id_duplicate",
+            "reasoning_trajectory",
+            "Must-teach IDs must be globally unique across episodes.",
+        )
     must_teach_owner = {
         item.must_teach_id: episode.episode_id
         for episode in trajectory.episodes
@@ -233,19 +251,17 @@ def _leaks_correct_answer(interaction: object) -> bool:
         correct.canonical_answer,
     ):
         return True
-    correct_forms = {
-        normalize_answer_leak_text(correct.display_text),
-        normalize_answer_leak_text(correct.canonical_answer),
-    }
+    correct_forms = {correct.display_text, correct.canonical_answer}
     correct_forms.discard("")
     for option in interaction.options:
         if option.option_id == interaction.correct_option_id:
             continue
-        wrong_visible = (
-            normalize_answer_leak_text(option.display_text),
-            normalize_answer_leak_text(option.canonical_answer),
-        )
-        if any(form and form in item for form in correct_forms for item in wrong_visible):
+        wrong_visible = (option.display_text, option.canonical_answer)
+        if any(
+            contains_bounded_answer_token(item, form)
+            for form in correct_forms
+            for item in wrong_visible
+        ):
             return True
     return False
 
@@ -282,15 +298,11 @@ def _leaks_concealed_content(
         for item in interaction.options
         if item.option_id != interaction.correct_option_id
     )
-    normalized_visible = [
-        normalize_answer_leak_text(item) for item in visible_parts
-    ]
     for target_id in interaction.concealed_targets:
         for content in concealed_registry[target_id]:
-            normalized_content = normalize_answer_leak_text(content)
-            if normalized_content and any(
-                normalized_content in visible
-                for visible in normalized_visible
+            if content and any(
+                contains_bounded_answer_token(visible, content)
+                for visible in visible_parts
             ):
                 return True
     return False
@@ -526,6 +538,7 @@ def _score_moments(
 
     moments = []
     active_layer = "base"
+    active_layer_start_position = None
     current_cues = []
     for cue in score.cues:
         current_cues.append(cue)
@@ -545,14 +558,28 @@ def _score_moments(
                         "Nested overlay layers are not supported.",
                     )
                 active_layer = transition.layer
+                active_layer_start_position = script_positions[
+                    transition.after_clause_id
+                ]
             elif active_layer != transition.layer:
                 _fail(
                     "overlay_transition_invalid",
                     transition.transition_id,
                     "Overlay return does not match the active layer.",
                 )
+            elif (
+                active_layer_start_position is not None
+                and script_positions[transition.after_clause_id]
+                <= active_layer_start_position
+            ):
+                _fail(
+                    "overlay_transition_invalid",
+                    transition.transition_id,
+                    "Overlay enter and return require an intervening cue.",
+                )
             else:
                 active_layer = "base"
+                active_layer_start_position = None
     if active_layer != "base":
         _fail(
             "overlay_transition_invalid",
@@ -626,6 +653,28 @@ def validate_performance_score(
     _validate_problem_targets(problem_targets)
     _require_exact(script, TeachingScript, "script")
     _require_exact(plan, InteractionPlan, "plan")
+    action_count = sum(
+        len(cue.lead_actions)
+        + len(cue.start_actions)
+        + len(cue.end_actions)
+        for cue in score.cues
+    )
+    math_reference_count = sum(
+        len(clause.math_references) for clause in script.clauses
+    )
+    if (
+        len(script.clauses) > MAX_PERFORMANCE_CLAUSES
+        or len(score.cues) > MAX_PERFORMANCE_CLAUSES
+        or len(score.board_objects) > MAX_PERFORMANCE_CLAUSES
+        or len(problem_targets) > MAX_PERFORMANCE_CLAUSES
+        or action_count > MAX_PERFORMANCE_ACTIONS
+        or math_reference_count > MAX_PERFORMANCE_MATH_REFERENCES
+    ):
+        _fail(
+            "artifact_size_invalid",
+            "performance_score",
+            "Performance artifact exceeds deterministic validation bounds.",
+        )
     script_ids = [item.clause_id for item in script.clauses]
     script_positions = {item: index for index, item in enumerate(script_ids)}
     clauses = {item.clause_id: item for item in script.clauses}
@@ -680,8 +729,10 @@ def validate_performance_score(
             if (
                 bound.action.type == "write"
                 and bound.action.target in board_objects
-                and normalize_reference_text(bound.action.content or "")
-                != normalize_reference_text(
+                and normalize_cross_artifact_math_identity(
+                    bound.action.content or ""
+                )
+                != normalize_cross_artifact_math_identity(
                     board_objects[bound.action.target].content
                 )
             ):
@@ -701,37 +752,55 @@ def validate_performance_score(
     except VisualActionValidationError as error:
         _fail(error.code, "performance_score", error.detail)
 
-    available_by_clause = {}
-    referenced_math = set()
-    for clause in script.clauses:
-        referenced_math.update(
-            normalize_reference_text(item)
+    references_by_position = []
+    first_reference_position = {}
+    for position, clause in enumerate(script.clauses):
+        references = tuple(
+            normalize_cross_artifact_math_identity(item)
             for item in clause.math_references
         )
-        available_by_clause[clause.clause_id] = set(referenced_math)
+        references_by_position.append(references)
+        for reference in references:
+            first_reference_position.setdefault(reference, position)
     problem_content = {
-        item.target_id: normalize_reference_text(item.math_text)
+        item.target_id: normalize_cross_artifact_math_identity(item.math_text)
         for item in problem_targets
     }
+    problem_first_reference_position = {}
+    for target_id, target_content in problem_content.items():
+        first_position = None
+        for position, references in enumerate(references_by_position):
+            if any(
+                contains_cross_artifact_math_identity(
+                    reference,
+                    target_content,
+                )
+                for reference in references
+            ):
+                first_position = position
+                break
+        problem_first_reference_position[target_id] = first_position
     current_board_content = {}
     for cue in score.cues:
         for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions):
             action = bound.action
-            available = available_by_clause[bound.clause_id]
+            bound_position = script_positions[bound.clause_id]
             if action.surface == "problem":
-                target_content = problem_content[action.target]
-                if not any(
-                    target_content == item or target_content in item
-                    for item in available
-                ):
+                first_position = problem_first_reference_position[action.target]
+                if first_position is None or first_position > bound_position:
                     _fail(
                         "visual_action_too_early",
                         bound.clause_id,
                         "Problem visual target appears before its bound clause references it.",
                     )
             if action.type in {"write", "transform"}:
-                normalized_content = normalize_reference_text(action.content or "")
-                if normalized_content not in available:
+                normalized_content = normalize_cross_artifact_math_identity(
+                    action.content or ""
+                )
+                if first_reference_position.get(
+                    normalized_content,
+                    len(script.clauses),
+                ) > bound_position:
                     _fail(
                         "visual_action_too_early",
                         bound.clause_id,
@@ -742,8 +811,13 @@ def validate_performance_score(
                 action.surface == "board"
                 and action.target in current_board_content
                 and action.type not in {"clear_focus", "fade"}
-                and normalize_reference_text(current_board_content[action.target])
-                not in available
+                and first_reference_position.get(
+                    normalize_cross_artifact_math_identity(
+                        current_board_content[action.target]
+                    ),
+                    len(script.clauses),
+                )
+                > bound_position
             ):
                 _fail(
                     "visual_action_too_early",
@@ -756,14 +830,17 @@ def validate_performance_score(
                 and action.content is not None
                 and len(current_board_content) == 1
                 and action.target in current_board_content
-                and normalize_reference_text(action.content)
-                == normalize_reference_text(current_board_content[action.target])
+                and normalize_cross_artifact_math_identity(action.content)
+                == normalize_cross_artifact_math_identity(
+                    current_board_content[action.target]
+                )
             ):
                 _fail(
                     "non_discriminating_emphasis",
                     bound.clause_id,
                     "Label annotation exactly repeats the sole visible target content.",
                 )
+
 
 def validate_simulation_report(
     report: SimulationReport,
@@ -781,16 +858,17 @@ def validate_simulation_report(
             "simulation_report",
             "Simulation must contain exactly one result for every reasoning episode.",
         )
-    private_tokens = {"correct_option_id", "canonical_answer"}
+    private_values = {"correct_option_id", "canonical_answer"}
+    private_option_ids = []
     for interaction in plan.interactions:
         correct = next(
             item
             for item in interaction.options
             if item.option_id == interaction.correct_option_id
         )
-        private_tokens.update(
+        private_option_ids.append(interaction.correct_option_id)
+        private_values.update(
             {
-                interaction.correct_option_id,
                 correct.display_text,
                 correct.canonical_answer,
                 interaction.correct_feedback,
@@ -802,20 +880,36 @@ def validate_simulation_report(
         for item in transfer.options
         if item.option_id == transfer.correct_option_id
     )
-    private_tokens.update(
+    private_option_ids.append(transfer.correct_option_id)
+    private_values.update(
         {
             transfer.expected_answer,
-            transfer.correct_option_id,
             transfer_correct.canonical_answer,
             transfer_correct.label,
         }
     )
-    normalized_private = {
-        normalize_answer_leak_text(item) for item in private_tokens
-    }
     for result in report.interaction_results:
         normalized = normalize_answer_leak_text(result)
-        if any(item and item in normalized for item in normalized_private):
+        leaks_semantic_value = any(
+            item and contains_bounded_answer_token(result, item)
+            for item in private_values
+        )
+        leaks_option_id = any(
+            (
+                option_id_normalized in normalized
+                if len(option_id_normalized) >= 4
+                else contains_explicit_choice_answer_leak(
+                    result,
+                    option_id,
+                    "",
+                )
+            )
+            for option_id in private_option_ids
+            for option_id_normalized in [
+                normalize_answer_leak_text(option_id)
+            ]
+        )
+        if leaks_semantic_value or leaks_option_id:
             _fail(
                 "simulation_private_answer_invalid",
                 "simulation_report",
@@ -839,15 +933,17 @@ def validate_review_decision(decision: LessonReviewDecision) -> None:
 def blocking_signature(decision: LessonReviewDecision) -> str:
     _require_exact(decision, LessonReviewDecision, "decision")
     canonical = sorted(
-        (
-            item.severity,
-            item.artifact_type,
-            item.artifact_id,
-            item.criterion,
-            item.responsible_role,
+        set(
+            (
+                item.severity,
+                item.artifact_type,
+                item.artifact_id,
+                item.criterion,
+                item.responsible_role,
+            )
+            for item in decision.findings
+            if item.severity in {"blocking", "material"}
         )
-        for item in decision.findings
-        if item.severity in {"blocking", "material"}
     )
     payload = json.dumps(
         canonical,
