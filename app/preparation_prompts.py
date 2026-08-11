@@ -1,6 +1,7 @@
 """Pure prompt builders for the bounded lesson-preparation roles."""
 
 import json
+import re
 from enum import Enum
 from typing import Any, Dict, Mapping, Optional, Sequence
 
@@ -101,6 +102,20 @@ _REPAIR_KEYS = (
     "requested_changes",
     "current_artifact_version",
     "retained_artifacts",
+)
+_GENERATED_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_TEACHING_ROUTE_REQUIRED_KEYS = {
+    "verification_mode",
+    "consistency_status",
+    "method_name",
+    "final_conclusion",
+    "assumptions",
+    "steps",
+    "check_evidence",
+}
+_TEACHING_ROUTE_OPTIONAL_KEYS = {"symbolic_context"}
+_TEACHING_ROUTE_KEYS = (
+    _TEACHING_ROUTE_REQUIRED_KEYS | _TEACHING_ROUTE_OPTIONAL_KEYS
 )
 _CAPABILITY_ENUMS = {
     "interaction_kinds": {"choice"},
@@ -291,14 +306,122 @@ def _prepared_artifacts_projection(
     }
 
 
+def _teaching_route_projection(teaching_route: Any) -> Dict[str, Any]:
+    to_prompt_payload = getattr(teaching_route, "to_prompt_payload", None)
+    if callable(to_prompt_payload):
+        source = to_prompt_payload()
+    elif isinstance(teaching_route, Mapping):
+        source = teaching_route
+    else:
+        raise TypeError(
+            "teaching_route must be a Mapping or expose to_prompt_payload()"
+        )
+    if not isinstance(source, Mapping):
+        raise TypeError("teaching_route payload must be a mapping")
+    if any(not isinstance(key, str) for key in source):
+        raise TypeError("teaching_route keys must be strings")
+    provided_keys = set(source)
+    unknown = provided_keys - _TEACHING_ROUTE_KEYS
+    if unknown:
+        raise ValueError(
+            "unknown teaching_route keys: %s"
+            % ", ".join(sorted(unknown))
+        )
+    missing = _TEACHING_ROUTE_REQUIRED_KEYS - provided_keys
+    if missing:
+        raise ValueError(
+            "missing teaching_route keys: %s"
+            % ", ".join(sorted(missing))
+        )
+    payload = _mapping_payload(source, "teaching_route")
+    if _contains_key(payload, "reference_solution_text"):
+        raise ValueError(
+            "teaching_route must not contain reference_solution_text"
+        )
+    return payload
+
+
+def _nonblank_string_list(value: Any, label: str) -> Any:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise ValueError("repair_request.%s must be a nonblank list" % label)
+    return list(value)
+
+
+def _retained_artifacts_projection(
+    retained_artifacts: Any,
+) -> Dict[str, Any]:
+    if not isinstance(retained_artifacts, Mapping):
+        raise TypeError("repair_request.retained_artifacts must be a mapping")
+    if any(not isinstance(key, str) for key in retained_artifacts):
+        raise TypeError(
+            "repair_request.retained_artifacts keys must be strings"
+        )
+    unknown = set(retained_artifacts) - set(_PREPARED_ARTIFACT_TYPES)
+    if unknown:
+        raise ValueError(
+            "repair_request.retained_artifacts has unknown keys: %s"
+            % ", ".join(sorted(unknown))
+        )
+    return {
+        key: _artifact_payload(
+            value,
+            _PREPARED_ARTIFACT_TYPES[key],
+            "repair_request.retained_artifacts.%s" % key,
+        )
+        for key, value in retained_artifacts.items()
+    }
+
+
 def _repair_projection(repair: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
     if repair is None:
         return None
-    payload = _mapping_payload(repair, "repair")
+    if not isinstance(repair, Mapping):
+        raise TypeError("repair_request must be a mapping")
+    if any(not isinstance(key, str) for key in repair):
+        raise TypeError("repair_request keys must be strings")
+    unknown = set(repair) - set(_REPAIR_KEYS)
+    if unknown:
+        raise ValueError(
+            "repair_request has unknown keys: %s"
+            % ", ".join(sorted(unknown))
+        )
     for key in _REPAIR_KEYS:
-        if key not in payload:
+        if key not in repair:
             raise ValueError("repair_request is missing required key: %s" % key)
-    return payload
+
+    finding_ids = repair["finding_ids"]
+    if (
+        not isinstance(finding_ids, list)
+        or not finding_ids
+        or any(
+            not isinstance(item, str)
+            or _GENERATED_ID_PATTERN.fullmatch(item) is None
+            for item in finding_ids
+        )
+    ):
+        raise ValueError(
+            "repair_request.finding_ids must be a nonempty list of GeneratedId-compatible values"
+        )
+    version = repair["current_artifact_version"]
+    if type(version) is not int or version <= 0:
+        raise ValueError(
+            "repair_request.current_artifact_version must be a positive integer"
+        )
+    return {
+        "finding_ids": list(finding_ids),
+        "evidence": _nonblank_string_list(repair["evidence"], "evidence"),
+        "requested_changes": _nonblank_string_list(
+            repair["requested_changes"], "requested_changes"
+        ),
+        "current_artifact_version": version,
+        "retained_artifacts": _retained_artifacts_projection(
+            repair["retained_artifacts"]
+        ),
+    }
 
 
 def _with_repair(payload: Dict[str, Any], repair: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -332,7 +455,7 @@ def solution_trace_prompt(
     payload = _problem_projection(problem, include_reference_solution=True)
     payload.update(
         {
-            "teaching_route": _mapping_payload(teaching_route, "teaching_route"),
+            "teaching_route": _teaching_route_projection(teaching_route),
             "focus_targets": _problem_targets_projection(focus_targets),
         }
     )

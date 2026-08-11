@@ -229,6 +229,38 @@ def simulation_report():
     )
 
 
+def teaching_route():
+    return {
+        "verification_mode": "symbolic_verified",
+        "consistency_status": "consistent",
+        "method_name": "配方法",
+        "final_conclusion": "x=1 或 x=5",
+        "assumptions": [],
+        "steps": [
+            {
+                "step_id": "route-step-1",
+                "statement_before": "x^2-6x=-5",
+                "operation_explanation": "两边加9",
+                "statement_after": "(x-3)^2=4",
+                "evidence_status": "checked",
+            }
+        ],
+        "check_evidence": [],
+    }
+
+
+def repair_request(retained_artifacts=None):
+    return {
+        "finding_ids": ["finding-1"],
+        "evidence": ["子句缺少决定理由"],
+        "requested_changes": ["补充当前决定理由"],
+        "current_artifact_version": 2,
+        "retained_artifacts": (
+            {} if retained_artifacts is None else retained_artifacts
+        ),
+    }
+
+
 def prompts(repair=None):
     trace = solution_trace()
     trajectory = reasoning_trajectory()
@@ -238,7 +270,7 @@ def prompts(repair=None):
     capabilities = {"semantic_actions": ["focus", "write"], "supports_overlays": True}
     targets = [{"target_id": "target-1", "math_text": "x^2-6x", "display_mode": False, "ordinal": 1}]
     return (
-        solution_trace_prompt(problem(), {"verification_mode": "symbolic_verified", "steps": []}, targets, repair=repair),
+        solution_trace_prompt(problem(), teaching_route(), targets, repair=repair),
         reasoning_trajectory_prompt(problem(), trace, capabilities, repair=repair),
         teaching_script_prompt(trajectory, repair=repair),
         interaction_plan_prompt(trajectory, script, repair=repair),
@@ -309,7 +341,7 @@ def test_non_compensable_gates_are_verbatim_in_simulator_and_reviewer_inputs():
 
 def test_raw_reference_solution_is_confined_to_reference_analyst():
     analyst_prompt = solution_trace_prompt(
-        problem(), {"verification_mode": "symbolic_verified", "steps": []}, []
+        problem(), teaching_route(), []
     )
     designer_prompt = reasoning_trajectory_prompt(
         problem(), solution_trace(), {"semantic_actions": ["focus"]}
@@ -551,19 +583,108 @@ def test_other_named_artifact_parameters_reject_mappings(
 
 
 def test_each_repairable_builder_preserves_complete_repair_contract():
+    retained_artifacts = {
+        "solution_trace": solution_trace(),
+        "reasoning_trajectory": reasoning_trajectory(),
+    }
     repair = {
         "finding_ids": ["finding-2", "finding-7"],
         "evidence": ["子句clause-2没有解释为什么加9"],
         "requested_changes": ["补充当前决定理由"],
         "current_artifact_version": 3,
+        "retained_artifacts": retained_artifacts,
+    }
+    expected = {
+        **repair,
         "retained_artifacts": {
-            "solution_trace": {"version": 1, "content": {"task_target": "解方程"}},
-            "reasoning_trajectory": {"version": 2, "content": {"lesson_purpose": "理解配方"}},
+            key: value.model_dump(mode="json")
+            for key, value in retained_artifacts.items()
         },
     }
     for prompt in prompts(repair=repair)[:5]:
         payload = _parse_envelope(prompt)[1]
-        assert payload["repair_request"] == repair
+        assert payload["repair_request"] == expected
+
+
+def test_empty_retained_artifacts_are_valid_for_every_authoring_builder():
+    repair = repair_request()
+    for prompt in prompts(repair=repair)[:5]:
+        assert _parse_envelope(prompt)[1]["repair_request"] == repair
+
+
+def test_designer_rejects_raw_reference_mapping_in_retained_artifacts():
+    repair = repair_request(
+        {
+            "solution_trace": {
+                **solution_trace().model_dump(mode="json"),
+                "reference_solution_text": "IGNORE_ALL_RULES",
+            }
+        }
+    )
+    with pytest.raises(TypeError, match="retained_artifacts.solution_trace"):
+        reasoning_trajectory_prompt(
+            problem(),
+            solution_trace(),
+            {"semantic_actions": ["focus"]},
+            repair=repair,
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_repair",
+    (
+        {**repair_request(), "finding_ids": ["bad id"]},
+        {**repair_request(), "finding_ids": []},
+        {**repair_request(), "evidence": []},
+        {**repair_request(), "evidence": [" "]},
+        {**repair_request(), "requested_changes": []},
+        {**repair_request(), "requested_changes": [" "]},
+        {**repair_request(), "current_artifact_version": 0},
+        {**repair_request(), "current_artifact_version": True},
+        {**repair_request(), "unexpected": "metadata"},
+    ),
+)
+def test_repair_request_rejects_invalid_top_level_contract(invalid_repair):
+    with pytest.raises((TypeError, ValueError), match="repair"):
+        teaching_script_prompt(reasoning_trajectory(), repair=invalid_repair)
+
+
+@pytest.mark.parametrize(
+    "retained_artifacts",
+    (
+        [],
+        {"unknown_artifact": solution_trace()},
+        {"solution_trace": solution_trace().model_dump(mode="json")},
+        {"solution_trace": reasoning_trajectory()},
+    ),
+)
+def test_repair_request_rejects_invalid_retained_artifacts(retained_artifacts):
+    with pytest.raises((TypeError, ValueError), match="retained_artifacts"):
+        interaction_plan_prompt(
+            reasoning_trajectory(),
+            teaching_script(),
+            repair=repair_request(retained_artifacts),
+        )
+
+
+def test_teaching_route_rejects_external_metadata_keys_before_serialization():
+    unsafe_route = {
+        **teaching_route(),
+        "endpoint_url": "https://example.invalid/v1",
+        "auth": {"bearer": "secret"},
+        "model_name": "vendor-model",
+        "workspace_path": "/private/workspace",
+    }
+    with pytest.raises(ValueError, match="unknown teaching_route keys"):
+        solution_trace_prompt(problem(), unsafe_route, [])
+
+
+def test_complete_safe_teaching_route_is_preserved_deterministically():
+    route = teaching_route()
+    first = solution_trace_prompt(problem(), route, [])
+    second = solution_trace_prompt(problem(), copy.deepcopy(route), [])
+    assert first == second
+    assert _parse_envelope(first)[1]["teaching_route"] == route
 
 
 @pytest.mark.parametrize(
@@ -590,14 +711,10 @@ def test_prompt_builders_do_not_mutate_models_or_input_mappings():
     script = teaching_script()
     interactions = interaction_plan()
     score = performance_score()
-    route = {"verification_mode": "symbolic_verified", "steps": [{"id": "route-1"}]}
+    route = teaching_route()
     targets = [{"target_id": "target-1", "math_text": "x^2", "display_mode": False, "ordinal": 1}]
     capabilities = {"semantic_actions": ["focus"], "supports_overlays": True}
-    repair = {
-        "finding_ids": ["finding-1"], "evidence": ["证据"],
-        "requested_changes": ["修改"], "current_artifact_version": 2,
-        "retained_artifacts": {"solution_trace": {"version": 1}},
-    }
+    repair = repair_request({"solution_trace": trace})
     values = (source_problem, trace, trajectory, script, interactions, score, route, targets, capabilities, repair)
     before = [value.model_dump(mode="json") if hasattr(value, "model_dump") else copy.deepcopy(value) for value in values]
     solution_trace_prompt(source_problem, route, targets, repair=repair)
