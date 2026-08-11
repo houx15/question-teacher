@@ -3,7 +3,7 @@
 import json
 import re
 from enum import Enum
-from typing import Any, Dict, Optional, Sequence
+from typing import Optional, Union
 
 from pydantic import BaseModel
 
@@ -23,6 +23,23 @@ from app.preparation_models import (
 )
 from app.schemas import ProblemFocusTarget, ProblemInput
 from app.teaching_route import FrozenTeachingRoute
+
+
+_JsonValue = Union[
+    None,
+    bool,
+    int,
+    float,
+    str,
+    dict[str, "_JsonValue"],
+    list["_JsonValue"],
+]
+_JsonObject = dict[str, _JsonValue]
+_InputDict = dict[str, object]
+_ProblemTargets = Union[
+    list[ProblemFocusTarget],
+    tuple[ProblemFocusTarget, ...],
+]
 
 
 _INERT_EVIDENCE_RULE = (
@@ -106,6 +123,9 @@ _REPAIR_KEYS = (
     "retained_artifacts",
 )
 _GENERATED_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+MAX_PROMPT_PAYLOAD_BYTES = 256 * 1024
+MAX_REPAIR_ITEMS = 64
+MAX_REPAIR_TEXT_CHARS = 1000
 _CAPABILITY_ENUMS = {
     "interaction_kinds": {"choice"},
     "surfaces": {"problem", "board"},
@@ -140,7 +160,7 @@ _PREPARED_ARTIFACT_TYPES = {
 }
 
 
-def _json_data(value: Any) -> Any:
+def _json_data(value: object) -> _JsonValue:
     if isinstance(value, BaseModel):
         return _json_data(value.model_dump(mode="json"))
     if isinstance(value, Enum):
@@ -154,7 +174,7 @@ def _json_data(value: Any) -> Any:
     raise TypeError("prompt payload value is not safely JSON serializable: %s" % type(value).__name__)
 
 
-def _mapping_payload(value: Any, label: str) -> Dict[str, Any]:
+def _mapping_payload(value: object, label: str) -> _JsonObject:
     if type(value) is not dict:
         raise TypeError("%s must be an exact built-in dict" % label)
     payload = _json_data(value)
@@ -162,10 +182,10 @@ def _mapping_payload(value: Any, label: str) -> Dict[str, Any]:
 
 
 def _artifact_payload(
-    value: Any,
-    expected_type: Any,
+    value: object,
+    expected_type: type[BaseModel],
     label: str,
-) -> Dict[str, Any]:
+) -> _JsonObject:
     if type(value) is not expected_type:
         raise TypeError(
             "%s must be an exact %s model"
@@ -177,7 +197,7 @@ def _artifact_payload(
 def _problem_projection(
     problem: ProblemInput,
     include_reference_solution: bool,
-) -> Dict[str, Any]:
+) -> _JsonObject:
     if type(problem) is not ProblemInput:
         raise TypeError("problem must be an exact ProblemInput model")
     source = problem.model_dump(mode="json")
@@ -194,8 +214,8 @@ def _problem_projection(
 
 
 def _problem_targets_projection(
-    problem_targets: Sequence[ProblemFocusTarget],
-) -> Any:
+    problem_targets: _ProblemTargets,
+) -> list[_JsonObject]:
     if type(problem_targets) not in (list, tuple):
         raise TypeError(
             "problem_targets must be a sequence of exact ProblemFocusTarget models"
@@ -210,7 +230,7 @@ def _problem_targets_projection(
     return projected
 
 
-def _capabilities_projection(capabilities: Dict[str, Any]) -> Dict[str, Any]:
+def _capabilities_projection(capabilities: _InputDict) -> _JsonObject:
     if type(capabilities) is not dict:
         raise TypeError("capabilities must be an exact built-in dict")
     raw = _mapping_payload(capabilities, "capabilities")
@@ -218,9 +238,7 @@ def _capabilities_projection(capabilities: Dict[str, Any]) -> Dict[str, Any]:
         raise TypeError("capability keys must be strings")
     unknown = set(raw) - _CAPABILITY_KEYS
     if unknown:
-        raise ValueError(
-            "unknown capability keys: %s" % ", ".join(sorted(unknown))
-        )
+        raise ValueError("unknown capability keys")
 
     for key, allowed_values in _CAPABILITY_ENUMS.items():
         if key not in raw:
@@ -251,8 +269,8 @@ def _capabilities_projection(capabilities: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _prepared_artifacts_projection(
-    prepared_artifacts: Dict[str, Any],
-) -> Dict[str, Any]:
+    prepared_artifacts: _InputDict,
+) -> _JsonObject:
     if type(prepared_artifacts) is not dict:
         raise TypeError("prepared_artifacts must be an exact built-in dict")
     raw = dict(prepared_artifacts)
@@ -262,10 +280,7 @@ def _prepared_artifacts_projection(
     expected_keys = set(_PREPARED_ARTIFACT_TYPES)
     unknown = provided_keys - expected_keys
     if unknown:
-        raise ValueError(
-            "unknown prepared artifact keys: %s"
-            % ", ".join(sorted(unknown))
-        )
+        raise ValueError("unknown prepared artifact keys")
     missing = expected_keys - provided_keys
     if missing:
         raise ValueError(
@@ -280,7 +295,9 @@ def _prepared_artifacts_projection(
     }
 
 
-def _teaching_route_projection(teaching_route: Any) -> Dict[str, Any]:
+def _teaching_route_projection(
+    teaching_route: FrozenTeachingRoute,
+) -> _JsonObject:
     if type(teaching_route) is not FrozenTeachingRoute:
         raise TypeError(
             "teaching_route must be an exact FrozenTeachingRoute"
@@ -290,19 +307,23 @@ def _teaching_route_projection(teaching_route: Any) -> Dict[str, Any]:
     )
 
 
-def _nonblank_string_list(value: Any, label: str) -> Any:
+def _nonblank_string_list(value: object, label: str) -> list[str]:
     if (
         type(value) is not list
         or not value
         or any(type(item) is not str or not item.strip() for item in value)
     ):
         raise ValueError("repair_request.%s must be a nonblank list" % label)
+    if len(value) > MAX_REPAIR_ITEMS:
+        raise ValueError("repair_request_%s_item_limit" % label)
+    if any(len(item) > MAX_REPAIR_TEXT_CHARS for item in value):
+        raise ValueError("repair_request_%s_text_limit" % label)
     return list(value)
 
 
 def _retained_artifacts_projection(
-    retained_artifacts: Any,
-) -> Dict[str, Any]:
+    retained_artifacts: object,
+) -> _JsonObject:
     if type(retained_artifacts) is not dict:
         raise TypeError(
             "repair_request.retained_artifacts must be an exact built-in dict"
@@ -314,10 +335,7 @@ def _retained_artifacts_projection(
         )
     unknown = set(raw) - set(_PREPARED_ARTIFACT_TYPES)
     if unknown:
-        raise ValueError(
-            "repair_request.retained_artifacts has unknown keys: %s"
-            % ", ".join(sorted(unknown))
-        )
+        raise ValueError("repair_request.retained_artifacts has unknown keys")
     return {
         key: _artifact_payload(
             value,
@@ -328,7 +346,9 @@ def _retained_artifacts_projection(
     }
 
 
-def _repair_projection(repair: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _repair_projection(
+    repair: Optional[_InputDict],
+) -> Optional[_JsonObject]:
     if repair is None:
         return None
     if type(repair) is not dict:
@@ -338,15 +358,14 @@ def _repair_projection(repair: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
         raise TypeError("repair_request keys must be strings")
     unknown = set(raw) - set(_REPAIR_KEYS)
     if unknown:
-        raise ValueError(
-            "repair_request has unknown keys: %s"
-            % ", ".join(sorted(unknown))
-        )
+        raise ValueError("repair_request has unknown keys")
     for key in _REPAIR_KEYS:
         if key not in raw:
             raise ValueError("repair_request is missing required key: %s" % key)
 
     finding_ids = raw["finding_ids"]
+    if type(finding_ids) is list and len(finding_ids) > MAX_REPAIR_ITEMS:
+        raise ValueError("repair_request_finding_ids_item_limit")
     if (
         type(finding_ids) is not list
         or not finding_ids
@@ -378,20 +397,28 @@ def _repair_projection(repair: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     return payload
 
 
-def _with_repair(payload: Dict[str, Any], repair: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _with_repair(
+    payload: _JsonObject,
+    repair: Optional[_InputDict],
+) -> _JsonObject:
     repair_payload = _repair_projection(repair)
     if repair_payload is not None:
         payload["repair_request"] = repair_payload
     return payload
 
 
-def _prompt_envelope(task: str, payload: Dict[str, Any]) -> str:
+def _prompt_envelope(task: str, payload: _JsonObject) -> str:
     serialized = json.dumps(
         _mapping_payload(payload, "prompt payload"),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+    serialized = serialized.replace("<", "\\u003c").replace(
+        ">", "\\u003e"
+    )
+    if len(serialized.encode("utf-8")) > MAX_PROMPT_PAYLOAD_BYTES:
+        raise ValueError("prompt_payload_too_large")
     return (
         "任务说明：%s\n"
         "<UNTRUSTED_SOURCE_DATA>\n%s\n</UNTRUSTED_SOURCE_DATA>\n"
@@ -403,8 +430,8 @@ def _prompt_envelope(task: str, payload: Dict[str, Any]) -> str:
 def solution_trace_prompt(
     problem: ProblemInput,
     teaching_route: FrozenTeachingRoute,
-    focus_targets: Sequence[ProblemFocusTarget],
-    repair: Optional[Dict[str, Any]] = None,
+    focus_targets: _ProblemTargets,
+    repair: Optional[_InputDict] = None,
 ) -> str:
     payload = _problem_projection(problem, include_reference_solution=True)
     payload.update(
@@ -422,8 +449,8 @@ def solution_trace_prompt(
 def reasoning_trajectory_prompt(
     problem: ProblemInput,
     solution_trace: SolutionTrace,
-    capabilities: Dict[str, Any],
-    repair: Optional[Dict[str, Any]] = None,
+    capabilities: _InputDict,
+    repair: Optional[_InputDict] = None,
 ) -> str:
     payload = _problem_projection(problem, include_reference_solution=False)
     payload.update(
@@ -442,7 +469,7 @@ def reasoning_trajectory_prompt(
 
 def teaching_script_prompt(
     reasoning_trajectory: ReasoningTrajectory,
-    repair: Optional[Dict[str, Any]] = None,
+    repair: Optional[_InputDict] = None,
 ) -> str:
     payload = {
         "reasoning_trajectory": _artifact_payload(
@@ -460,7 +487,7 @@ def teaching_script_prompt(
 def interaction_plan_prompt(
     reasoning_trajectory: ReasoningTrajectory,
     teaching_script: TeachingScript,
-    repair: Optional[Dict[str, Any]] = None,
+    repair: Optional[_InputDict] = None,
 ) -> str:
     payload = {
         "reasoning_trajectory": _artifact_payload(
@@ -479,11 +506,11 @@ def interaction_plan_prompt(
 
 
 def performance_score_prompt(
-    problem_targets: Sequence[ProblemFocusTarget],
+    problem_targets: _ProblemTargets,
     teaching_script: TeachingScript,
     interaction_plan: InteractionPlan,
-    capabilities: Dict[str, Any],
-    repair: Optional[Dict[str, Any]] = None,
+    capabilities: _InputDict,
+    repair: Optional[_InputDict] = None,
 ) -> str:
     payload = {
         "problem_targets": _problem_targets_projection(problem_targets),
@@ -541,7 +568,7 @@ def _reviewer_context_id_projection(reviewer_context_id: str) -> str:
 
 
 def lesson_review_prompt(
-    prepared_artifacts: Dict[str, Any],
+    prepared_artifacts: _InputDict,
     simulation_report: SimulationReport,
     reviewer_context_id: str,
 ) -> str:
