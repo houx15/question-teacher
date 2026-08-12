@@ -158,10 +158,15 @@ class LessonInputError(LessonQualityError):
     def validated_public_message(error: Exception) -> Optional[str]:
         if type(error) is not LessonInputError:
             return None
-        message = error.public_message
+        message = getattr(error, "public_message", None)
+        args = getattr(error, "args", None)
         if (
-            message not in _PUBLIC_INPUT_ERROR_MESSAGES
-            or error.args != (message,)
+            type(message) is not str
+            or message not in _PUBLIC_INPUT_ERROR_MESSAGES
+            or type(args) is not tuple
+            or len(args) != 1
+            or type(args[0]) is not str
+            or args[0] != message
         ):
             return None
         return message

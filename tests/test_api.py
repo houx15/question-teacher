@@ -832,6 +832,65 @@ def test_tainted_input_error_at_trusted_boundary_still_fails_closed():
     assert "secret" not in str(public_job)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["delete", [], {"private": "secret"}, object()],
+    ids=["deleted", "list", "dict", "object"],
+)
+def test_mutated_input_error_metadata_never_breaks_safe_failure_handler(
+    mutation,
+):
+    failure = LessonInputError("题目格式不正确。")
+    if mutation == "delete":
+        del failure.public_message
+    else:
+        failure.public_message = mutation
+
+    class AdversarialInputValidator:
+        async def generate(self, problem, on_stage=None):
+            del problem
+            if on_stage is not None:
+                on_stage("正在验证数学路线")
+            raise failure
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            AdversarialInputValidator(),
+            FakeAudioService(),
+        )
+    )
+
+    public_job = store.get_job(job.job_id).model_dump()
+    assert public_job["status"] == "failed"
+    assert public_job["error"] == "课程生成失败，请稍后重试。"
+    assert "secret" not in str(public_job)
+    diagnostic = store.get_job_diagnostic(job.job_id)
+    assert diagnostic is not None
+    assert diagnostic.category == "invalid_structure"
+    assert "secret" not in str(diagnostic)
+
+
+def test_mutated_input_error_args_never_invoke_untrusted_equality():
+    class ExplosiveEquality:
+        def __eq__(self, other):
+            del other
+            raise AssertionError("secret equality payload")
+
+        def __ne__(self, other):
+            del other
+            raise AssertionError("secret equality payload")
+
+    failure = LessonInputError("题目格式不正确。")
+    failure.args = (ExplosiveEquality(),)
+
+    assert LessonInputError.validated_public_message(failure) is None
+
+
 def test_run_generation_prefers_bundle_and_keeps_record_private(tmp_path):
     store = MemoryStore(tmp_path / "lessons.sqlite3")
     generator = BundleGenerator()

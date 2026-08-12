@@ -135,7 +135,9 @@ def _private_failure_category(
         return None
     if phase == "input_validation":
         if isinstance(error, LessonInputError):
-            return None
+            if LessonInputError.validated_public_message(error) is not None:
+                return None
+            return "invalid_structure"
         if isinstance(error, ModelStructureError):
             return "invalid_structure"
         if isinstance(error, ModelResponseError):
