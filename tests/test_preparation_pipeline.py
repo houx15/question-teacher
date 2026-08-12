@@ -1788,6 +1788,56 @@ def test_each_role_gets_one_structure_retry():
     assert [record.failure_category for record in result.role_calls] == [None, None]
 
 
+def test_every_preparation_role_receives_its_exact_output_schema():
+    fake = client()
+
+    asyncio.run(
+        LessonPreparationPipeline(fake).prepare(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    required_property_by_role = {
+        "reference_analyst": "source_steps",
+        "teaching_designer": "episodes",
+        "script_teacher": "clauses",
+        "interaction_designer": "interactions",
+        "classroom_director": "cues",
+        "student_simulator": "episode_results",
+        "lesson_reviewer": "status",
+    }
+    assert [call.role for call in fake.calls] == list(required_property_by_role)
+    for call in fake.calls:
+        schema_text = call.user.split("<OUTPUT_JSON_SCHEMA>\n", 1)[1].split(
+            "\n</OUTPUT_JSON_SCHEMA>", 1
+        )[0]
+        schema = json.loads(schema_text)
+        assert required_property_by_role[call.role] in schema["properties"]
+
+
+def test_structure_retry_keeps_schema_without_echoing_invalid_output():
+    private_invalid_marker = "PRIVATE_INVALID_MODEL_OUTPUT"
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [
+                {"unexpected": private_invalid_marker},
+                trace_payload(),
+            ],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    run_early(LessonPreparationPipeline(fake))
+
+    analyst_calls = [
+        call for call in fake.calls if call.role == "reference_analyst"
+    ]
+    assert len(analyst_calls) == 2
+    assert all("<OUTPUT_JSON_SCHEMA>" in call.user for call in analyst_calls)
+    assert private_invalid_marker not in analyst_calls[1].user
+    assert analyst_calls[1].user.count("<OUTPUT_JSON_SCHEMA>") == 1
+
+
 @pytest.mark.parametrize(
     ("failing_role", "responses"),
     [

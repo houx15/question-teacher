@@ -37,6 +37,7 @@ from app.preparation_prompts import (
     solution_trace_prompt,
     student_simulation_prompt,
     teaching_script_prompt,
+    with_output_schema,
 )
 from app.schemas import (
     ProblemFocusTarget,
@@ -1141,6 +1142,25 @@ def test_prompt_size_and_repair_limits_are_explicit():
     assert preparation_prompts.MAX_PROMPT_PAYLOAD_BYTES == 256 * 1024
     assert preparation_prompts.MAX_REPAIR_ITEMS == 64
     assert preparation_prompts.MAX_REPAIR_TEXT_CHARS == 1000
+
+
+def test_output_schema_is_trusted_bounded_json_after_untrusted_payload():
+    prompt = with_output_schema("base prompt", SolutionTrace)
+
+    assert prompt.startswith("base prompt\n<OUTPUT_JSON_SCHEMA>\n")
+    schema_text = prompt.split("<OUTPUT_JSON_SCHEMA>\n", 1)[1].split(
+        "\n</OUTPUT_JSON_SCHEMA>", 1
+    )[0]
+    schema = json.loads(schema_text)
+    assert "source_steps" in schema["properties"]
+    assert len(prompt.encode("utf-8")) <= preparation_prompts.MAX_PROMPT_PAYLOAD_BYTES
+
+
+def test_output_schema_rejects_combined_prompt_over_limit():
+    oversized = "字" * preparation_prompts.MAX_PROMPT_PAYLOAD_BYTES
+
+    with pytest.raises(ValueError, match="^prompt_payload_too_large$"):
+        with_output_schema(oversized, SolutionTrace)
 
 
 @pytest.mark.parametrize(

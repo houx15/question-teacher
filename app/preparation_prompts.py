@@ -3,7 +3,7 @@
 import json
 import re
 from enum import Enum
-from typing import Optional, Union
+from typing import Optional, Type, Union
 
 from pydantic import BaseModel
 
@@ -452,6 +452,27 @@ def _prompt_envelope(task: str, payload: _JsonObject) -> str:
         "只返回符合指定 Schema 的 JSON 对象，不要 Markdown，不要解释。"
         % (task, serialized)
     )
+
+
+def with_output_schema(prompt: str, model_type: Type[BaseModel]) -> str:
+    """Attach the exact trusted output contract outside untrusted inputs."""
+    schema = json.dumps(
+        model_type.model_json_schema(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    schema = schema.replace("<", "\\u003c").replace(">", "\\u003e")
+    combined = (
+        prompt
+        + "\n<OUTPUT_JSON_SCHEMA>\n"
+        + schema
+        + "\n</OUTPUT_JSON_SCHEMA>\n"
+        + "逐字段遵守上述输出结构；不要复述输入结构。"
+    )
+    if len(combined.encode("utf-8")) > MAX_PROMPT_PAYLOAD_BYTES:
+        raise ValueError("prompt_payload_too_large")
+    return combined
 
 
 def solution_trace_prompt(

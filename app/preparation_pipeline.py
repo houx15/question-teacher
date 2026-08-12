@@ -56,6 +56,7 @@ from app.preparation_prompts import (
     solution_trace_prompt,
     student_simulation_prompt,
     teaching_script_prompt,
+    with_output_schema,
 )
 from app.preparation_validation import (
     PreparationValidationError,
@@ -1123,6 +1124,24 @@ class LessonPreparationPipeline:
     ) -> _ModelType:
         state = self._current_state()
         started = time.monotonic()
+        try:
+            prompt = with_output_schema(prompt, model_type)
+        except ValueError as error:
+            if str(error) != "prompt_payload_too_large":
+                raise
+            self._append_call_record(
+                state,
+                role,
+                started,
+                0,
+                "prompt_payload_too_large",
+                None,
+            )
+            raise PreparationFailure(
+                category="prompt_payload_too_large",
+                role=role,
+                detail="备课内容超出可处理范围。",
+            ) from None
         retry_count = 0
         token_usage: Optional[Dict[str, int]] = {}
         for attempt in range(self.MAX_STRUCTURE_ATTEMPTS):
