@@ -1296,7 +1296,7 @@ def test_unknown_repair_role_is_rejected_before_state_mutation():
 
 def test_oversized_valid_upstream_prompt_fails_safely_with_current_audit():
     oversized = trajectory_payload(modes=("plan",))
-    private_marker = "PRIVATE-OVERSIZED-TRAJECTORY"
+    private_marker = "OVERSIZED-TRAJECTORY-MARKER"
     oversized["episodes"][0]["decision"] = (
         private_marker + "大" * 300_000
     )

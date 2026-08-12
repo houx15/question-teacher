@@ -43,6 +43,45 @@ def test_reference_safety_detects_raw_only_opaque_literal_without_echoing_it():
     assert marker not in str(captured.value)
 
 
+def test_sanitized_downstream_allows_independent_math_explanations():
+    source = ProblemInput(
+        problem_text="若2n是方程的根，求m-n。",
+        reference_answer="m-n=1/2",
+        reference_solution_text=(
+            "因为2n是方程的根，所以4n^2-4mn+2n=0。"
+        ),
+    )
+    policy = ReferenceSafetyPolicy.from_problem(source)
+
+    policy.ensure_safe(
+        {
+            "definition": (
+                "Root property: if $x=a$ is a root of $f(x)=0$, "
+                "then $f(a)=0$."
+            ),
+            "learner_state": "Has equation $4n^2-4mn+2n=0$.",
+        },
+        downstream_of_sanitized_trace=True,
+    )
+
+
+def test_sanitized_downstream_still_blocks_opaque_control_carriers():
+    marker = "PRIVATE-RAW-TOKEN-83d912"
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="若2n是方程的根，求m-n。",
+            reference_answer="m-n=1/2",
+            reference_solution_text=marker,
+        )
+    )
+
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe(
+            {"summary": marker},
+            downstream_of_sanitized_trace=True,
+        )
+
+
 def test_reference_safety_detects_a_long_raw_only_chinese_phrase():
     private_phrase = "这是一段只存在于参考解析里的内部批注"
     policy = ReferenceSafetyPolicy.from_problem(

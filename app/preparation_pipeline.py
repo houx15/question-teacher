@@ -900,7 +900,10 @@ class LessonPreparationPipeline:
             LessonReviewDecision,
         )
         try:
-            self._reference_safety(state).ensure_safe(decision)
+            self._reference_safety(state).ensure_safe(
+                decision,
+                downstream_of_sanitized_trace=True,
+            )
         except ReferenceContentSafetyError:
             self._raise_reference_content_leak(state, "lesson_reviewer")
         try:
@@ -1272,7 +1275,12 @@ class LessonPreparationPipeline:
         if record.role != responsible_role or record.failure_category is not None:
             raise RuntimeError("model call record does not match accepted artifact")
         try:
-            self._reference_safety(state).ensure_safe(artifact)
+            self._reference_safety(state).ensure_safe(
+                artifact,
+                downstream_of_sanitized_trace=(
+                    artifact_type != "solution_trace"
+                ),
+            )
         except ReferenceContentSafetyError:
             self._raise_reference_content_leak(state, responsible_role)
         version = state.versions.get(artifact_type, 0) + 1

@@ -650,14 +650,16 @@ class ReferenceSafetyPolicy:
         value: Any,
         *,
         check_identifiers: bool = False,
+        downstream_of_sanitized_trace: bool = False,
     ) -> None:
         math_streams = [[], [], []]
         helper_identifier = self.authorized_helper_identifier
         for expression in _bounded_typed_math(value):
-            helper_identifier = self._ensure_authorized_math(
-                expression,
-                helper_identifier,
-            )
+            if not downstream_of_sanitized_trace:
+                helper_identifier = self._ensure_authorized_math(
+                    expression,
+                    helper_identifier,
+                )
             for index, stream in enumerate(
                 _canonical_math_streams(expression)
             ):
@@ -673,15 +675,16 @@ class ReferenceSafetyPolicy:
             ):
                 math_streams[index].append(stream)
             for expression in _embedded_math_expressions(text):
-                helper_identifier = self._ensure_authorized_math(
-                    expression,
-                    helper_identifier,
-                )
+                if not downstream_of_sanitized_trace:
+                    helper_identifier = self._ensure_authorized_math(
+                        expression,
+                        helper_identifier,
+                    )
                 for index, stream in enumerate(
                     _canonical_math_streams(expression)
                 ):
                     math_streams[index].append(stream)
-            prose_leak = any(
+            prose_leak = not downstream_of_sanitized_trace and any(
                 item in self.sensitive_fingerprints
                 and item not in self.authorized_projection_fingerprints
                 for item in _fingerprints(text)
@@ -690,18 +693,26 @@ class ReferenceSafetyPolicy:
                 raise ReferenceContentSafetyError(
                     "reference-only content crossed the safe boundary"
                 )
-            skeleton_leak = any(
-                item in self.sensitive_skeleton_fingerprints
-                and item
-                not in self.authorized_projection_skeleton_fingerprints
-                for item in _skeleton_fingerprints(text)
-            )
-            short_skeleton = _short_skeleton(text)
-            short_leak = (
-                short_skeleton in self.sensitive_short_skeletons
-                and short_skeleton
-                not in self.authorized_projection_short_skeletons
-            )
+            if downstream_of_sanitized_trace:
+                downstream_skeleton = _ascii_skeleton_candidate(text)
+                skeleton_leak = any(
+                    term in downstream_skeleton
+                    for term in _CONTROL_SKELETON_TERMS
+                )
+                short_leak = False
+            else:
+                skeleton_leak = any(
+                    item in self.sensitive_skeleton_fingerprints
+                    and item
+                    not in self.authorized_projection_skeleton_fingerprints
+                    for item in _skeleton_fingerprints(text)
+                )
+                short_skeleton = _short_skeleton(text)
+                short_leak = (
+                    short_skeleton in self.sensitive_short_skeletons
+                    and short_skeleton
+                    not in self.authorized_projection_short_skeletons
+                )
             if skeleton_leak or short_leak:
                 raise ReferenceContentSafetyError(
                     "reference-only content crossed the safe boundary"
@@ -709,7 +720,7 @@ class ReferenceSafetyPolicy:
         aggregate_math_streams = tuple(
             "".join(items) for items in math_streams
         )
-        if _contains_sensitive_math_candidate(
+        if not downstream_of_sanitized_trace and _contains_sensitive_math_candidate(
             aggregate_math_streams,
             self.sensitive_math_candidates,
         ):
