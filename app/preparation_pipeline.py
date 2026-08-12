@@ -1153,12 +1153,23 @@ class LessonPreparationPipeline:
                     + "请仅返回符合 Schema 的 JSON 对象。"
                 )
             try:
+                structured_metadata_method = getattr(
+                    self.client,
+                    "complete_model_with_metadata",
+                    None,
+                )
                 metadata_method = getattr(
                     self.client,
                     "complete_json_with_metadata",
                     None,
                 )
-                if callable(metadata_method):
+                if callable(structured_metadata_method):
+                    completion = await structured_metadata_method(
+                        system,
+                        attempt_prompt,
+                        model_type,
+                    )
+                elif callable(metadata_method):
                     completion = await metadata_method(system, attempt_prompt)
                 else:
                     completion = await self.client.complete_json(

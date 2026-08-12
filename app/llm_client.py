@@ -2,9 +2,10 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Type
 
 import httpx
+from pydantic import BaseModel
 
 from app.config import Settings
 
@@ -161,6 +162,96 @@ class OpenAICompatibleClient:
                 token_usage=usage,
             ) from None
 
+        try:
+            parsed = self.parse_json_content(content)
+        except ModelStructureError as error:
+            raise ModelStructureError(
+                error.code,
+                str(error),
+                token_usage=usage,
+            ) from None
+        return ModelCompletion(payload=parsed, token_usage=usage)
+
+    async def complete_model(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model_type: Type[BaseModel],
+    ) -> Dict[str, Any]:
+        completion = await self.complete_model_with_metadata(
+            system_prompt,
+            user_prompt,
+            model_type,
+        )
+        payload = completion.payload
+        if type(payload) is not dict:
+            raise AssertionError("JSON completion payload must be an object")
+        return payload
+
+    async def complete_model_with_metadata(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model_type: Type[BaseModel],
+    ) -> ModelCompletion:
+        """Prefer provider-native schema decoding, with compatible fallback."""
+        self._validate_configuration()
+        payload = {
+            "model": self._settings.openai_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": model_type.__name__,
+                    "strict": True,
+                    "schema": model_type.model_json_schema(),
+                },
+            },
+        }
+        response = await self._post(payload)
+        if response.status_code in (400, 422):
+            fallback_payload = dict(payload)
+            fallback_payload["response_format"] = {"type": "json_object"}
+            response = await self._post(fallback_payload)
+        if response.status_code in (400, 422):
+            fallback_payload = dict(payload)
+            fallback_payload.pop("response_format")
+            response = await self._post(fallback_payload)
+        if response.is_error:
+            raise ModelResponseError(
+                f"Model request failed with HTTP status {response.status_code}."
+            )
+
+        return self._parse_completion_response(response)
+
+    def _parse_completion_response(
+        self,
+        response: httpx.Response,
+    ) -> ModelCompletion:
+        try:
+            response_payload = response.json()
+        except (TypeError, ValueError):
+            raise ModelStructureError(
+                "invalid_response_envelope",
+                "Model response content is missing or invalid.",
+            ) from None
+        usage = (
+            response_payload.get("usage")
+            if type(response_payload) is dict
+            else None
+        )
+        try:
+            content = response_payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            raise ModelStructureError(
+                "invalid_response_envelope",
+                "Model response content is missing or invalid.",
+                token_usage=usage,
+            ) from None
         try:
             parsed = self.parse_json_content(content)
         except ModelStructureError as error:

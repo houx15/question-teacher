@@ -1838,6 +1838,30 @@ def test_structure_retry_keeps_schema_without_echoing_invalid_output():
     assert analyst_calls[1].user.count("<OUTPUT_JSON_SCHEMA>") == 1
 
 
+def test_preparation_prefers_provider_native_structured_output():
+    class NativeStructuredFake(PreparationFakeClient):
+        def __init__(self):
+            super().__init__(
+                {
+                    "reference_analyst": [trace_payload()],
+                    "teaching_designer": [trajectory_payload()],
+                }
+            )
+            self.model_types = []
+
+        async def complete_model_with_metadata(
+            self, system, user, model_type
+        ):
+            self.model_types.append(model_type)
+            return await super().complete_json_with_metadata(system, user)
+
+    fake = NativeStructuredFake()
+
+    run_early(LessonPreparationPipeline(fake))
+
+    assert fake.model_types == [SolutionTrace, ReasoningTrajectory]
+
+
 @pytest.mark.parametrize(
     ("failing_role", "responses"),
     [

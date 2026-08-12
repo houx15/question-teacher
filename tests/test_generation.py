@@ -26,6 +26,7 @@ from app.preparation_pipeline import (
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import (
     ProblemInput,
+    ReferenceGroundingBrief,
     ReferenceMaterialAudit,
     SyncVisualAction,
 )
@@ -497,6 +498,22 @@ def test_grounder_retries_one_schema_invalid_response_without_reusing_content():
     assert "invalid grounding response" not in client.user_prompts[1]
 
 
+def test_grounder_retry_names_only_safe_invalid_field_paths():
+    invalid = grounding_payload()
+    invalid["assumptions"][0]["expression"] = "这是私密解释，不是数学"
+    client = FakeClient([invalid, grounding_payload()])
+
+    route = asyncio.run(
+        LessonGenerationService(client, MathEngine())._build_grounded_teaching_route(
+            grounded_source_problem(), None
+        )
+    )
+
+    assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    assert "assumptions.0.expression" in client.user_prompts[1]
+    assert "这是私密解释" not in client.user_prompts[1]
+
+
 def test_grounder_schema_retry_is_bounded_to_one_extra_attempt():
     client = FakeClient(
         [
@@ -518,6 +535,28 @@ def test_grounder_schema_retry_is_bounded_to_one_extra_attempt():
         REFERENCE_GROUNDING_SYSTEM,
         REFERENCE_GROUNDING_SYSTEM,
     ]
+
+
+def test_grounder_prefers_provider_native_structured_output():
+    class NativeGrounderFake(FakeClient):
+        def __init__(self):
+            super().__init__([grounding_payload()])
+            self.model_types = []
+
+        async def complete_model(self, system, user, model_type):
+            self.model_types.append(model_type)
+            return await self.complete_json(system, user)
+
+    client = NativeGrounderFake()
+
+    route = asyncio.run(
+        LessonGenerationService(client, MathEngine())._build_grounded_teaching_route(
+            grounded_source_problem(), None
+        )
+    )
+
+    assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    assert client.model_types == [ReferenceGroundingBrief]
 
 
 def test_grounded_raw_reference_reaches_only_grounder_and_reference_analyst():

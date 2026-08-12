@@ -9,7 +9,7 @@ class Settings:
     openai_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_model: Optional[str] = None
-    openai_timeout_seconds: float = 90.0
+    openai_timeout_seconds: float = 180.0
     tts_base_url: Optional[str] = None
     tts_api_key: Optional[str] = None
     tts_model: Optional[str] = None
@@ -51,7 +51,7 @@ class Settings:
             openai_api_key=openai_api_key,
             openai_model=cls._normalize_string(os.getenv("OPENAI_MODEL")),
             openai_timeout_seconds=cls._parse_timeout(
-                os.getenv("OPENAI_TIMEOUT_SECONDS", "90")
+                os.getenv("OPENAI_TIMEOUT_SECONDS", "180")
             ),
             tts_base_url=tts_base_url,
             tts_api_key=tts_api_key,

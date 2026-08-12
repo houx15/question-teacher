@@ -57,7 +57,7 @@ def test_whitespace_only_model_environment_is_reported_missing(monkeypatch):
 def test_timeout_uses_default_and_environment_override(monkeypatch):
     clear_settings_env(monkeypatch)
 
-    assert Settings.from_env().openai_timeout_seconds == 90.0
+    assert Settings.from_env().openai_timeout_seconds == 180.0
 
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "12.5")
 

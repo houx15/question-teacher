@@ -7,6 +7,7 @@ import sys
 
 import httpx
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
 from app.llm_client import (
@@ -25,6 +26,12 @@ def configured_settings(**overrides):
     }
     values.update(overrides)
     return Settings(**values)
+
+
+class StructuredProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    answer: int
+    ok: bool
 
 
 def test_complete_json_posts_chat_completion_and_returns_object():
@@ -101,6 +108,72 @@ def test_complete_json_with_metadata_returns_payload_and_usage_in_one_request():
         "completion_tokens": 3,
         "total_tokens": 11,
     }
+
+
+def test_complete_model_uses_native_json_schema_and_returns_json_object():
+    request_bodies = []
+
+    def handler(request):
+        request_bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"answer":7,"ok":true}'}}
+                ]
+            },
+        )
+
+    client = OpenAICompatibleClient(
+        configured_settings(), transport=httpx.MockTransport(handler)
+    )
+
+    completion = asyncio.run(
+        client.complete_model_with_metadata(
+            "system", "user", StructuredProbe
+        )
+    )
+    asyncio.run(client.close())
+
+    response_format = request_bodies[0]["response_format"]
+    assert request_bodies[0]["temperature"] == 0.2
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "StructuredProbe"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == (
+        StructuredProbe.model_json_schema()
+    )
+    assert completion.payload == {"answer": 7, "ok": True}
+
+
+def test_complete_model_falls_back_to_json_object_when_schema_is_unsupported():
+    request_bodies = []
+
+    def handler(request):
+        request_bodies.append(json.loads(request.content))
+        if len(request_bodies) == 1:
+            return httpx.Response(400, json={"error": "unsupported schema"})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"answer":7,"ok":true}'}}
+                ]
+            },
+        )
+
+    client = OpenAICompatibleClient(
+        configured_settings(), transport=httpx.MockTransport(handler)
+    )
+
+    result = asyncio.run(
+        client.complete_model("system", "user", StructuredProbe)
+    )
+    asyncio.run(client.close())
+
+    assert result == {"answer": 7, "ok": True}
+    assert request_bodies[0]["response_format"]["type"] == "json_schema"
+    assert request_bodies[1]["response_format"] == {"type": "json_object"}
 
 
 @pytest.mark.parametrize(

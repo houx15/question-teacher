@@ -102,7 +102,7 @@ python -m uvicorn app.main:app --reload
 | `OPENAI_BASE_URL` | 是 | Chat Completions 服务根地址，例如 `https://api.openai.com/v1`；程序追加 `/chat/completions` |
 | `OPENAI_API_KEY` | 是 | 文本模型鉴权密钥 |
 | `OPENAI_MODEL` | 是 | 生成与整篇审稿使用的模型名 |
-| `OPENAI_TIMEOUT_SECONDS` | 否 | 正数超时秒数，默认 `90` |
+| `OPENAI_TIMEOUT_SECONDS` | 否 | 正数超时秒数，默认 `180` |
 | `TTS_PROVIDER` | 否 | `volcengine` 或 `openai_compatible`；未设置时兼容原有 OpenAI 语音配置，`.env.example` 默认使用 `volcengine` |
 
 ### 火山引擎豆包语音 V3

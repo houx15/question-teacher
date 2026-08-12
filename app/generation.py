@@ -472,16 +472,19 @@ class LessonGenerationService:
     ) -> FrozenTeachingRoute:
         await self._emit(on_stage, "正在整理参考教学路线")
         grounding_prompt = reference_grounding_prompt(problem)
+        validation_guidance = ""
         for attempt in range(2):
             attempt_prompt = grounding_prompt
             if attempt:
                 attempt_prompt += (
                     "\n上一次输出结构无效。"
                     "请仅返回符合 Schema 的 JSON 对象。"
+                    + validation_guidance
                 )
             payload = await self._complete_json(
                 REFERENCE_GROUNDING_SYSTEM,
                 attempt_prompt,
+                ReferenceGroundingBrief,
             )
             try:
                 brief = ReferenceGroundingBrief.validate_for_reference_answer(
@@ -489,11 +492,23 @@ class LessonGenerationService:
                     problem.reference_answer,
                 )
                 break
-            except ValidationError:
+            except ValidationError as error:
                 if attempt == 1:
                     raise LessonQualityError(
                         "参考教学路线结构无效。"
                     ) from None
+                invalid_paths = sorted(
+                    {
+                        ".".join(str(part) for part in item["loc"])
+                        for item in error.errors()
+                    }
+                )[:16]
+                validation_guidance = (
+                    "未通过校验的字段路径："
+                    + "、".join(invalid_paths)
+                    + "。数学字段只能填写纯数学表达式，"
+                    + "不得加入解释性文字或不受支持的 LaTeX 命令。"
+                )
         try:
             brief = ReferenceSafetyPolicy.from_problem(
                 problem
@@ -666,9 +681,21 @@ class LessonGenerationService:
         self,
         system_prompt: str,
         user_prompt: str,
+        model_type: Optional[type] = None,
     ) -> Any:
         for attempt in range(2):
             try:
+                structured_method = getattr(
+                    self.client,
+                    "complete_model",
+                    None,
+                )
+                if model_type is not None and callable(structured_method):
+                    return await structured_method(
+                        system_prompt,
+                        user_prompt,
+                        model_type,
+                    )
                 return await self.client.complete_json(
                     system_prompt,
                     user_prompt,
