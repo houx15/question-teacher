@@ -122,13 +122,20 @@ async def run_generation(
         current_stage_ordinal = stage_ordinal
 
     try:
-        lesson = await generator.generate(problem, on_stage=report_stage)
+        generate_bundle = getattr(generator, "generate_bundle", None)
+        if callable(generate_bundle):
+            bundle = await generate_bundle(problem, on_stage=report_stage)
+            lesson = bundle.lesson
+            generation_record = bundle.generation_record
+        else:
+            lesson = await generator.generate(problem, on_stage=report_stage)
+            generation_record = None
         lesson = await audio_service.attach_audio(
             lesson,
             on_stage=report_stage,
         )
         # Expose the lesson ID only after its durable save succeeds.
-        store.save_lesson(lesson)
+        store.save_lesson(lesson, generation_record=generation_record)
         store.update_job(
             job_id,
             status="completed",

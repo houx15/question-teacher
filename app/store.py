@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from app.lesson_ids import is_valid_lesson_id
+from app.preparation_models import GenerationRecord
 from app.schemas import GenerationJob, Interaction, RuntimeLesson
 
 
@@ -18,6 +19,7 @@ class MemoryStore:
     ) -> None:
         self._jobs: Dict[str, GenerationJob] = {}
         self._lessons: Dict[str, RuntimeLesson] = {}
+        self._generation_records: Dict[str, GenerationRecord] = {}
         self._database_path = (
             Path(database_path) if database_path is not None else None
         )
@@ -46,14 +48,41 @@ class MemoryStore:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def save_lesson(self, lesson: RuntimeLesson) -> None:
+    def save_lesson(
+        self,
+        lesson: RuntimeLesson,
+        generation_record: Optional[GenerationRecord] = None,
+    ) -> None:
         if not is_valid_lesson_id(lesson.lesson_id):
             raise ValueError("invalid lesson id")
+        if generation_record is not None:
+            generation_record = GenerationRecord.model_validate(
+                generation_record.model_dump(mode="python")
+            )
+        if (
+            generation_record is not None
+            and generation_record.lesson_id != lesson.lesson_id
+        ):
+            raise ValueError("generation record lesson id mismatch")
+        if generation_record is not None:
+            public_rubric_version = lesson.validation_report.get(
+                "pedagogy_rubric_version"
+            )
+            if (
+                public_rubric_version is not None
+                and public_rubric_version
+                != generation_record.prepared_lesson.rubric_version
+            ):
+                raise ValueError("generation record rubric version mismatch")
 
         with self._lock:
             if self._database_path is not None:
-                self._save_lesson_to_database(lesson)
+                self._save_lesson_to_database(lesson, generation_record)
             self._lessons[lesson.lesson_id] = lesson
+            if generation_record is not None:
+                self._generation_records[lesson.lesson_id] = (
+                    generation_record.model_copy(deep=True)
+                )
 
     def get_lesson(self, lesson_id: str) -> Optional[RuntimeLesson]:
         if not is_valid_lesson_id(lesson_id):
@@ -88,6 +117,67 @@ class MemoryStore:
             self._lessons[lesson_id] = lesson
             return lesson
 
+    def get_generation_record(
+        self,
+        lesson_id: str,
+    ) -> Optional[GenerationRecord]:
+        """Return server-private preparation evidence for one lesson."""
+        if not is_valid_lesson_id(lesson_id):
+            return None
+
+        with self._lock:
+            cached = self._generation_records.get(lesson_id)
+            if cached is not None:
+                return cached.model_copy(deep=True)
+            if (
+                self._database_path is None
+                or not self._database_path.is_file()
+            ):
+                return None
+
+            connection = self._connect()
+            try:
+                table_exists = connection.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'lesson_generation_records'
+                    """
+                ).fetchone()
+                if table_exists is None:
+                    return None
+                row = connection.execute(
+                    """
+                    SELECT
+                        generation_id,
+                        rubric_version,
+                        record_json,
+                        created_at
+                    FROM lesson_generation_records
+                    WHERE lesson_id = ?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row is None:
+                return None
+            generation_id, rubric_version, record_json, created_at = row
+            try:
+                record = GenerationRecord.model_validate_json(record_json)
+            except ValidationError:
+                return None
+            if (
+                record.lesson_id != lesson_id
+                or record.generation_id != generation_id
+                or record.prepared_lesson.rubric_version != rubric_version
+                or record.created_at != created_at
+            ):
+                return None
+            self._generation_records[lesson_id] = record.model_copy(deep=True)
+            return record.model_copy(deep=True)
+
     def get_interaction(
         self,
         lesson_id: str,
@@ -117,7 +207,11 @@ class MemoryStore:
             raise
         return connection
 
-    def _save_lesson_to_database(self, lesson: RuntimeLesson) -> None:
+    def _save_lesson_to_database(
+        self,
+        lesson: RuntimeLesson,
+        generation_record: Optional[GenerationRecord],
+    ) -> None:
         if self._database_path is None:
             raise RuntimeError("database path is not configured")
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +228,19 @@ class MemoryStore:
                     lesson_length TEXT NOT NULL,
                     runtime_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lesson_generation_records (
+                    lesson_id TEXT PRIMARY KEY,
+                    generation_id TEXT NOT NULL UNIQUE,
+                    rubric_version TEXT NOT NULL,
+                    record_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (lesson_id)
+                        REFERENCES lessons(lesson_id) ON DELETE CASCADE
                 )
                 """
             )
@@ -175,6 +282,25 @@ class MemoryStore:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+            if generation_record is not None:
+                connection.execute(
+                    """
+                    INSERT INTO lesson_generation_records (
+                        lesson_id,
+                        generation_id,
+                        rubric_version,
+                        record_json,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lesson.lesson_id,
+                        generation_record.generation_id,
+                        generation_record.prepared_lesson.rubric_version,
+                        generation_record.model_dump_json(),
+                        generation_record.created_at,
+                    ),
+                )
             connection.commit()
         except Exception:
             connection.rollback()

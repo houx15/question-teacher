@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from app.api import (
 from app.compiler import LessonCompileError, LessonCompiler
 from app.config import Settings
 from app.generation import LessonGenerationService, LessonInputError
+from app.preparation_models import GenerationRecord
 from app.main import PROJECT_ROOT, create_app
 from app.math_engine import MathEngine
 from app.preparation_pipeline import PreparationFailure
@@ -35,6 +37,7 @@ from tests.test_generation import (
     problem,
     valid_draft,
 )
+from tests.test_preparation_models import prepared_lesson
 from tests.generation_fakes import FakeClient
 
 
@@ -134,6 +137,72 @@ class FakeAudioService:
         return lesson
 
 
+def generation_record_for(lesson):
+    return GenerationRecord.model_validate(
+        {
+            "generation_id": "generation-api-1",
+            "lesson_id": lesson.lesson_id,
+            "route_fingerprint": "route-api-1",
+            "prepared_lesson": prepared_lesson(),
+            "role_calls": [
+                {
+                    "role": role,
+                    "input_artifact_versions": {"solution_trace": 1},
+                    "output_artifact_type": "solution_trace",
+                    "output_artifact_version": 1,
+                    "duration_ms": 1,
+                    "retry_count": 0,
+                }
+                for role in [
+                    "reference_analyst",
+                    "teaching_designer",
+                    "script_teacher",
+                    "interaction_designer",
+                    "classroom_director",
+                    "student_simulator",
+                    "lesson_reviewer",
+                ]
+            ],
+            "cue_provenance": [
+                {
+                    "episode_id": "episode-1",
+                    "clause_id": "open-1",
+                    "original_performance_cue_id": "cue-1",
+                    "runtime_cue_id": "runtime-cue-1",
+                    "spoken_text": "我们把等式两边同时减一。",
+                }
+            ],
+            "created_at": "2026-08-11T10:00:00+08:00",
+        }
+    )
+
+
+class BundleGenerator:
+    def __init__(self):
+        self.bundle_calls = 0
+        self.generate_calls = 0
+
+    async def generate_bundle(self, problem, on_stage=None):
+        self.bundle_calls += 1
+        if on_stage:
+            on_stage("正在编译课堂")
+        lesson = runtime_lesson(problem, lesson_id="lesson-bundle")
+        record = generation_record_for(lesson)
+
+        class Bundle:
+            pass
+
+        bundle = Bundle()
+        bundle.lesson = lesson
+        bundle.generation_record = record
+        return bundle
+
+    async def generate(self, problem, on_stage=None):
+        del problem, on_stage
+        self.generate_calls += 1
+        raise AssertionError("generate_bundle must be preferred")
+
+
 class PreparationStageGenerator(FakeGenerator):
     async def generate(self, problem, on_stage=None):
         self.calls += 1
@@ -214,9 +283,130 @@ class PerJobRecordingStore(MemoryStore):
 
 
 class FailingLessonStore(RecordingStore):
-    def save_lesson(self, lesson):
-        del lesson
+    def save_lesson(self, lesson, generation_record=None):
+        del lesson, generation_record
         raise OSError("private database path")
+
+
+def test_run_generation_prefers_bundle_and_keeps_record_private(tmp_path):
+    store = MemoryStore(tmp_path / "lessons.sqlite3")
+    generator = BundleGenerator()
+    client, _, _ = build_client(store=store, generator=generator)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+    lesson_id = job["lesson_id"]
+    public = client.get(f"/api/lessons/{lesson_id}")
+
+    assert job["status"] == "completed"
+    assert generator.bundle_calls == 1
+    assert generator.generate_calls == 0
+    assert store.get_generation_record(lesson_id) is not None
+    assert "generation_record" not in public.json()
+    assert "generation-api-1" not in public.text
+    assert "route-api-1" not in public.text
+
+
+def test_bundle_audio_failure_persists_neither_lesson_nor_record(tmp_path):
+    class FailingAudioService(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del lesson, on_stage
+            self.calls += 1
+            raise RuntimeError("private audio failure")
+
+    database_path = tmp_path / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    generator = BundleGenerator()
+    client, _, _ = build_client(
+        store=store,
+        generator=generator,
+        audio_service=FailingAudioService(),
+    )
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+
+    assert job["status"] == "failed"
+    assert store.get_lesson("lesson-bundle") is None
+    assert store.get_generation_record("lesson-bundle") is None
+    assert not database_path.exists()
+
+
+def test_bundle_save_failure_persists_neither_lesson_nor_record(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    seed = runtime_lesson(problem_input(), lesson_id="lesson-seed")
+    store.save_lesson(seed)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_api_private_record
+            BEFORE INSERT ON lesson_generation_records
+            BEGIN
+                SELECT RAISE(ABORT, 'private persistence failure');
+            END
+            """
+        )
+    generator = BundleGenerator()
+    client, _, _ = build_client(store=store, generator=generator)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+
+    assert job["status"] == "failed"
+    assert job["lesson_id"] is None
+    assert "private persistence failure" not in str(job)
+    assert store.get_lesson("lesson-bundle") is None
+    assert store.get_generation_record("lesson-bundle") is None
+
+
+def test_legacy_generator_without_bundle_remains_supported():
+    store = MemoryStore()
+    generator = FakeGenerator()
+    client, _, _ = build_client(store=store, generator=generator)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+
+    assert job["status"] == "completed"
+    assert generator.calls == 1
+    assert store.get_generation_record(job["lesson_id"]) is None
+
+
+def test_bundle_generation_cancellation_propagates_without_persistence():
+    class CancelledBundleGenerator:
+        async def generate_bundle(self, problem, on_stage=None):
+            del problem, on_stage
+            raise asyncio.CancelledError()
+
+    store = MemoryStore()
+    job = store.create_job()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            run_generation(
+                job.job_id,
+                problem_input(),
+                store,
+                CancelledBundleGenerator(),
+                FakeAudioService(),
+            )
+        )
+
+    assert store.get_lesson("lesson-bundle") is None
+    assert store.get_generation_record("lesson-bundle") is None
 
 
 def build_client(**overrides):

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from threading import Barrier
 
 import pytest
+from pydantic import ValidationError
 
 from app.schemas import (
     Interaction,
@@ -13,7 +14,9 @@ from app.schemas import (
     RuntimeLesson,
     TransferItem,
 )
+from app.preparation_models import GenerationRecord
 from app.store import MemoryStore
+from tests.test_preparation_models import prepared_lesson
 
 
 def runtime_lesson() -> RuntimeLesson:
@@ -68,6 +71,383 @@ def runtime_lesson() -> RuntimeLesson:
             "independent_solutions": ["x=1", "x=5"],
         },
     )
+
+
+def private_generation_record(
+    lesson: RuntimeLesson,
+    *,
+    generation_id: str = "generation-persisted-1",
+) -> GenerationRecord:
+    return GenerationRecord.model_validate(
+        {
+            "generation_id": generation_id,
+            "lesson_id": lesson.lesson_id,
+            "route_fingerprint": "route-persisted-1",
+            "prepared_lesson": prepared_lesson(),
+            "role_calls": [
+                {
+                    "role": role,
+                    "input_artifact_versions": {"solution_trace": 1},
+                    "output_artifact_type": "solution_trace",
+                    "output_artifact_version": 1,
+                    "duration_ms": 1,
+                    "retry_count": 0,
+                }
+                for role in [
+                    "reference_analyst",
+                    "teaching_designer",
+                    "script_teacher",
+                    "interaction_designer",
+                    "classroom_director",
+                    "student_simulator",
+                    "lesson_reviewer",
+                ]
+            ],
+            "cue_provenance": [
+                {
+                    "episode_id": "episode-1",
+                    "clause_id": "open-1",
+                    "original_performance_cue_id": "cue-1",
+                    "runtime_cue_id": "runtime-cue-1",
+                    "spoken_text": "我们把等式两边同时减一。",
+                }
+            ],
+            "created_at": "2026-08-11T10:00:00+08:00",
+        }
+    )
+
+
+def test_sqlite_store_roundtrips_private_generation_record_after_restart(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+
+    MemoryStore(database_path).save_lesson(
+        lesson,
+        generation_record=record,
+    )
+
+    restarted = MemoryStore(database_path)
+    assert restarted.get_lesson(lesson.lesson_id) == lesson
+    assert restarted.get_generation_record(lesson.lesson_id) == record
+
+
+def test_generation_record_table_has_exact_schema_and_cascade_fk(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+    MemoryStore(database_path).save_lesson(lesson, record)
+
+    with sqlite3.connect(database_path) as connection:
+        columns = [
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(lesson_generation_records)"
+            )
+        ]
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(lesson_generation_records)"
+        ).fetchall()
+        row = connection.execute(
+            """
+            SELECT lesson_id, generation_id, rubric_version, created_at
+            FROM lesson_generation_records
+            """
+        ).fetchone()
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "DELETE FROM lessons WHERE lesson_id = ?",
+            (lesson.lesson_id,),
+        )
+        remaining = connection.execute(
+            "SELECT COUNT(*) FROM lesson_generation_records"
+        ).fetchone()[0]
+
+    assert columns == [
+        "lesson_id",
+        "generation_id",
+        "rubric_version",
+        "record_json",
+        "created_at",
+    ]
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0][2:] == (
+        "lessons",
+        "lesson_id",
+        "lesson_id",
+        "NO ACTION",
+        "CASCADE",
+        "NONE",
+    )
+    assert row == (
+        lesson.lesson_id,
+        record.generation_id,
+        record.prepared_lesson.rubric_version,
+        record.created_at,
+    )
+    assert remaining == 0
+
+
+def test_generation_record_insert_failure_atomically_rolls_back_lesson(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    seed = runtime_lesson()
+    store.save_lesson(seed)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_generation_record_insert
+            BEFORE INSERT ON lesson_generation_records
+            BEGIN
+                SELECT RAISE(ABORT, 'forced private record failure');
+            END
+            """
+        )
+    lesson = seed.model_copy(update={"lesson_id": "lesson-atomic-new"})
+    record = private_generation_record(
+        lesson,
+        generation_id="generation-atomic-new",
+    )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="forced private record failure",
+    ):
+        store.save_lesson(lesson, record)
+
+    assert lesson.lesson_id not in store._lessons
+    assert store.get_lesson(lesson.lesson_id) is None
+    assert store.get_generation_record(lesson.lesson_id) is None
+
+
+def test_duplicate_generation_id_rolls_back_second_lesson(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    store = MemoryStore(database_path)
+    first = runtime_lesson()
+    first_record = private_generation_record(first)
+    store.save_lesson(first, first_record)
+    second = first.model_copy(update={"lesson_id": "lesson-second"})
+    second_record = private_generation_record(
+        second,
+        generation_id=first_record.generation_id,
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.save_lesson(second, second_record)
+
+    assert store.get_lesson(second.lesson_id) is None
+    assert store.get_generation_record(second.lesson_id) is None
+
+
+def test_duplicate_lesson_id_with_record_preserves_exact_value_error(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    store = MemoryStore(database_path)
+    store.save_lesson(lesson, private_generation_record(lesson))
+
+    with pytest.raises(ValueError, match="^lesson id already exists$"):
+        store.save_lesson(
+            lesson,
+            private_generation_record(
+                lesson,
+                generation_id="generation-replacement",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("generation_id", "generation-forged"),
+        ("rubric_version", "rubric-forged"),
+        ("created_at", "2020-01-01T00:00:00+00:00"),
+    ],
+)
+def test_sqlite_store_fails_closed_for_mismatched_record_columns(
+    tmp_path,
+    column,
+    value,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+    MemoryStore(database_path).save_lesson(lesson, record)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            f"UPDATE lesson_generation_records SET {column} = ?",
+            (value,),
+        )
+
+    assert MemoryStore(database_path).get_generation_record(
+        lesson.lesson_id
+    ) is None
+
+
+def test_sqlite_store_fails_closed_for_corrupt_private_record_json(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    MemoryStore(database_path).save_lesson(
+        lesson,
+        private_generation_record(lesson),
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE lesson_generation_records SET record_json = ?",
+            ("{private corrupt json",),
+        )
+
+    restarted = MemoryStore(database_path)
+    assert restarted.get_generation_record(lesson.lesson_id) is None
+    assert restarted.get_lesson(lesson.lesson_id) == lesson
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("lesson_id", "lesson-forged"),
+        ("generation_id", "generation-forged"),
+        ("created_at", "2020-01-01T00:00:00+00:00"),
+    ],
+)
+def test_sqlite_store_fails_closed_for_mismatched_record_json(
+    tmp_path,
+    field,
+    value,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+    MemoryStore(database_path).save_lesson(lesson, record)
+    payload = record.model_dump(mode="json")
+    payload[field] = value
+    forged_json = GenerationRecord.model_validate(payload).model_dump_json()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE lesson_generation_records SET record_json = ?",
+            (forged_json,),
+        )
+
+    assert MemoryStore(database_path).get_generation_record(
+        lesson.lesson_id
+    ) is None
+
+
+def test_old_database_without_private_record_table_still_reads_lesson(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    MemoryStore(database_path).save_lesson(lesson)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE lesson_generation_records")
+
+    restarted = MemoryStore(database_path)
+    assert restarted.get_lesson(lesson.lesson_id) == lesson
+    assert restarted.get_generation_record(lesson.lesson_id) is None
+
+
+def test_store_rejects_generation_record_for_another_lesson_before_writing(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    mismatched = private_generation_record(lesson).model_copy(
+        update={"lesson_id": "lesson-other"}
+    )
+    store = MemoryStore(database_path)
+
+    with pytest.raises(ValueError, match="generation record lesson id mismatch"):
+        store.save_lesson(lesson, mismatched)
+
+    assert not database_path.exists()
+    assert store._lessons == {}
+
+
+def test_store_rejects_record_rubric_that_disagrees_with_lesson(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson().model_copy(
+        update={
+            "validation_report": {
+                "math_status": "verified",
+                "pedagogy_rubric_version": "different-rubric",
+            }
+        }
+    )
+    store = MemoryStore(database_path)
+
+    with pytest.raises(
+        ValueError,
+        match="generation record rubric version mismatch",
+    ):
+        store.save_lesson(lesson, private_generation_record(lesson))
+
+    assert not database_path.exists()
+
+
+def test_store_revalidates_generation_record_before_writing(tmp_path):
+    database_path = tmp_path / "lessons.sqlite3"
+    lesson = runtime_lesson()
+    unvalidated = private_generation_record(lesson).model_copy(
+        update={"generation_id": ""}
+    )
+    store = MemoryStore(database_path)
+
+    with pytest.raises(ValidationError):
+        store.save_lesson(lesson, unvalidated)
+
+    assert not database_path.exists()
+
+
+def test_concurrent_duplicate_generation_ids_roll_back_losing_lesson(
+    tmp_path,
+):
+    database_path = tmp_path / "lessons.sqlite3"
+    seed_store = MemoryStore(database_path)
+    seed_store.save_lesson(runtime_lesson())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DELETE FROM lessons")
+
+    lessons = [
+        runtime_lesson().model_copy(update={"lesson_id": "lesson-record-a"}),
+        runtime_lesson().model_copy(update={"lesson_id": "lesson-record-b"}),
+    ]
+    stores = [MemoryStore(database_path), MemoryStore(database_path)]
+    start = Barrier(2, timeout=2)
+
+    def save(store, lesson):
+        start.wait()
+        try:
+            store.save_lesson(
+                lesson,
+                private_generation_record(
+                    lesson,
+                    generation_id="generation-shared",
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return "rejected"
+        return "saved"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(save, stores, lessons, timeout=10)
+        )
+
+    assert sorted(results) == ["rejected", "saved"]
+    with sqlite3.connect(database_path) as connection:
+        lesson_ids = {
+            row[0]
+            for row in connection.execute("SELECT lesson_id FROM lessons")
+        }
+        record_rows = connection.execute(
+            "SELECT lesson_id, generation_id FROM lesson_generation_records"
+        ).fetchall()
+    assert len(lesson_ids) == 1
+    assert record_rows == [(next(iter(lesson_ids)), "generation-shared")]
 
 
 def test_sqlite_store_restores_an_equivalent_runtime_lesson(tmp_path):
