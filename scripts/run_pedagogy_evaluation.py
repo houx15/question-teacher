@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Literal, Optional, Sequence
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +26,15 @@ from app.llm_client import OpenAICompatibleClient
 from app.math_engine import MathEngine
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.preparation_models import GenerationRecord
-from app.schemas import ProblemInput, RuntimeLesson
+from app.schemas import (
+    LessonLayer,
+    NonEmptyString,
+    ProblemInput,
+    ProblemText,
+    RuntimeLesson,
+    SchemaModel,
+    SyncVisualAction,
+)
 
 
 DEFAULT_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "pedagogy_golden_cases.json"
@@ -55,6 +63,28 @@ _PROBLEM_KEYS = {
     "reference_solution_text",
     "lesson_length",
 }
+_COVERAGE_TAGS = {
+    "concept_condition_conversion",
+    "algebra_execution",
+    "equation_parameter",
+    "method_selection",
+    "text_only_geometry",
+    "function_relationship",
+    "omitted_condition",
+    "exploration_or_revision",
+    "concept_overlay",
+    "no_forced_interaction",
+    "no_forced_emphasis",
+}
+_REASONING_MODES = {
+    "understand",
+    "plan",
+    "explore",
+    "execute",
+    "monitor",
+    "revise",
+    "reflect",
+}
 _SAFE_FAILURE_CATEGORIES = {
     "provider_error",
     "invalid_structure",
@@ -78,10 +108,85 @@ _STAGE_CODES = {
     "正在模拟学生并审核课程": "review",
     "正在编译课堂": "compile",
 }
+_FORBIDDEN_PUBLIC_KEYS = {
+    "candidate_version",
+    "validation_report",
+    "private_feedback",
+    "reference_answer",
+    "reference_solution_text",
+    "expected_answer",
+    "correct_option_id",
+    "canonical_answer",
+    "feedback",
+    "feedback_audio_url",
+    "correct_audio_url",
+}
 
 
 class EvaluationConfigurationError(RuntimeError):
     """Safe operator error raised before or independently of provider calls."""
+
+
+class _PublicProblem(SchemaModel):
+    problem_text: ProblemText
+    required_method: Optional[
+        Literal["factor", "quadratic_formula", "complete_the_square"]
+    ] = None
+    lesson_length: Literal["concise", "standard"]
+
+
+class _PublicOption(SchemaModel):
+    option_id: NonEmptyString
+    label: Optional[NonEmptyString] = None
+
+
+class _PublicInteraction(SchemaModel):
+    interaction_id: NonEmptyString
+    kind: Literal[
+        "point_select",
+        "choice",
+        "expression",
+        "free_text",
+        "transfer",
+    ]
+    prompt: NonEmptyString
+    options: List[_PublicOption]
+    hints: List[NonEmptyString]
+
+
+class _PublicCue(SchemaModel):
+    cue_id: NonEmptyString
+    spoken_text: NonEmptyString
+    lead_actions: List[SyncVisualAction]
+    start_actions: List[SyncVisualAction]
+    end_actions: List[SyncVisualAction]
+
+
+class _PublicBeat(SchemaModel):
+    beat_id: NonEmptyString
+    purpose: NonEmptyString
+    narration: NonEmptyString
+    layer: LessonLayer
+    sync_cues: List[_PublicCue]
+    interaction: Optional[_PublicInteraction] = None
+    next_beat_id: Optional[NonEmptyString] = None
+
+
+class _PublicTransferItem(SchemaModel):
+    problem_text: ProblemText
+    method_signal: NonEmptyString
+    options: List[_PublicOption]
+
+
+class _PublicEvaluationArtifact(SchemaModel):
+    schema_version: Literal[1]
+    lesson_id: NonEmptyString
+    problem: _PublicProblem
+    title: NonEmptyString
+    learning_goal: NonEmptyString
+    beats: List[_PublicBeat]
+    summary: NonEmptyString
+    transfer_item: _PublicTransferItem
 
 
 class StepClock:
@@ -170,28 +275,138 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _ensure_empty_output(output_dir: Path) -> None:
-    if output_dir.exists():
-        if not output_dir.is_dir():
-            raise EvaluationConfigurationError("output path is not a directory")
-        if any(output_dir.iterdir()):
-            raise EvaluationConfigurationError("output directory is non-empty")
-    else:
-        output_dir.mkdir(parents=True)
-
-
-def _write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-        allow_nan=False,
-    ) + "\n"
+def _json_content(payload: object) -> str:
+    try:
+        content = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        ) + "\n"
+    except (TypeError, ValueError, RecursionError):
+        raise EvaluationConfigurationError(
+            "evaluation JSON output is invalid"
+        ) from None
     if len(content.encode("utf-8")) > MAX_JSON_OUTPUT_BYTES:
         raise EvaluationConfigurationError("evaluation JSON output exceeds size limit")
-    path.write_text(content, encoding="utf-8")
+    return content
+
+
+class _OutputGuard:
+    """Own one stable, non-symlink output tree and never overwrite files."""
+
+    def __init__(self, root: Path, resolved_root: Path) -> None:
+        self.root = root
+        self._resolved_root = resolved_root
+
+    @classmethod
+    def create(cls, output_dir: Path) -> "_OutputGuard":
+        if type(output_dir) is not Path:
+            output_dir = Path(output_dir)
+        if output_dir.is_symlink():
+            raise EvaluationConfigurationError("output root cannot be a symlink")
+        if output_dir.exists():
+            if not output_dir.is_dir():
+                raise EvaluationConfigurationError(
+                    "output path is not a directory"
+                )
+            if any(output_dir.iterdir()):
+                raise EvaluationConfigurationError(
+                    "output directory is non-empty"
+                )
+        else:
+            output_dir.mkdir(parents=True)
+        if output_dir.is_symlink():
+            raise EvaluationConfigurationError("output root cannot be a symlink")
+        try:
+            resolved = output_dir.resolve(strict=True)
+        except OSError:
+            raise EvaluationConfigurationError("output root is unavailable") from None
+        guard = cls(output_dir, resolved)
+        guard._assert_stable()
+        return guard
+
+    def _assert_stable(self) -> None:
+        if self.root.is_symlink() or not self.root.is_dir():
+            raise EvaluationConfigurationError("output root symlink changed")
+        try:
+            current = self.root.resolve(strict=True)
+        except OSError:
+            raise EvaluationConfigurationError("output root is unavailable") from None
+        if current != self._resolved_root:
+            raise EvaluationConfigurationError("output root resolution changed")
+
+    @staticmethod
+    def _parts(relative: str) -> Sequence[str]:
+        if type(relative) is not str:
+            raise EvaluationConfigurationError("controlled output path is invalid")
+        path = Path(relative)
+        if (
+            not relative
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise EvaluationConfigurationError("controlled output path is invalid")
+        return path.parts
+
+    def ensure_directory(self, relative: str) -> Path:
+        self._assert_stable()
+        current = self.root
+        for part in self._parts(relative):
+            current = current / part
+            if current.is_symlink():
+                raise EvaluationConfigurationError(
+                    "controlled output path cannot be a symlink"
+                )
+            if current.exists():
+                if not current.is_dir():
+                    raise EvaluationConfigurationError(
+                        "controlled output directory is invalid"
+                    )
+            else:
+                current.mkdir()
+            if current.is_symlink():
+                raise EvaluationConfigurationError(
+                    "controlled output path cannot be a symlink"
+                )
+        self._assert_stable()
+        return current
+
+    def _write_text(self, relative: str, content: str) -> None:
+        parts = self._parts(relative)
+        if len(parts) > 1:
+            self.ensure_directory(str(Path(*parts[:-1])))
+        self._assert_stable()
+        target = self.root.joinpath(*parts)
+        if target.is_symlink():
+            raise EvaluationConfigurationError(
+                "controlled output file cannot be a symlink"
+            )
+        try:
+            with target.open("x", encoding="utf-8") as output:
+                output.write(content)
+        except FileExistsError:
+            raise EvaluationConfigurationError(
+                "controlled output file already exists"
+            ) from None
+        except OSError:
+            raise EvaluationConfigurationError(
+                "controlled output file could not be written"
+            ) from None
+        if target.is_symlink():
+            raise EvaluationConfigurationError(
+                "controlled output file became a symlink"
+            )
+        self._assert_stable()
+
+    def write_json(self, relative: str, payload: object) -> None:
+        self._write_text(relative, _json_content(payload))
+
+    def write_log(self, relative: str, content: str) -> None:
+        if type(content) is not str or len(content.encode("utf-8")) > 4096:
+            raise EvaluationConfigurationError("evaluation log is invalid")
+        self._write_text(relative, content)
 
 
 def _read_json(path: Path, label: str) -> object:
@@ -204,7 +419,7 @@ def _read_json(path: Path, label: str) -> object:
         return json.loads(content)
     except EvaluationConfigurationError:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         raise EvaluationConfigurationError("%s is invalid" % label) from None
 
 
@@ -230,6 +445,20 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
         problem = case.get("problem")
         if type(problem) is not dict or set(problem) != _PROBLEM_KEYS:
             raise EvaluationConfigurationError("golden case problem is invalid")
+        if (
+            any(
+                type(problem[field]) is not str
+                or not problem[field].strip()
+                for field in (
+                    "problem_text",
+                    "reference_answer",
+                    "reference_solution_text",
+                )
+            )
+            or type(problem["lesson_length"]) is not str
+            or problem["lesson_length"] not in {"concise", "standard"}
+        ):
+            raise EvaluationConfigurationError("golden case problem is invalid")
         try:
             ProblemInput.model_validate(problem)
         except Exception:
@@ -239,7 +468,6 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
             if (
                 type(values) is not list
                 or not 1 <= len(values) <= 8
-                or len(values) != len(set(values))
                 or any(
                     type(value) is not str
                     or value.strip() != value
@@ -250,6 +478,20 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
                 raise EvaluationConfigurationError(
                     "golden case metadata is invalid"
                 )
+            if len(values) != len(set(values)):
+                raise EvaluationConfigurationError(
+                    "golden case metadata is invalid"
+                )
+        if not set(case["coverage_tags"]).issubset(_COVERAGE_TAGS):
+            raise EvaluationConfigurationError(
+                "golden case coverage tags are invalid"
+            )
+        if not set(case["required_reasoning_modes"]).issubset(
+            _REASONING_MODES
+        ):
+            raise EvaluationConfigurationError(
+                "golden case reasoning modes are invalid"
+            )
         case_ids.append(case_id)
         validated.append(case)
     if len(case_ids) != len(set(case_ids)):
@@ -278,37 +520,165 @@ def _model_dump(value: object) -> Dict[str, object]:
     return payload
 
 
+def _project_public_option(payload: object) -> Dict[str, object]:
+    if type(payload) is not dict:
+        raise ValueError("public option source is invalid")
+    return {
+        "option_id": payload.get("option_id"),
+        "label": payload.get("label"),
+    }
+
+
+def _project_public_interaction(payload: object) -> Optional[Dict[str, object]]:
+    if payload is None:
+        return None
+    if type(payload) is not dict:
+        raise ValueError("public interaction source is invalid")
+    options = payload.get("options")
+    hints = payload.get("hints")
+    if type(options) is not list or type(hints) is not list:
+        raise ValueError("public interaction source is invalid")
+    return {
+        "interaction_id": payload.get("interaction_id"),
+        "kind": payload.get("kind"),
+        "prompt": payload.get("prompt"),
+        "options": [_project_public_option(item) for item in options],
+        "hints": list(hints),
+    }
+
+
 def _public_runtime_payload(lesson: object) -> Dict[str, object]:
-    payload = _model_dump(lesson)
-    problem = payload.get("problem")
-    if type(problem) is dict:
-        problem.pop("reference_answer", None)
-        problem.pop("reference_solution_text", None)
-    transfer = payload.get("transfer_item")
-    if type(transfer) is dict:
-        transfer.pop("expected_answer", None)
-        transfer.pop("correct_option_id", None)
-        for option in transfer.get("options", []):
-            if type(option) is dict:
-                option.pop("canonical_answer", None)
-                option.pop("feedback", None)
-    payload.pop("validation_report", None)
-    beats = payload.get("beats", [])
-    if type(beats) is list:
-        for beat in beats:
-            if type(beat) is not dict:
-                continue
-            interaction = beat.get("interaction")
-            if type(interaction) is not dict:
-                continue
-            interaction.pop("expected_answer", None)
-            interaction.pop("explanation_after_correct", None)
-            interaction.pop("correct_audio_url", None)
-            for option in interaction.get("options", []):
-                if type(option) is dict:
-                    option.pop("feedback", None)
-                    option.pop("feedback_audio_url", None)
-    return payload
+    source = _model_dump(lesson)
+    problem = source.get("problem")
+    transfer = source.get("transfer_item")
+    beats = source.get("beats")
+    if type(problem) is not dict or type(transfer) is not dict or type(beats) is not list:
+        raise ValueError("public runtime source is invalid")
+    transfer_options = transfer.get("options")
+    if type(transfer_options) is not list:
+        raise ValueError("public transfer source is invalid")
+
+    projected_beats = []
+    for beat in beats:
+        if type(beat) is not dict or type(beat.get("sync_cues")) is not list:
+            raise ValueError("public beat source is invalid")
+        projected_cues = []
+        for cue in beat["sync_cues"]:
+            if type(cue) is not dict:
+                raise ValueError("public cue source is invalid")
+            action_fields = {}
+            for field in ("lead_actions", "start_actions", "end_actions"):
+                actions = cue.get(field)
+                if type(actions) is not list:
+                    raise ValueError("public cue source is invalid")
+                action_fields[field] = actions
+            projected_cues.append({
+                "cue_id": cue.get("cue_id"),
+                "spoken_text": cue.get("spoken_text"),
+                **action_fields,
+            })
+        projected_beats.append({
+            "beat_id": beat.get("beat_id"),
+            "purpose": beat.get("purpose"),
+            "narration": beat.get("narration"),
+            "layer": beat.get("layer"),
+            "sync_cues": projected_cues,
+            "interaction": _project_public_interaction(
+                beat.get("interaction")
+            ),
+            "next_beat_id": beat.get("next_beat_id"),
+        })
+
+    artifact = _PublicEvaluationArtifact.model_validate({
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "lesson_id": source.get("lesson_id"),
+        "problem": {
+            "problem_text": problem.get("problem_text"),
+            "required_method": problem.get("required_method"),
+            "lesson_length": problem.get("lesson_length"),
+        },
+        "title": source.get("title"),
+        "learning_goal": source.get("learning_goal"),
+        "beats": projected_beats,
+        "summary": source.get("summary"),
+        "transfer_item": {
+            "problem_text": transfer.get("problem_text"),
+            "method_signal": transfer.get("method_signal"),
+            "options": [
+                _project_public_option(item)
+                for item in transfer_options
+            ],
+        },
+    }, strict=True)
+    public_payload = artifact.model_dump(mode="json")
+    _assert_public_keys_safe(public_payload)
+    return public_payload
+
+
+def _validate_public_artifact(payload: object) -> Dict[str, object]:
+    try:
+        artifact = _PublicEvaluationArtifact.model_validate(
+            payload,
+            strict=True,
+        )
+    except Exception:
+        raise EvaluationConfigurationError(
+            "comparison public artifact schema is invalid"
+        ) from None
+    public_payload = artifact.model_dump(mode="json")
+    _assert_public_keys_safe(public_payload)
+    return public_payload
+
+
+def _public_artifact_sha256(payload: object) -> str:
+    return hashlib.sha256(
+        _json_content(payload).encode("utf-8")
+    ).hexdigest()
+
+
+def _read_public_artifact(path: Path) -> tuple:
+    if path.is_symlink():
+        raise EvaluationConfigurationError(
+            "comparison public artifact cannot be a symlink"
+        )
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_JSON_INPUT_BYTES:
+            raise EvaluationConfigurationError(
+                "comparison public runtime is invalid"
+            )
+        content = path.read_bytes()
+        if len(content) > MAX_JSON_INPUT_BYTES:
+            raise EvaluationConfigurationError(
+                "comparison public runtime is invalid"
+            )
+        payload = json.loads(content.decode("utf-8"))
+    except EvaluationConfigurationError:
+        raise
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ):
+        raise EvaluationConfigurationError(
+            "comparison public runtime is invalid"
+        ) from None
+    return payload, hashlib.sha256(content).hexdigest()
+
+
+def _assert_public_keys_safe(payload: object) -> None:
+    if type(payload) is dict:
+        for key, value in payload.items():
+            if type(key) is not str or key in _FORBIDDEN_PUBLIC_KEYS:
+                raise EvaluationConfigurationError(
+                    "public artifact contains a forbidden private field"
+                )
+            _assert_public_keys_safe(value)
+    elif type(payload) is list:
+        for value in payload:
+            _assert_public_keys_safe(value)
+    elif payload is not None and type(payload) not in {str, int, float, bool}:
+        raise EvaluationConfigurationError("public artifact value is invalid")
 
 
 def _contract_metrics(
@@ -425,15 +795,13 @@ async def _run_evaluation_async(
     *,
     rubric_version: str,
     runs_per_case: int,
-    output_dir: Path,
+    output: _OutputGuard,
     service_factory: Callable[[], object],
     clock: Callable[[], float],
     candidate_version: str,
 ) -> None:
-    private_root = output_dir / "private" / "records"
-    public_root = output_dir / "public" / "runtime"
-    private_root.mkdir(parents=True)
-    public_root.mkdir(parents=True)
+    output.ensure_directory("private/records")
+    output.ensure_directory("public/runtime")
     runs: List[Dict[str, object]] = []
     service = service_factory()
     try:
@@ -468,21 +836,26 @@ async def _run_evaluation_async(
                             else None
                         ),
                     )
-                    _write_json(
-                        private_root / (stem + ".json"),
+                    public_payload = _public_runtime_payload(bundle.lesson)
+                    public_sha256 = _public_artifact_sha256(public_payload)
+                    output.write_json(
+                        "private/records/%s.json" % stem,
                         _model_dump(bundle.generation_record),
                     )
-                    _write_json(
-                        public_root / (stem + ".json"),
-                        _public_runtime_payload(bundle.lesson),
+                    output.write_json(
+                        "public/runtime/%s.json" % stem,
+                        public_payload,
                     )
                     runs.append({
                         "case_id": case_id,
                         "run_index": run_index,
                         "status": "succeeded",
+                        "public_sha256": public_sha256,
                         "metrics": metrics,
                     })
                 except (KeyboardInterrupt, asyncio.CancelledError):
+                    raise
+                except EvaluationConfigurationError:
                     raise
                 except Exception as error:
                     duration_ms = max(0, round((clock() - started) * 1000))
@@ -538,10 +911,10 @@ async def _run_evaluation_async(
         ),
         "runs": runs,
     }
-    _write_json(output_dir / "manifest.json", manifest)
-    (output_dir / "run.log").write_text(
+    output.write_json("manifest.json", manifest)
+    output.write_log(
+        "run.log",
         "Evaluation completed. Provider content and credentials are not logged.\n",
-        encoding="utf-8",
     )
 
 
@@ -559,12 +932,12 @@ def run_evaluation(
     resolved_candidate = _validate_candidate_version(
         candidate_version or rubric_version
     )
-    _ensure_empty_output(output_dir)
+    output = _OutputGuard.create(output_dir)
     asyncio.run(_run_evaluation_async(
         cases,
         rubric_version=rubric_version,
         runs_per_case=runs_per_case,
-        output_dir=output_dir,
+        output=output,
         service_factory=service_factory,
         clock=clock,
         candidate_version=resolved_candidate,
@@ -576,49 +949,186 @@ def _read_manifest(run_dir: Path) -> Dict[str, object]:
         run_dir / "manifest.json",
         "comparison run manifest",
     )
-    if (
-        type(payload) is not dict
-        or payload.get("schema_version") != MANIFEST_SCHEMA_VERSION
-        or type(payload.get("rubric_version")) is not str
-        or type(payload.get("candidate_version")) is not str
-        or type(payload.get("runs_per_case")) is not int
-        or type(payload.get("case_ids")) is not list
-        or type(payload.get("runs")) is not list
-    ):
+    manifest_keys = {
+        "schema_version",
+        "rubric_version",
+        "candidate_version",
+        "runs_per_case",
+        "case_ids",
+        "case_set_sha256",
+        "metric_scope",
+        "evidence_boundary",
+        "runs",
+    }
+    if type(payload) is not dict or set(payload) != manifest_keys:
         raise EvaluationConfigurationError("comparison run manifest is invalid")
+    rubric_version = payload["rubric_version"]
+    candidate_version = payload["candidate_version"]
+    runs_per_case = payload["runs_per_case"]
+    case_ids = payload["case_ids"]
+    runs = payload["runs"]
+    metric_scope = payload["metric_scope"]
+    expected_metric_scope = [
+        "generation_success",
+        "hard_gate_review_pass",
+        "must_teach_coverage",
+        "clause_action_binding",
+        "schema_runtime_pass",
+        "duration_ms",
+        "call_count",
+    ]
     if (
-        not 1 <= payload["runs_per_case"] <= MAX_RUNS_PER_CASE
-        or not 1 <= len(payload["case_ids"]) <= MAX_CASES
-        or len(payload["case_ids"]) != len(set(payload["case_ids"]))
-        or any(
-            type(case_id) is not str
-            or _SAFE_ID.fullmatch(case_id) is None
-            for case_id in payload["case_ids"]
-        )
-        or type(payload.get("case_set_sha256")) is not str
+        payload["schema_version"] != MANIFEST_SCHEMA_VERSION
+        or type(rubric_version) is not str
+        or _SAFE_VERSION.fullmatch(rubric_version) is None
+        or type(candidate_version) is not str
+        or _SAFE_VERSION.fullmatch(candidate_version) is None
+        or type(runs_per_case) is not int
+        or not 1 <= runs_per_case <= MAX_RUNS_PER_CASE
+        or type(case_ids) is not list
+        or not 1 <= len(case_ids) <= MAX_CASES
+        or type(runs) is not list
+        or type(metric_scope) is not list
+        or metric_scope != expected_metric_scope
+        or type(payload["evidence_boundary"]) is not str
+        or not payload["evidence_boundary"].strip()
+        or type(payload["case_set_sha256"]) is not str
         or re.fullmatch(r"[0-9a-f]{64}", payload["case_set_sha256"])
         is None
-        or len(payload["runs"])
-        > len(payload["case_ids"]) * payload["runs_per_case"]
     ):
         raise EvaluationConfigurationError("comparison run manifest is invalid")
-    identities = []
-    allowed_cases = set(payload["case_ids"])
-    for item in payload["runs"]:
+    if any(
+        type(case_id) is not str or _SAFE_ID.fullmatch(case_id) is None
+        for case_id in case_ids
+    ):
+        raise EvaluationConfigurationError("comparison run manifest is invalid")
+    if len(case_ids) != len(set(case_ids)):
+        raise EvaluationConfigurationError("comparison run manifest is invalid")
+
+    expected_identities = [
+        (case_id, run_index)
+        for case_id in case_ids
+        for run_index in range(1, runs_per_case + 1)
+    ]
+    if len(runs) != len(expected_identities):
+        raise EvaluationConfigurationError(
+            "comparison run manifest is not a complete run matrix"
+        )
+    actual_identities = []
+    for item in runs:
+        if type(item) is not dict:
+            raise EvaluationConfigurationError(
+                "comparison run manifest is invalid"
+            )
+        case_id = item.get("case_id")
+        run_index = item.get("run_index")
+        status = item.get("status")
         if (
-            type(item) is not dict
-            or item.get("status") not in {"succeeded", "failed"}
-            or item.get("case_id") not in allowed_cases
-            or type(item.get("run_index")) is not int
-            or not 1 <= item["run_index"] <= payload["runs_per_case"]
+            type(case_id) is not str
+            or case_id not in case_ids
+            or type(run_index) is not int
+            or not 1 <= run_index <= runs_per_case
+            or type(status) is not str
+            or status not in {"succeeded", "failed"}
         ):
             raise EvaluationConfigurationError(
                 "comparison run manifest is invalid"
             )
-        identities.append((item["case_id"], item["run_index"]))
-    if len(identities) != len(set(identities)):
-        raise EvaluationConfigurationError("comparison run manifest is invalid")
+        expected_keys = (
+            {"case_id", "run_index", "status", "public_sha256", "metrics"}
+            if status == "succeeded"
+            else {"case_id", "run_index", "status", "failure", "metrics"}
+        )
+        if set(item) != expected_keys:
+            raise EvaluationConfigurationError(
+                "comparison run manifest is invalid"
+            )
+        _validate_manifest_metrics(item["metrics"], status)
+        if status == "succeeded":
+            digest = item["public_sha256"]
+            if (
+                type(digest) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise EvaluationConfigurationError(
+                    "comparison run manifest is invalid"
+                )
+        else:
+            failure = item["failure"]
+            if (
+                type(failure) is not dict
+                or set(failure) != {"category", "stage"}
+                or type(failure.get("category")) is not str
+                or failure["category"] not in _SAFE_FAILURE_CATEGORIES
+                or type(failure.get("stage")) is not str
+                or not failure["stage"].strip()
+                or len(failure["stage"]) > 64
+            ):
+                raise EvaluationConfigurationError(
+                    "comparison run manifest is invalid"
+                )
+        actual_identities.append((case_id, run_index))
+    if actual_identities != expected_identities:
+        raise EvaluationConfigurationError(
+            "comparison run manifest is not a complete ordered run matrix"
+        )
     return payload
+
+
+def _validate_manifest_metrics(payload: object, status: str) -> None:
+    keys = {
+        "generation_success",
+        "hard_gate_review_pass",
+        "must_teach_coverage",
+        "clause_action_binding",
+        "schema_runtime_pass",
+        "duration_ms",
+        "call_count",
+    }
+    if type(payload) is not dict or set(payload) != keys:
+        raise EvaluationConfigurationError("comparison run metrics are invalid")
+    expected_success = status == "succeeded"
+    if (
+        type(payload["generation_success"]) is not bool
+        or payload["generation_success"] is not expected_success
+        or type(payload["hard_gate_review_pass"]) is not bool
+        or type(payload["schema_runtime_pass"]) is not bool
+        or type(payload["duration_ms"]) is not int
+        or payload["duration_ms"] < 0
+        or (
+            payload["call_count"] is not None
+            and (
+                type(payload["call_count"]) is not int
+                or payload["call_count"] < 0
+            )
+        )
+    ):
+        raise EvaluationConfigurationError("comparison run metrics are invalid")
+    for field, count_key in (
+        ("must_teach_coverage", "covered"),
+        ("clause_action_binding", "valid"),
+    ):
+        metric = payload[field]
+        if not expected_success:
+            if metric is not None:
+                raise EvaluationConfigurationError(
+                    "comparison run metrics are invalid"
+                )
+            continue
+        if (
+            type(metric) is not dict
+            or set(metric) != {count_key, "total", "ratio"}
+            or type(metric[count_key]) is not int
+            or type(metric["total"]) is not int
+            or metric[count_key] < 0
+            or metric["total"] < metric[count_key]
+            or type(metric["ratio"]) not in {int, float}
+            or type(metric["ratio"]) is bool
+            or not 0 <= metric["ratio"] <= 1
+        ):
+            raise EvaluationConfigurationError(
+                "comparison run metrics are invalid"
+            )
 
 
 def create_blind_comparison(left: Path, right: Path, output_dir: Path) -> None:
@@ -639,36 +1149,60 @@ def create_blind_comparison(left: Path, right: Path, output_dir: Path) -> None:
         != right_manifest.get("case_set_sha256")
     ):
         raise EvaluationConfigurationError("comparison run contracts do not match")
-    _ensure_empty_output(output_dir)
+    output = _OutputGuard.create(output_dir)
 
-    left_successes = {
-        (item.get("case_id"), item.get("run_index"))
+    left_by_identity = {
+        (item["case_id"], item["run_index"]): item
         for item in left_manifest["runs"]
-        if type(item) is dict and item.get("status") == "succeeded"
     }
-    right_successes = {
-        (item.get("case_id"), item.get("run_index"))
+    right_by_identity = {
+        (item["case_id"], item["run_index"]): item
         for item in right_manifest["runs"]
-        if type(item) is dict and item.get("status") == "succeeded"
     }
-    keys = sorted(left_successes & right_successes)
+    keys = [
+        (case_id, run_index)
+        for case_id in left_manifest["case_ids"]
+        for run_index in range(1, left_manifest["runs_per_case"] + 1)
+    ]
+    left_successes = sum(
+        item["status"] == "succeeded"
+        for item in left_manifest["runs"]
+    )
+    right_successes = sum(
+        item["status"] == "succeeded"
+        for item in right_manifest["runs"]
+    )
+    both_success = 0
+    both_failed = 0
+    one_sided_failure = 0
     pairs = []
     mappings = []
     for case_id, run_index in keys:
-        if type(case_id) is not str or type(run_index) is not int:
-            raise EvaluationConfigurationError("comparison run identity is invalid")
+        left_run = left_by_identity[(case_id, run_index)]
+        right_run = right_by_identity[(case_id, run_index)]
+        if left_run["status"] != "succeeded" or right_run["status"] != "succeeded":
+            if left_run["status"] == right_run["status"] == "failed":
+                both_failed += 1
+            else:
+                one_sided_failure += 1
+            continue
+        both_success += 1
         stem = "%s__run-%02d" % (case_id, run_index)
-        try:
-            left_payload = _read_json(
-                left / "public" / "runtime" / (stem + ".json"),
-                "comparison public runtime",
+        left_raw, left_sha256 = _read_public_artifact(
+            left / "public" / "runtime" / (stem + ".json")
+        )
+        right_raw, right_sha256 = _read_public_artifact(
+            right / "public" / "runtime" / (stem + ".json")
+        )
+        if (
+            left_sha256 != left_run["public_sha256"]
+            or right_sha256 != right_run["public_sha256"]
+        ):
+            raise EvaluationConfigurationError(
+                "comparison public artifact hash mismatch"
             )
-            right_payload = _read_json(
-                right / "public" / "runtime" / (stem + ".json"),
-                "comparison public runtime",
-            )
-        except EvaluationConfigurationError:
-            raise
+        left_payload = _validate_public_artifact(left_raw)
+        right_payload = _validate_public_artifact(right_raw)
         swap = hashlib.sha256(stem.encode("utf-8")).digest()[0] % 2 == 1
         candidates = [right_payload, left_payload] if swap else [left_payload, right_payload]
         labels = ["right", "left"] if swap else ["left", "right"]
@@ -708,13 +1242,26 @@ def create_blind_comparison(left: Path, right: Path, output_dir: Path) -> None:
                 ),
             },
         })
-    _write_json(output_dir / "public" / "blind_pairs.json", pairs)
-    _write_json(output_dir / "private" / "candidate_mapping.json", mappings)
-    _write_json(output_dir / "manifest.json", {
+    excluded = both_failed + one_sided_failure
+    output.write_json("public/blind_pairs.json", pairs)
+    output.write_json("private/candidate_mapping.json", mappings)
+    output.write_json("manifest.json", {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "pair_count": len(pairs),
         "case_ids": left_manifest["case_ids"],
         "runs_per_case": left_manifest["runs_per_case"],
+        "comparison_counts": {
+            "matched_runs": len(keys),
+            "left_successes": left_successes,
+            "left_failures": len(keys) - left_successes,
+            "right_successes": right_successes,
+            "right_failures": len(keys) - right_successes,
+            "both_success": both_success,
+            "both_failed": both_failed,
+            "one_sided_failure": one_sided_failure,
+            "excluded_from_blind_pairs": excluded,
+            "blind_pairs": len(pairs),
+        },
         "evidence_boundary": (
             "Candidate labels are blinded. A teacher may record a pairwise "
             "preference; this file contains no inferred preference or learning effect."
