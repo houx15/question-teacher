@@ -473,9 +473,15 @@ class LessonGenerationService:
         await self._emit(on_stage, "正在整理参考教学路线")
         grounding_prompt = reference_grounding_prompt(problem)
         for attempt in range(2):
+            attempt_prompt = grounding_prompt
+            if attempt:
+                attempt_prompt += (
+                    "\n上一次输出结构无效。"
+                    "请仅返回符合 Schema 的 JSON 对象。"
+                )
             payload = await self._complete_json(
                 REFERENCE_GROUNDING_SYSTEM,
-                grounding_prompt,
+                attempt_prompt,
             )
             try:
                 brief = ReferenceGroundingBrief.validate_for_reference_answer(

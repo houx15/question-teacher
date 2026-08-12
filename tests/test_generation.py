@@ -491,7 +491,9 @@ def test_grounder_retries_one_schema_invalid_response_without_reusing_content():
         REFERENCE_GROUNDING_SYSTEM,
         REFERENCE_GROUNDING_SYSTEM,
     ]
-    assert client.user_prompts[0] == client.user_prompts[1]
+    assert client.user_prompts[0] != client.user_prompts[1]
+    assert "上一次输出结构无效" in client.user_prompts[1]
+    assert "请仅返回符合 Schema 的 JSON 对象" in client.user_prompts[1]
     assert "invalid grounding response" not in client.user_prompts[1]
 
 
