@@ -471,17 +471,23 @@ class LessonGenerationService:
         on_stage: Optional[StageCallback],
     ) -> FrozenTeachingRoute:
         await self._emit(on_stage, "正在整理参考教学路线")
-        payload = await self._complete_json(
-            REFERENCE_GROUNDING_SYSTEM,
-            reference_grounding_prompt(problem),
-        )
-        try:
-            brief = ReferenceGroundingBrief.validate_for_reference_answer(
-                payload,
-                problem.reference_answer,
+        grounding_prompt = reference_grounding_prompt(problem)
+        for attempt in range(2):
+            payload = await self._complete_json(
+                REFERENCE_GROUNDING_SYSTEM,
+                grounding_prompt,
             )
-        except ValidationError:
-            raise LessonQualityError("参考教学路线结构无效。") from None
+            try:
+                brief = ReferenceGroundingBrief.validate_for_reference_answer(
+                    payload,
+                    problem.reference_answer,
+                )
+                break
+            except ValidationError:
+                if attempt == 1:
+                    raise LessonQualityError(
+                        "参考教学路线结构无效。"
+                    ) from None
         try:
             brief = ReferenceSafetyPolicy.from_problem(
                 problem

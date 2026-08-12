@@ -15,7 +15,10 @@ from app.generation import (
 )
 from app.llm_client import ModelResponseError
 from app.math_engine import MathEngine
-from app.prompts import REFERENCE_AUDITOR_SYSTEM
+from app.prompts import (
+    REFERENCE_AUDITOR_SYSTEM,
+    REFERENCE_GROUNDING_SYSTEM,
+)
 from app.preparation_pipeline import (
     LessonPreparationPipeline,
     PreparationFailure,
@@ -469,6 +472,52 @@ def test_real_grounder_precedes_preparation_and_freezes_route_and_focus_targets(
     )
 
 
+def test_grounder_retries_one_schema_invalid_response_without_reusing_content():
+    client = FakeClient(
+        [
+            {"private": "invalid grounding response"},
+            grounding_payload(),
+        ]
+    )
+    service = LessonGenerationService(client, MathEngine())
+    source_problem = grounded_source_problem()
+
+    route = asyncio.run(
+        service._build_grounded_teaching_route(source_problem, None)
+    )
+
+    assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    assert client.system_prompts == [
+        REFERENCE_GROUNDING_SYSTEM,
+        REFERENCE_GROUNDING_SYSTEM,
+    ]
+    assert client.user_prompts[0] == client.user_prompts[1]
+    assert "invalid grounding response" not in client.user_prompts[1]
+
+
+def test_grounder_schema_retry_is_bounded_to_one_extra_attempt():
+    client = FakeClient(
+        [
+            {"private": "first invalid response"},
+            {"private": "second invalid response"},
+        ]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    with pytest.raises(LessonQualityError, match="参考教学路线结构无效"):
+        asyncio.run(
+            service._build_grounded_teaching_route(
+                grounded_source_problem(),
+                None,
+            )
+        )
+
+    assert client.system_prompts == [
+        REFERENCE_GROUNDING_SYSTEM,
+        REFERENCE_GROUNDING_SYSTEM,
+    ]
+
+
 def test_grounded_raw_reference_reaches_only_grounder_and_reference_analyst():
     marker = "PRIVATE-GROUNDED-REFERENCE-TASK7"
     client = _approved_preparation_client([grounding_payload()])
@@ -569,7 +618,7 @@ def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream(
 def test_grounder_reference_only_literal_is_rejected_before_preparation():
     payload = grounding_payload()
     payload["method_name"] = RAW_REFERENCE_MARKER
-    client = _approved_preparation_client([payload])
+    client = _approved_preparation_client([payload, payload])
     source = grounded_source_problem(
         reference_solution_text=RAW_REFERENCE_MARKER
     )
@@ -582,7 +631,10 @@ def test_grounder_reference_only_literal_is_rejected_before_preparation():
         )
 
     assert RAW_REFERENCE_MARKER not in str(captured.value)
-    assert [call.role for call in client.calls] == ["reference_grounder"]
+    assert [call.role for call in client.calls] == [
+        "reference_grounder",
+        "reference_grounder",
+    ]
 
 
 def test_checker_unavailability_softly_degrades_the_real_grounded_route():
