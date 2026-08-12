@@ -437,6 +437,55 @@ def test_legacy_generator_without_bundle_remains_supported():
     assert store.get_generation_record(job["lesson_id"]) is None
 
 
+@pytest.mark.parametrize(
+    "generator",
+    [FakeGenerator(), BundleGenerator()],
+    ids=["legacy", "bundle"],
+)
+def test_precreated_empty_database_initializes_during_generation(
+    tmp_path,
+    generator,
+):
+    database_path = tmp_path / "empty.sqlite3"
+    sqlite3.connect(database_path).close()
+    store = MemoryStore(database_path)
+    client, _, audio = build_client(store=store, generator=generator)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+
+    assert job["status"] == "completed"
+    assert audio.calls == 1
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM lessons"
+        ).fetchone()[0] == 1
+
+
+def test_malformed_lessons_schema_fails_before_tts_without_being_swallowed(
+    tmp_path,
+):
+    database_path = tmp_path / "malformed.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE lessons (wrong_column TEXT)")
+    store = MemoryStore(database_path)
+    audio = FakeAudioService()
+    client, _, _ = build_client(store=store, audio_service=audio)
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job = client.get(f"/api/jobs/{response.json()['job_id']}").json()
+
+    assert job["status"] == "failed"
+    assert job["error"] == "课程生成失败，请稍后重试。"
+    assert audio.calls == 0
+
+
 def test_bundle_generation_cancellation_propagates_without_persistence():
     class CancelledBundleGenerator:
         async def generate_bundle(self, problem, on_stage=None):

@@ -100,6 +100,15 @@ class MemoryStore:
                 return False
             connection = self._connect()
             try:
+                table_exists = connection.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = 'lessons'
+                    """
+                ).fetchone()
+                if table_exists is None:
+                    return False
                 return connection.execute(
                     "SELECT 1 FROM lessons WHERE lesson_id = ?",
                     (lesson_id,),

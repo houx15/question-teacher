@@ -632,6 +632,22 @@ def test_sqlite_lookup_does_not_create_a_missing_database(tmp_path):
     assert not database_path.exists()
 
 
+def test_lesson_exists_treats_precreated_empty_database_as_empty(tmp_path):
+    database_path = tmp_path / "empty.sqlite3"
+    sqlite3.connect(database_path).close()
+
+    assert MemoryStore(database_path).lesson_exists("lesson-empty") is False
+
+
+def test_lesson_exists_propagates_malformed_lessons_schema(tmp_path):
+    database_path = tmp_path / "malformed.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE lessons (wrong_column TEXT)")
+
+    with pytest.raises(sqlite3.OperationalError, match="lesson_id"):
+        MemoryStore(database_path).lesson_exists("lesson-malformed")
+
+
 def test_sqlite_store_rejects_duplicate_lesson_id_without_overwriting(
     tmp_path,
 ):
