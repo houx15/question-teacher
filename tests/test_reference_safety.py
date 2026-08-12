@@ -60,6 +60,7 @@ def test_sanitized_downstream_allows_independent_math_explanations():
                 "then $f(a)=0$."
             ),
             "learner_state": "Has equation $4n^2-4mn+2n=0$.",
+            "method": "Systematically apply the root property rules.",
         },
         downstream_of_sanitized_trace=True,
     )

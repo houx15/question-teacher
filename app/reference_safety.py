@@ -201,6 +201,18 @@ def _ascii_skeleton_candidate(value: str) -> str:
     return skeleton
 
 
+def _control_skeleton(value: str) -> str:
+    tokens = [
+        token.casefold()
+        for token in _ASCII_ALNUM_RUN.findall(value)
+        if token.casefold() not in _SKELETON_MATH_COMMANDS
+    ]
+    skeleton = "".join(tokens)
+    if any(term in skeleton for term in _CONTROL_SKELETON_TERMS):
+        return skeleton
+    return ""
+
+
 def _skeleton_fingerprints(value: str) -> Iterable[str]:
     candidate = _ascii_skeleton_candidate(value)
     size = REFERENCE_PROSE_FINGERPRINT_LENGTH
@@ -591,6 +603,7 @@ class ReferenceSafetyPolicy:
     sensitive_skeleton_fingerprints: FrozenSet[str]
     sensitive_short_skeletons: FrozenSet[str]
     sensitive_math_candidates: FrozenSet[str]
+    sensitive_control_skeletons: FrozenSet[str]
     authorized_geometry_identifiers: FrozenSet[str]
     authorized_math_identifiers: FrozenSet[str]
     public_problem_text: str
@@ -635,6 +648,15 @@ class ReferenceSafetyPolicy:
                 item
                 for item, count in sensitive_math_candidates.items()
                 if count > 0
+            ),
+            sensitive_control_skeletons=frozenset(
+                candidate.split(":", 1)[1]
+                for candidate, count in sensitive_math_candidates.items()
+                if count > 0
+                and any(
+                    term in candidate
+                    for term in _CONTROL_SKELETON_TERMS
+                )
             ),
             authorized_geometry_identifiers=frozenset(
                 geometry_identifiers(public)
@@ -694,10 +716,10 @@ class ReferenceSafetyPolicy:
                     "reference-only content crossed the safe boundary"
                 )
             if downstream_of_sanitized_trace:
-                downstream_skeleton = _ascii_skeleton_candidate(text)
+                downstream_skeleton = _control_skeleton(text)
                 skeleton_leak = any(
-                    term in downstream_skeleton
-                    for term in _CONTROL_SKELETON_TERMS
+                    item in downstream_skeleton
+                    for item in self.sensitive_control_skeletons
                 )
                 short_leak = False
             else:
