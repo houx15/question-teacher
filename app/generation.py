@@ -30,6 +30,10 @@ from app.preparation_models import (
     RuntimeCueProvenanceRecord,
 )
 from app.generation_integrity import validate_lesson_generation_pair
+from app.generation_diagnostics import (
+    GenerationFailureCategory,
+    InternalGenerationDiagnostic,
+)
 from app.preparation_pipeline import LessonPreparationPipeline
 from app.prepared_lesson_adapter import (
     PreparedLessonAdaptationError,
@@ -98,6 +102,19 @@ RESOLVED_METHODS = {
 
 class LessonQualityError(RuntimeError):
     """Raised when a generated lesson cannot pass safe quality gates."""
+
+
+class LessonGenerationFailure(LessonQualityError):
+    """Safe typed generation failure with no provider-authored detail."""
+
+    def __init__(
+        self,
+        category: GenerationFailureCategory,
+        detail: str,
+    ) -> None:
+        diagnostic = InternalGenerationDiagnostic(category=category)
+        super().__init__(detail)
+        self.category = diagnostic.category
 
 
 class GeneratedLessonBundle(SchemaModel):
@@ -293,7 +310,9 @@ class LessonGenerationService:
                 ),
             )
         except PreparedLessonAdaptationError:
-            raise LessonQualityError("课程编排失败。") from None
+            raise LessonGenerationFailure(
+                "compile_failed", "课程编排失败。"
+            ) from None
         draft = prepared_draft_run.draft
 
         await self._emit(on_stage, "正在编译课堂")
@@ -336,7 +355,9 @@ class LessonGenerationService:
                 lesson_id="integrity-baseline",
             )
         except LessonCompileError:
-            raise LessonQualityError("课堂编译失败。") from None
+            raise LessonGenerationFailure(
+                "compile_failed", "课堂编译失败。"
+            ) from None
         compiler_problem = ProblemInput.model_validate_json(
             frozen_problem_json
         )
@@ -351,17 +372,21 @@ class LessonGenerationService:
                 compiler_report,
             )
         except LessonCompileError:
-            raise LessonQualityError("课堂编译失败。") from None
+            raise LessonGenerationFailure(
+                "compile_failed", "课堂编译失败。"
+            ) from None
         if type(lesson) is not RuntimeLesson:
-            raise LessonQualityError("课堂编译完整性检查失败。")
+            raise LessonGenerationFailure(
+                "compile_failed", "课堂编译完整性检查失败。"
+            )
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
                 lesson_payload = lesson.model_dump(mode="python")
             lesson = RuntimeLesson.model_validate(lesson_payload)
         except (ValidationError, TypeError, ValueError):
-            raise LessonQualityError(
-                "课堂编译完整性检查失败。"
+            raise LessonGenerationFailure(
+                "compile_failed", "课堂编译完整性检查失败。"
             ) from None
         if (
             compiler_problem.model_dump_json() != frozen_problem_json
@@ -373,7 +398,9 @@ class LessonGenerationService:
             or _runtime_semantics(lesson)
             != _runtime_semantics(expected_lesson)
         ):
-            raise LessonQualityError("课堂编译完整性检查失败。")
+            raise LessonGenerationFailure(
+                "compile_failed", "课堂编译完整性检查失败。"
+            )
         generation_record = GenerationRecord(
             generation_id=str(uuid4()),
             lesson_id=lesson.lesson_id,
@@ -400,7 +427,9 @@ class LessonGenerationService:
                 generation_record=generation_record,
             )
         except ValidationError:
-            raise LessonQualityError("课堂编译完整性检查失败。") from None
+            raise LessonGenerationFailure(
+                "compile_failed", "课堂编译完整性检查失败。"
+            ) from None
 
     async def _build_grounded_teaching_route(
         self,

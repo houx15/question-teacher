@@ -26,7 +26,9 @@ from app.audio_service import LessonAudioService
 from app.preparation_models import GenerationRecord
 from app.main import PROJECT_ROOT, create_app
 from app.math_engine import MathEngine
+from app.llm_client import ModelStructureError
 from app.preparation_pipeline import PreparationFailure
+from app.tts_client import SpeechGenerationError
 from app.schemas import (
     BoardAction,
     Interaction,
@@ -48,6 +50,13 @@ from tests.test_generation import (
     valid_draft,
 )
 from tests.test_preparation_models import prepared_lesson
+from tests.test_preparation_pipeline import (
+    client as preparation_client,
+    downstream_review_payload,
+    downstream_score_payload,
+    downstream_simulation_payload,
+    review_finding,
+)
 from tests.generation_fakes import FakeClient
 
 
@@ -391,6 +400,284 @@ class FailingLessonStore(RecordingStore):
     def save_lesson(self, lesson, generation_record=None):
         del lesson, generation_record
         raise OSError("private database path")
+
+
+_DETAILED_PUBLIC_STAGES = [
+    "正在理解题目",
+    "正在整理参考解析",
+    "正在设计解题思维轨迹",
+    "正在编写讲稿",
+    "正在设计互动",
+    "正在编排板书与高亮",
+    "正在审核和优化课程",
+    "正在编译课堂",
+    "正在生成讲解语音",
+    "正在保存课程",
+    "已完成",
+]
+
+
+def test_public_preparation_stage_mapping_is_specific_and_stable():
+    assert {
+        stage: _PUBLIC_GENERATION_STAGES[stage]
+        for stage in [
+            "整理参考解析",
+            "设计解题思维轨迹",
+            "编写讲稿",
+            "设计互动",
+            "编排板书与高亮",
+            "模拟学生并审核课程",
+            "正在编译课堂",
+            "正在生成讲解语音",
+            "正在保存课程",
+        ]
+    } == {
+        "整理参考解析": "正在整理参考解析",
+        "设计解题思维轨迹": "正在设计解题思维轨迹",
+        "编写讲稿": "正在编写讲稿",
+        "设计互动": "正在设计互动",
+        "编排板书与高亮": "正在编排板书与高亮",
+        "模拟学生并审核课程": "正在审核和优化课程",
+        "正在编译课堂": "正在编译课堂",
+        "正在生成讲解语音": "正在生成讲解语音",
+        "正在保存课程": "正在保存课程",
+    }
+
+
+def test_internal_repair_marker_stays_in_review_without_premature_compile():
+    assert _PUBLIC_GENERATION_STAGES["正在修订完整讲解"] == (
+        "正在审核和优化课程"
+    )
+
+
+def _generation_service_with_pipeline(preparation_fake):
+    from tests.generation_fakes import CompositeGenerationClient
+
+    composite = CompositeGenerationClient(FakeClient([]), preparation_fake)
+    service = LessonGenerationService(composite, MathEngine())
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+    return service
+
+
+def test_real_preparation_pipeline_reports_each_public_stage_through_save():
+    store = RecordingStore()
+    job = store.create_job()
+    generator = _generation_service_with_pipeline(preparation_client())
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            preparation_problem(),
+            store,
+            generator,
+            FakeAudioService(),
+        )
+    )
+
+    assert store.seen_stages == _DETAILED_PUBLIC_STAGES
+
+
+def test_real_review_repair_does_not_repeat_or_regress_public_progress():
+    finding = review_finding("classroom_director")
+    fake = preparation_client(
+        performances=[downstream_score_payload(), downstream_score_payload()],
+        simulations=[
+            downstream_simulation_payload(),
+            downstream_simulation_payload(),
+        ],
+        reviews=[
+            downstream_review_payload("revision_required", [finding]),
+            downstream_review_payload(),
+        ],
+    )
+    store = RecordingStore()
+    job = store.create_job()
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            preparation_problem(),
+            store,
+            _generation_service_with_pipeline(fake),
+            FakeAudioService(),
+        )
+    )
+
+    assert store.seen_stages == _DETAILED_PUBLIC_STAGES
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_category"),
+    [
+        (
+            PreparationFailure("provider_error", "script_teacher", "secret"),
+            "provider_error",
+        ),
+        (
+            PreparationFailure("invalid_structure", "script_teacher", "secret"),
+            "invalid_structure",
+        ),
+        (
+            ModelStructureError("invalid_json", "secret provider payload"),
+            "invalid_structure",
+        ),
+        (
+            PreparationFailure(
+                "reference_trace_failed", "reference_analyst", "secret"
+            ),
+            "reference_trace_failed",
+        ),
+        (
+            PreparationFailure(
+                "teaching_script_failed", "script_teacher", "secret"
+            ),
+            "reasoning_design_failed",
+        ),
+        (
+            PreparationFailure(
+                "review_not_converged", "lesson_reviewer", "secret"
+            ),
+            "review_not_converged",
+        ),
+    ],
+)
+def test_generation_failures_record_only_allowlisted_private_categories(
+    failure,
+    expected_category,
+):
+    store = MemoryStore()
+    job = store.create_job()
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(failure),
+            FakeAudioService(),
+        )
+    )
+
+    diagnostic = store.get_job_diagnostic(job.job_id)
+    assert diagnostic.category == expected_category
+    assert diagnostic.model_dump() == {"category": expected_category}
+    assert "secret" not in str(diagnostic)
+    assert store.get_job(job.job_id).error == "课程生成失败，请稍后重试。"
+
+
+def test_internal_failure_category_is_absent_from_public_job_response():
+    store = MemoryStore()
+    failure = PreparationFailure(
+        "review_not_converged",
+        "lesson_reviewer",
+        "private feedback",
+    )
+    client, _, _ = build_client(
+        store=store,
+        generator=FakeGenerator(failure),
+    )
+
+    response = client.post(
+        "/api/lessons/generate",
+        json=problem_input().model_dump(),
+    )
+    job_id = response.json()["job_id"]
+    public_job = client.get(f"/api/jobs/{job_id}").json()
+
+    assert "category" not in public_job
+    assert "private feedback" not in str(public_job)
+    assert store.get_job_diagnostic(job_id).category == "review_not_converged"
+
+
+def test_tts_and_persistence_failures_have_private_phase_categories():
+    class FailingTts:
+        async def attach_audio(self, lesson, on_stage=None):
+            del lesson, on_stage
+            raise SpeechGenerationError("provider payload and key")
+
+    tts_store = MemoryStore()
+    tts_job = tts_store.create_job()
+    asyncio.run(
+        run_generation(
+            tts_job.job_id,
+            problem_input(),
+            tts_store,
+            FakeGenerator(),
+            FailingTts(),
+        )
+    )
+    persistence_store = FailingLessonStore()
+    persistence_job = persistence_store.create_job()
+    asyncio.run(
+        run_generation(
+            persistence_job.job_id,
+            problem_input(),
+            persistence_store,
+            FakeGenerator(),
+            FakeAudioService(),
+        )
+    )
+
+    assert tts_store.get_job_diagnostic(tts_job.job_id).category == "tts_failed"
+    assert (
+        persistence_store.get_job_diagnostic(persistence_job.job_id).category
+        == "persistence_failed"
+    )
+
+
+def test_save_stage_precedes_atomic_save_and_lesson_id_publication():
+    class SaveObservingStore(MemoryStore):
+        def __init__(self):
+            super().__init__()
+            self.job_id = None
+
+        def save_lesson(self, lesson, generation_record=None):
+            job = self.get_job(self.job_id)
+            assert job.stage == "正在保存课程"
+            assert job.lesson_id is None
+            super().save_lesson(lesson, generation_record)
+
+    store = SaveObservingStore()
+    job = store.create_job()
+    store.job_id = job.job_id
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            FakeAudioService(),
+        )
+    )
+
+    completed = store.get_job(job.job_id)
+    assert completed.status == "completed"
+    assert completed.lesson_id == "lesson-1"
+
+
+def test_input_error_remains_correctable_without_internal_failure_category():
+    store = MemoryStore()
+    job = store.create_job()
+    public_message = "请补充参考答案。"
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(LessonInputError(public_message)),
+            FakeAudioService(),
+        )
+    )
+
+    assert store.get_job(job.job_id).error == public_message
+    assert store.get_job_diagnostic(job.job_id) is None
 
 
 def test_run_generation_prefers_bundle_and_keeps_record_private(tmp_path):
@@ -1029,11 +1316,12 @@ def test_generation_job_completes_with_public_stage_sequence():
     assert audio_service.calls == 1
     assert store.seen_stages == [
         "正在理解题目",
-        "正在核对题目材料",
-        "正在设计完整讲解",
-        "正在进行整篇审稿",
-        "正在修订并编译课堂",
+        "正在整理参考解析",
+        "正在编写讲稿",
+        "正在审核和优化课程",
+        "正在编译课堂",
         "正在生成讲解语音",
+        "正在保存课程",
         "已完成",
     ]
 
@@ -1054,15 +1342,7 @@ def test_preparation_pipeline_stages_advance_public_progress_monotonically():
     assert response.status_code == 202
     assert generator.calls == 1
     assert audio_service.calls == 1
-    assert store.seen_stages == [
-        "正在理解题目",
-        "正在核对题目材料",
-        "正在设计完整讲解",
-        "正在进行整篇审稿",
-        "正在修订并编译课堂",
-        "正在生成讲解语音",
-        "已完成",
-    ]
+    assert store.seen_stages == _DETAILED_PUBLIC_STAGES
 
 
 def test_script_repair_after_review_does_not_regress_public_progress():
@@ -1085,15 +1365,7 @@ def test_script_repair_after_review_does_not_regress_public_progress():
     )
 
     assert response.status_code == 202
-    assert store.seen_stages == [
-        "正在理解题目",
-        "正在核对题目材料",
-        "正在设计完整讲解",
-        "正在进行整篇审稿",
-        "正在修订并编译课堂",
-        "正在生成讲解语音",
-        "已完成",
-    ]
+    assert store.seen_stages == _DETAILED_PUBLIC_STAGES
 
 
 @pytest.mark.parametrize(
@@ -1148,60 +1420,46 @@ def test_multiple_repairs_from_different_roles_keep_public_progress_monotonic(
     )
 
     assert response.status_code == 202
-    expected = [
-        "正在理解题目",
-        "正在核对题目材料",
-        "正在设计完整讲解",
-        "正在进行整篇审稿",
-        "正在修订并编译课堂",
-        "正在生成讲解语音",
-        "已完成",
-    ]
-    assert store.seen_stages == expected
+    assert store.seen_stages == _DETAILED_PUBLIC_STAGES
 
 
 def test_concurrent_generation_jobs_keep_independent_progress_state():
     store = PerJobRecordingStore()
     first_job = store.create_job()
     second_job = store.create_job()
-    first_generator = RepairStageGenerator(
-        [
-            [
-                "编写讲稿",
-                "设计互动",
-                "编排板书与高亮",
-                "模拟学生并审核课程",
-            ]
-        ],
-        lesson_id="lesson-first",
+    first_generator = _generation_service_with_pipeline(
+        preparation_client()
     )
-    second_generator = RepairStageGenerator(
-        [
-            [
-                "设计互动",
-                "编排板书与高亮",
-                "模拟学生并审核课程",
+    finding = review_finding("classroom_director")
+    second_generator = _generation_service_with_pipeline(
+        preparation_client(
+            performances=[
+                downstream_score_payload(),
+                downstream_score_payload(),
             ],
-            [
-                "编排板书与高亮",
-                "模拟学生并审核课程",
+            simulations=[
+                downstream_simulation_payload(),
+                downstream_simulation_payload(),
             ],
-        ],
-        lesson_id="lesson-second",
+            reviews=[
+                downstream_review_payload("revision_required", [finding]),
+                downstream_review_payload(),
+            ],
+        )
     )
 
     async def run_both():
         await asyncio.gather(
-            run_generation(
-                first_job.job_id,
-                problem_input(),
+                run_generation(
+                    first_job.job_id,
+                    preparation_problem(),
                 store,
                 first_generator,
                 FakeAudioService(),
             ),
-            run_generation(
-                second_job.job_id,
-                problem_input(),
+                run_generation(
+                    second_job.job_id,
+                    preparation_problem(),
                 store,
                 second_generator,
                 FakeAudioService(),
@@ -1210,17 +1468,14 @@ def test_concurrent_generation_jobs_keep_independent_progress_state():
 
     asyncio.run(run_both())
 
-    expected = [
-        "正在理解题目",
-        "正在核对题目材料",
-        "正在设计完整讲解",
-        "正在进行整篇审稿",
-        "正在修订并编译课堂",
-        "正在生成讲解语音",
-        "已完成",
-    ]
-    assert store.seen_stages_by_job[first_job.job_id] == expected
-    assert store.seen_stages_by_job[second_job.job_id] == expected
+    assert (
+        store.seen_stages_by_job[first_job.job_id]
+        == _DETAILED_PUBLIC_STAGES
+    )
+    assert (
+        store.seen_stages_by_job[second_job.job_id]
+        == _DETAILED_PUBLIC_STAGES
+    )
 
 
 @pytest.mark.parametrize(
@@ -1235,7 +1490,7 @@ def test_concurrent_generation_jobs_keep_independent_progress_state():
 def test_capability_and_grounding_share_one_public_generation_stage(
     internal_stage,
 ):
-    assert _PUBLIC_GENERATION_STAGES[internal_stage] == "正在核对题目材料"
+    assert _PUBLIC_GENERATION_STAGES[internal_stage] == "正在整理参考解析"
 
 
 def test_generation_with_reference_solution_keeps_audit_internal():
@@ -1255,7 +1510,7 @@ def test_generation_with_reference_solution_keeps_audit_internal():
     )
 
     assert response.status_code == 202
-    assert "正在核对题目材料" in store.seen_stages
+    assert "正在整理参考解析" in store.seen_stages
     assert "正在审阅参考解析" not in store.seen_stages
 
 
@@ -1370,6 +1625,7 @@ def test_compiler_failure_never_reaches_audio_service():
     assert failed.status == "failed"
     assert failed.error == "课程生成失败，请稍后重试。"
     assert "private compiler output" not in failed.error
+    assert store.get_job_diagnostic(job.job_id).category == "compile_failed"
     assert audio_service.calls == 0
 
 

@@ -1,20 +1,28 @@
 import asyncio
 from dataclasses import dataclass
 import inspect
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
 from app.audio_manifest import validate_lesson_audio_manifest
-from app.generation import GeneratedLessonBundle, LessonInputError
+from app.generation import (
+    GeneratedLessonBundle,
+    LessonGenerationFailure,
+    LessonInputError,
+    LessonQualityError,
+)
+from app.generation_diagnostics import GenerationFailureCategory
 from app.generation_integrity import (
     audio_neutral_lesson_json,
     validate_lesson_generation_pair,
 )
 from app.math_engine import MathEngine, MathValidationError
 from app.preparation_models import GenerationRecord
+from app.preparation_pipeline import PreparationFailure
+from app.llm_client import ModelResponseError, ModelStructureError
 from app.schemas import (
     GenerationJob,
     NonEmptyString,
@@ -45,31 +53,36 @@ class ApiServices:
 
 
 _PUBLIC_GENERATION_STAGES = {
-    "正在验证数学路线": "正在核对题目材料",
-    "正在规划数学路线": "正在核对题目材料",
-    "正在审阅参考解析": "正在核对题目材料",
-    "正在整理参考教学路线": "正在核对题目材料",
-    "整理参考解析": "正在核对题目材料",
-    "设计解题思维轨迹": "正在设计完整讲解",
-    "编写讲稿": "正在设计完整讲解",
-    "设计互动": "正在设计完整讲解",
-    "编排板书与高亮": "正在设计完整讲解",
-    "模拟学生并审核课程": "正在进行整篇审稿",
-    "正在设计完整讲解": "正在设计完整讲解",
-    "正在准备互动素材": "正在设计完整讲解",
-    "正在进行整篇审稿": "正在进行整篇审稿",
-    "正在修订完整讲解": "正在修订并编译课堂",
-    "正在编译课堂": "正在修订并编译课堂",
+    "正在验证数学路线": "正在整理参考解析",
+    "正在规划数学路线": "正在整理参考解析",
+    "正在审阅参考解析": "正在整理参考解析",
+    "正在整理参考教学路线": "正在整理参考解析",
+    "整理参考解析": "正在整理参考解析",
+    "设计解题思维轨迹": "正在设计解题思维轨迹",
+    "编写讲稿": "正在编写讲稿",
+    "设计互动": "正在设计互动",
+    "编排板书与高亮": "正在编排板书与高亮",
+    "模拟学生并审核课程": "正在审核和优化课程",
+    "正在设计完整讲解": "正在编写讲稿",
+    "正在准备互动素材": "正在设计互动",
+    "正在进行整篇审稿": "正在审核和优化课程",
+    "正在修订完整讲解": "正在审核和优化课程",
+    "正在编译课堂": "正在编译课堂",
     "正在生成讲解语音": "正在生成讲解语音",
+    "正在保存课程": "正在保存课程",
 }
 
 _PUBLIC_GENERATION_STAGE_ORDER = (
     "正在理解题目",
-    "正在核对题目材料",
-    "正在设计完整讲解",
-    "正在进行整篇审稿",
-    "正在修订并编译课堂",
+    "正在整理参考解析",
+    "正在设计解题思维轨迹",
+    "正在编写讲稿",
+    "正在设计互动",
+    "正在编排板书与高亮",
+    "正在审核和优化课程",
+    "正在编译课堂",
     "正在生成讲解语音",
+    "正在保存课程",
 )
 _PUBLIC_GENERATION_STAGE_ORDINALS = {
     stage: ordinal
@@ -81,6 +94,62 @@ def safe_generation_error(error: Exception) -> str:
     if isinstance(error, LessonInputError):
         return error.public_message
     return "课程生成失败，请稍后重试。"
+
+
+_PREPARATION_FAILURE_CATEGORY_MAP = {
+    "provider_error": "provider_error",
+    "invalid_structure": "invalid_structure",
+    "reference_trace_failed": "reference_trace_failed",
+    "reference_content_leak": "reference_trace_failed",
+    "reasoning_design_failed": "reasoning_design_failed",
+    "teaching_script_failed": "reasoning_design_failed",
+    "interaction_plan_failed": "reasoning_design_failed",
+    "performance_score_failed": "reasoning_design_failed",
+    "simulation_failed": "reasoning_design_failed",
+    "prompt_payload_too_large": "invalid_structure",
+    "review_not_converged": "review_not_converged",
+}
+
+
+def _private_failure_category(
+    error: Exception,
+    phase: str,
+    stage_ordinal: int,
+) -> Optional[GenerationFailureCategory]:
+    if isinstance(error, LessonInputError):
+        return None
+    if isinstance(error, PreparationFailure):
+        mapped = _PREPARATION_FAILURE_CATEGORY_MAP.get(error.category)
+        if mapped is not None:
+            return mapped
+        if error.role == "reference_analyst":
+            return "reference_trace_failed"
+        if error.role == "lesson_reviewer":
+            return "review_not_converged"
+        return "reasoning_design_failed"
+    if isinstance(error, LessonGenerationFailure):
+        return error.category
+    if isinstance(error, ModelStructureError):
+        return "invalid_structure"
+    if isinstance(error, ModelResponseError):
+        return "provider_error"
+    if phase == "tts":
+        return "tts_failed"
+    if phase == "persistence":
+        return "persistence_failed"
+    if isinstance(error, LessonQualityError):
+        compile_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
+            "正在编译课堂"
+        ]
+        trajectory_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
+            "正在设计解题思维轨迹"
+        ]
+        if stage_ordinal >= compile_ordinal:
+            return "compile_failed"
+        if stage_ordinal < trajectory_ordinal:
+            return "reference_trace_failed"
+        return "reasoning_design_failed"
+    return None
 
 
 def public_lesson_payload(lesson: RuntimeLesson) -> dict:
@@ -159,6 +228,7 @@ async def run_generation(
     lesson_id = None
     audio_attached = False
     lesson_saved = False
+    failure_phase = "generation"
     try:
         generate_bundle = getattr(generator, "generate_bundle", None)
         if callable(generate_bundle):
@@ -196,8 +266,10 @@ async def run_generation(
             _defensive_model_payload(raw_lesson)
         ).model_dump_json()
         lesson_id = lesson.lesson_id
+        failure_phase = "persistence"
         if store.lesson_exists(lesson_id):
             raise ValueError("lesson id already exists")
+        failure_phase = "tts"
         lesson_snapshot = audio_neutral_lesson_json(lesson)
         voiced_lesson = await audio_service.attach_audio(
             lesson.model_copy(deep=True),
@@ -229,6 +301,8 @@ async def run_generation(
                 generation_record,
             )
         # Expose the lesson ID only after its durable save succeeds.
+        failure_phase = "persistence"
+        report_stage("正在保存课程")
         store.save_lesson(lesson, generation_record=generation_record)
         lesson_saved = True
         store.update_job(
@@ -244,6 +318,13 @@ async def run_generation(
             raise
         if not isinstance(exc, Exception):
             raise
+        category = _private_failure_category(
+            exc,
+            failure_phase,
+            current_stage_ordinal,
+        )
+        if category is not None:
+            store.record_job_diagnostic(job_id, category)
         store.update_job(
             job_id,
             status="failed",

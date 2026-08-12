@@ -1138,6 +1138,7 @@ def test_expected_compiler_failure_is_mapped_to_safe_quality_error():
     with pytest.raises(LessonQualityError) as captured:
         asyncio.run(service.generate_bundle(preparation_problem()))
 
+    assert captured.value.category == "compile_failed"
     assert "private compiler detail" not in str(captured.value)
 
 

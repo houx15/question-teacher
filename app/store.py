@@ -9,6 +9,10 @@ from pydantic import ValidationError
 
 from app.lesson_ids import is_valid_lesson_id
 from app.generation_integrity import validate_lesson_generation_pair
+from app.generation_diagnostics import (
+    GenerationFailureCategory,
+    InternalGenerationDiagnostic,
+)
 from app.preparation_models import GenerationRecord
 from app.schemas import GenerationJob, Interaction, RuntimeLesson
 
@@ -22,6 +26,9 @@ class MemoryStore:
         self._lessons: Dict[str, RuntimeLesson] = {}
         self._generation_records: Dict[str, GenerationRecord] = {}
         self._generation_ids: Dict[str, str] = {}
+        self._job_diagnostics: Dict[
+            str, InternalGenerationDiagnostic
+        ] = {}
         self._database_path = (
             Path(database_path) if database_path is not None else None
         )
@@ -49,6 +56,29 @@ class MemoryStore:
     def get_job(self, job_id: str) -> Optional[GenerationJob]:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def record_job_diagnostic(
+        self,
+        job_id: str,
+        category: GenerationFailureCategory,
+    ) -> None:
+        diagnostic = InternalGenerationDiagnostic(category=category)
+        with self._lock:
+            if job_id not in self._jobs:
+                raise KeyError(job_id)
+            self._job_diagnostics[job_id] = diagnostic
+
+    def get_job_diagnostic(
+        self,
+        job_id: str,
+    ) -> Optional[InternalGenerationDiagnostic]:
+        with self._lock:
+            diagnostic = self._job_diagnostics.get(job_id)
+            return (
+                diagnostic.model_copy(deep=True)
+                if diagnostic is not None
+                else None
+            )
 
     def save_lesson(
         self,

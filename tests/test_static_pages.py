@@ -1242,7 +1242,7 @@ def test_generation_page_has_focused_authoring_form():
     assert 'id="model-status"' in html
     assert 'id="voice-status"' in html
     assert 'id="generation-progress"' in html
-    assert 'src="/static/generate.js?v=20260810-1"' in html
+    assert 'src="/static/generate.js?v=20260812-1"' in html
     assert "OPENAI_API_KEY" not in html
     assert "validation_report" not in html
 
@@ -1271,7 +1271,7 @@ def test_generation_page_can_reopen_and_confirm_a_saved_lesson():
 def test_versioned_generation_module_remains_cacheable():
     client = page_client()
     generate_response = client.get(
-        "/static/generate.js?v=20260810-1",
+        "/static/generate.js?v=20260812-1",
     )
     source = generate_response.text
     assert (
@@ -1301,8 +1301,21 @@ def test_generation_page_submits_optional_reference_solution():
 
     assert 'data.get("reference_solution_text")' in source
     assert "reference_solution_text: referenceSolution || null" in source
-    assert '"正在核对题目材料"' in source
-    assert 'data-stage="正在核对题目材料"' in html
+    public_stages = (
+        "正在理解题目",
+        "正在整理参考解析",
+        "正在设计解题思维轨迹",
+        "正在编写讲稿",
+        "正在设计互动",
+        "正在编排板书与高亮",
+        "正在审核和优化课程",
+        "正在编译课堂",
+        "正在生成讲解语音",
+        "正在保存课程",
+    )
+    for stage in public_stages:
+        assert f'"{stage}"' in source
+        assert f'data-stage="{stage}"' in html
     for private_status in (
         "正在验证数学路线",
         "正在审阅参考解析",

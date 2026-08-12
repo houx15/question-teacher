@@ -672,8 +672,8 @@ button {
 
 .progress-steps {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  max-width: 720px;
+  grid-template-columns: repeat(5, 1fr);
+  max-width: 760px;
   padding: 0;
   margin: 0 auto;
   list-style: none;
@@ -713,6 +713,10 @@ button {
 }
 
 .progress-steps li:first-child::after {
+  display: none;
+}
+
+.progress-steps li:nth-child(6)::after {
   display: none;
 }
 
@@ -2001,12 +2005,16 @@ button {
   }
 
   .progress-steps {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 20px 0;
   }
 
-  .progress-steps li:nth-child(4)::after {
+  .progress-steps li:nth-child(odd)::after {
     display: none;
+  }
+
+  .progress-steps li:nth-child(6)::after {
+    display: block;
   }
 }
 
