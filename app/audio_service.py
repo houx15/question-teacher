@@ -158,7 +158,16 @@ class LessonAudioService:
                 plan_asset(
                     f"{beat.beat_id}-correct",
                 )
+        if lesson_dir.exists():
+            raise SpeechGenerationError(
+                "Audio destination already exists"
+            )
         return lesson_dir
+
+    def cleanup_lesson_audio(self, lesson_id: str) -> None:
+        lesson_dir = self._lesson_directory(lesson_id)
+        if lesson_dir.exists():
+            shutil.rmtree(lesson_dir)
 
     async def _voice_sync_cues(
         self,
@@ -223,7 +232,7 @@ class LessonAudioService:
         on_stage: Optional[Callable] = None,
     ) -> RuntimeLesson:
         lesson_dir = self._preflight(lesson)
-        lesson_dir.mkdir(parents=True, exist_ok=True)
+        lesson_dir.mkdir(parents=True, exist_ok=False)
         try:
             if on_stage is not None:
                 stage_result = on_stage("正在生成讲解语音")

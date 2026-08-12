@@ -1,12 +1,19 @@
+import asyncio
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
-from app.generation import LessonInputError
+from app.generation import GeneratedLessonBundle, LessonInputError
+from app.generation_integrity import (
+    audio_neutral_lesson_json,
+    validate_lesson_generation_pair,
+)
 from app.math_engine import MathEngine, MathValidationError
+from app.preparation_models import GenerationRecord
 from app.schemas import (
     GenerationJob,
     NonEmptyString,
@@ -94,6 +101,25 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
     return payload
 
 
+def _defensive_model_payload(value: object) -> object:
+    model_dump = getattr(value, "model_dump", None)
+    if not callable(model_dump):
+        return value
+    return model_dump(mode="python")
+
+
+async def _cleanup_failed_audio(audio_service: Any, lesson_id: str) -> None:
+    cleanup = getattr(audio_service, "cleanup_lesson_audio", None)
+    if not callable(cleanup):
+        return
+    try:
+        result = cleanup(lesson_id)
+        if inspect.isawaitable(result):
+            await result
+    except BaseException:
+        return
+
+
 async def run_generation(
     job_id: str,
     problem: ProblemInput,
@@ -121,28 +147,93 @@ async def run_generation(
         store.update_job(job_id, stage=public_stage)
         current_stage_ordinal = stage_ordinal
 
+    lesson_id = None
+    audio_attached = False
+    lesson_saved = False
     try:
         generate_bundle = getattr(generator, "generate_bundle", None)
         if callable(generate_bundle):
-            bundle = await generate_bundle(problem, on_stage=report_stage)
-            lesson = bundle.lesson
-            generation_record = bundle.generation_record
+            untrusted_bundle = await generate_bundle(
+                problem,
+                on_stage=report_stage,
+            )
+            raw_lesson = getattr(untrusted_bundle, "lesson")
+            raw_record = getattr(untrusted_bundle, "generation_record")
+            bundle = GeneratedLessonBundle.model_validate(
+                {
+                    "lesson": _defensive_model_payload(raw_lesson),
+                    "generation_record": _defensive_model_payload(
+                        raw_record
+                    ),
+                }
+            )
+            lesson, generation_record = validate_lesson_generation_pair(
+                bundle.lesson,
+                bundle.generation_record,
+            )
+            record_snapshot = generation_record.model_dump_json()
         else:
-            lesson = await generator.generate(problem, on_stage=report_stage)
+            raw_lesson = await generator.generate(
+                problem,
+                on_stage=report_stage,
+            )
+            lesson = RuntimeLesson.model_validate(
+                _defensive_model_payload(raw_lesson)
+            )
             generation_record = None
-        lesson = await audio_service.attach_audio(
-            lesson,
+            raw_record = None
+            record_snapshot = None
+        raw_lesson_snapshot = RuntimeLesson.model_validate(
+            _defensive_model_payload(raw_lesson)
+        ).model_dump_json()
+        lesson_id = lesson.lesson_id
+        if store.lesson_exists(lesson_id):
+            raise ValueError("lesson id already exists")
+        lesson_snapshot = audio_neutral_lesson_json(lesson)
+        voiced_lesson = await audio_service.attach_audio(
+            lesson.model_copy(deep=True),
             on_stage=report_stage,
         )
+        audio_attached = True
+        lesson = RuntimeLesson.model_validate(
+            _defensive_model_payload(voiced_lesson)
+        )
+        if audio_neutral_lesson_json(lesson) != lesson_snapshot:
+            raise ValueError("audio service changed lesson semantics")
+        current_raw_lesson = RuntimeLesson.model_validate(
+            _defensive_model_payload(raw_lesson)
+        )
+        if current_raw_lesson.model_dump_json() != raw_lesson_snapshot:
+            raise ValueError("audio service changed generated lesson")
+        if generation_record is not None:
+            current_raw_record = GenerationRecord.model_validate(
+                _defensive_model_payload(raw_record)
+            )
+            if current_raw_record.model_dump_json() != record_snapshot:
+                raise ValueError("audio service changed generation record")
+            generation_record = GenerationRecord.model_validate_json(
+                record_snapshot
+            )
+            lesson, generation_record = validate_lesson_generation_pair(
+                lesson,
+                generation_record,
+            )
         # Expose the lesson ID only after its durable save succeeds.
         store.save_lesson(lesson, generation_record=generation_record)
+        lesson_saved = True
         store.update_job(
             job_id,
             status="completed",
             stage="已完成",
             lesson_id=lesson.lesson_id,
         )
-    except Exception as exc:
+    except BaseException as exc:
+        if audio_attached and not lesson_saved and lesson_id is not None:
+            await _cleanup_failed_audio(audio_service, lesson_id)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        if not isinstance(exc, Exception):
+            raise
         store.update_job(
             job_id,
             status="failed",

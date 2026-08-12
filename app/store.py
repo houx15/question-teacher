@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from app.lesson_ids import is_valid_lesson_id
+from app.generation_integrity import validate_lesson_generation_pair
 from app.preparation_models import GenerationRecord
 from app.schemas import GenerationJob, Interaction, RuntimeLesson
 
@@ -20,6 +21,7 @@ class MemoryStore:
         self._jobs: Dict[str, GenerationJob] = {}
         self._lessons: Dict[str, RuntimeLesson] = {}
         self._generation_records: Dict[str, GenerationRecord] = {}
+        self._generation_ids: Dict[str, str] = {}
         self._database_path = (
             Path(database_path) if database_path is not None else None
         )
@@ -56,26 +58,24 @@ class MemoryStore:
         if not is_valid_lesson_id(lesson.lesson_id):
             raise ValueError("invalid lesson id")
         if generation_record is not None:
-            generation_record = GenerationRecord.model_validate(
-                generation_record.model_dump(mode="python")
+            lesson, generation_record = validate_lesson_generation_pair(
+                lesson,
+                generation_record,
             )
-        if (
-            generation_record is not None
-            and generation_record.lesson_id != lesson.lesson_id
-        ):
-            raise ValueError("generation record lesson id mismatch")
-        if generation_record is not None:
-            public_rubric_version = lesson.validation_report.get(
-                "pedagogy_rubric_version"
-            )
-            if (
-                public_rubric_version is not None
-                and public_rubric_version
-                != generation_record.prepared_lesson.rubric_version
-            ):
-                raise ValueError("generation record rubric version mismatch")
 
         with self._lock:
+            if self._database_path is None:
+                if lesson.lesson_id in self._lessons:
+                    raise ValueError("lesson id already exists")
+                if (
+                    generation_record is not None
+                    and generation_record.generation_id
+                    in self._generation_ids
+                ):
+                    raise sqlite3.IntegrityError(
+                        "UNIQUE constraint failed: "
+                        "lesson_generation_records.generation_id"
+                    )
             if self._database_path is not None:
                 self._save_lesson_to_database(lesson, generation_record)
             self._lessons[lesson.lesson_id] = lesson
@@ -83,6 +83,29 @@ class MemoryStore:
                 self._generation_records[lesson.lesson_id] = (
                     generation_record.model_copy(deep=True)
                 )
+                self._generation_ids[generation_record.generation_id] = (
+                    lesson.lesson_id
+                )
+
+    def lesson_exists(self, lesson_id: str) -> bool:
+        if not is_valid_lesson_id(lesson_id):
+            return False
+        with self._lock:
+            if lesson_id in self._lessons:
+                return True
+            if (
+                self._database_path is None
+                or not self._database_path.is_file()
+            ):
+                return False
+            connection = self._connect()
+            try:
+                return connection.execute(
+                    "SELECT 1 FROM lessons WHERE lesson_id = ?",
+                    (lesson_id,),
+                ).fetchone() is not None
+            finally:
+                connection.close()
 
     def get_lesson(self, lesson_id: str) -> Optional[RuntimeLesson]:
         if not is_valid_lesson_id(lesson_id):
@@ -128,6 +151,16 @@ class MemoryStore:
         with self._lock:
             cached = self._generation_records.get(lesson_id)
             if cached is not None:
+                cached_lesson = self._lessons.get(lesson_id)
+                if cached_lesson is None:
+                    return None
+                try:
+                    _lesson, cached = validate_lesson_generation_pair(
+                        cached_lesson,
+                        cached,
+                    )
+                except (ValidationError, ValueError):
+                    return None
                 return cached.model_copy(deep=True)
             if (
                 self._database_path is None
@@ -175,7 +208,18 @@ class MemoryStore:
                 or record.created_at != created_at
             ):
                 return None
+            lesson = self.get_lesson(lesson_id)
+            if lesson is None:
+                return None
+            try:
+                _lesson, record = validate_lesson_generation_pair(
+                    lesson,
+                    record,
+                )
+            except (ValidationError, ValueError):
+                return None
             self._generation_records[lesson_id] = record.model_copy(deep=True)
+            self._generation_ids[record.generation_id] = lesson_id
             return record.model_copy(deep=True)
 
     def get_interaction(

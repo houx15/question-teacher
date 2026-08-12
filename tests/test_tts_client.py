@@ -616,6 +616,33 @@ def test_audio_service_writes_every_narration_hint_and_feedback(tmp_path):
     assert lesson.model_dump() == original_dump
 
 
+def test_audio_service_refuses_to_overwrite_existing_lesson_directory(
+    tmp_path,
+):
+    lesson = runtime_lesson()
+    lesson_dir = tmp_path / lesson.lesson_id
+    lesson_dir.mkdir()
+    old_audio = lesson_dir / "beat-001.mp3"
+    old_audio.write_bytes(b"old")
+    client = FakeSpeechClient()
+
+    with pytest.raises(SpeechGenerationError):
+        run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert client.texts == []
+    assert old_audio.read_bytes() == b"old"
+
+
+def test_audio_service_can_cleanup_one_owned_lesson_directory(tmp_path):
+    lesson = runtime_lesson()
+    service = LessonAudioService(FakeSpeechClient(), tmp_path)
+    run(service.attach_audio(lesson))
+
+    service.cleanup_lesson_audio(lesson.lesson_id)
+
+    assert not (tmp_path / lesson.lesson_id).exists()
+
+
 def test_cue_audio_uses_spoken_text_and_preserves_source_order(tmp_path):
     lesson = cue_runtime_lesson()
     original_dump = lesson.model_dump()

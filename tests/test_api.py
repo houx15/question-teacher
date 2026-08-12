@@ -15,17 +15,20 @@ from app.api import (
 from app.compiler import LessonCompileError, LessonCompiler
 from app.config import Settings
 from app.generation import LessonGenerationService, LessonInputError
+from app.audio_service import LessonAudioService
 from app.preparation_models import GenerationRecord
 from app.main import PROJECT_ROOT, create_app
 from app.math_engine import MathEngine
 from app.preparation_pipeline import PreparationFailure
 from app.schemas import (
+    BoardAction,
     Interaction,
     InteractionOption,
     LessonDraft,
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
+    RuntimeSyncCue,
     TransferItem,
     TransferOption,
 )
@@ -138,12 +141,26 @@ class FakeAudioService:
 
 
 def generation_record_for(lesson):
+    prepared = prepared_lesson()
+    prepared["rubric_version"] = "0.1"
+    prepared["performance_score"] = {
+        "cues": [
+            {
+                "cue_id": f"performance-{index}",
+                "clause_ids": [clause_id],
+            }
+            for index, clause_id in enumerate(
+                ["open-1", "method-1", "close-1"],
+                start=1,
+            )
+        ]
+    }
     return GenerationRecord.model_validate(
         {
             "generation_id": "generation-api-1",
             "lesson_id": lesson.lesson_id,
             "route_fingerprint": "route-api-1",
-            "prepared_lesson": prepared_lesson(),
+            "prepared_lesson": prepared,
             "role_calls": [
                 {
                     "role": role,
@@ -166,11 +183,15 @@ def generation_record_for(lesson):
             "cue_provenance": [
                 {
                     "episode_id": "episode-1",
-                    "clause_id": "open-1",
-                    "original_performance_cue_id": "cue-1",
-                    "runtime_cue_id": "runtime-cue-1",
+                    "clause_id": clause_id,
+                    "original_performance_cue_id": f"performance-{index}",
+                    "runtime_cue_id": f"runtime-authored-{index}",
                     "spoken_text": "我们把等式两边同时减一。",
                 }
+                for index, clause_id in enumerate(
+                    ["open-1", "method-1", "close-1"],
+                    start=1,
+                )
             ],
             "created_at": "2026-08-11T10:00:00+08:00",
         }
@@ -187,6 +208,36 @@ class BundleGenerator:
         if on_stage:
             on_stage("正在编译课堂")
         lesson = runtime_lesson(problem, lesson_id="lesson-bundle")
+        beat = lesson.beats[0].model_copy(
+            update={
+                "sync_cues": [
+                    RuntimeSyncCue(
+                        cue_id=f"runtime-authored-{index}",
+                        spoken_text="我们把等式两边同时减一。",
+                    )
+                    for index in range(1, 4)
+                ]
+            }
+        )
+        lesson = lesson.model_copy(
+            update={
+                "beats": [beat],
+                "validation_report": {
+                    "teaching_route_fingerprint": "route-api-1",
+                    "pedagogy_rubric_version": "0.1",
+                    "artifact_versions": {
+                        "solution_trace": 1,
+                        "reasoning_trajectory": 1,
+                        "teaching_script": 1,
+                        "interaction_plan": 1,
+                        "performance_score": 1,
+                        "simulation_report": 1,
+                    },
+                    "repair_count": 0,
+                    "review_status": "approved",
+                },
+            }
+        )
         record = generation_record_for(lesson)
 
         class Bundle:
@@ -195,6 +246,7 @@ class BundleGenerator:
         bundle = Bundle()
         bundle.lesson = lesson
         bundle.generation_record = record
+        self.last_bundle = bundle
         return bundle
 
     async def generate(self, problem, on_stage=None):
@@ -407,6 +459,269 @@ def test_bundle_generation_cancellation_propagates_without_persistence():
 
     assert store.get_lesson("lesson-bundle") is None
     assert store.get_generation_record("lesson-bundle") is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "problem",
+        "report",
+        "board_actions",
+        "layer",
+        "cue_text",
+        "provenance",
+        "bundle_lesson",
+    ],
+)
+def test_audio_cannot_mutate_generated_bundle_semantics(mutation):
+    generator = BundleGenerator()
+
+    class MutatingAudio(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del on_stage
+            self.calls += 1
+            if mutation == "problem":
+                lesson.problem.problem_text = "forged problem"
+            elif mutation == "report":
+                lesson.validation_report["teaching_route_fingerprint"] = (
+                    "forged-route"
+                )
+            elif mutation == "board_actions":
+                lesson.beats[0].board_actions.append(
+                    BoardAction(
+                        type="write",
+                        target="forged",
+                        content="forged",
+                    )
+                )
+            elif mutation == "layer":
+                lesson.beats[0].layer = "interaction"
+            elif mutation == "cue_text":
+                lesson.beats[0].sync_cues[0].spoken_text = "forged cue"
+            elif mutation == "provenance":
+                generator.last_bundle.generation_record.cue_provenance[
+                    0
+                ].spoken_text = "forged provenance"
+            elif mutation == "bundle_lesson":
+                generator.last_bundle.lesson.summary = "forged summary"
+            return lesson
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            generator,
+            MutatingAudio(),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "failed"
+    assert store.get_lesson("lesson-bundle") is None
+    assert store.get_generation_record("lesson-bundle") is None
+
+
+def test_audio_only_url_changes_preserve_valid_bundle():
+    generator = BundleGenerator()
+
+    class AudioOnly(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del on_stage
+            self.calls += 1
+            lesson.beats[0].audio_url = "/audio/lesson-bundle/beat.mp3"
+            for index, cue in enumerate(lesson.beats[0].sync_cues, start=1):
+                cue.audio_url = f"/audio/lesson-bundle/cue-{index}.mp3"
+            return lesson
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            generator,
+            AudioOnly(),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "completed"
+    assert store.get_generation_record("lesson-bundle") is not None
+
+
+def test_all_interaction_audio_url_fields_are_allowed_audio_changes():
+    class InteractiveBundleGenerator(BundleGenerator):
+        async def generate_bundle(self, problem, on_stage=None):
+            bundle = await super().generate_bundle(
+                problem,
+                on_stage=on_stage,
+            )
+            interaction = Interaction(
+                interaction_id="audio-interaction",
+                kind="choice",
+                prompt="请选择。",
+                expected_answer="option-a",
+                hints=["先想一想。"],
+                explanation_after_correct="正确。",
+                options=[
+                    InteractionOption(
+                        option_id="option-a",
+                        label="A",
+                        feedback="正确。",
+                    )
+                ],
+            )
+            beat = bundle.lesson.beats[0].model_copy(
+                update={"interaction": interaction}
+            )
+            bundle.lesson = bundle.lesson.model_copy(update={"beats": [beat]})
+            return bundle
+
+    class InteractionAudioOnly(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del on_stage
+            interaction = lesson.beats[0].interaction
+            interaction.hint_audio_urls = ["/audio/lesson-bundle/hint.mp3"]
+            interaction.correct_audio_url = (
+                "/audio/lesson-bundle/correct.mp3"
+            )
+            interaction.options[0].feedback_audio_url = (
+                "/audio/lesson-bundle/option.mp3"
+            )
+            return lesson
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            InteractiveBundleGenerator(),
+            InteractionAudioOnly(),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "completed"
+
+
+class ByteSpeechClient:
+    def __init__(self):
+        self.texts = []
+
+    async def synthesize(self, text):
+        self.texts.append(text)
+        return b"audio"
+
+
+class PersistenceFailureStore(MemoryStore):
+    def save_lesson(self, lesson, generation_record=None):
+        del lesson, generation_record
+        raise OSError("private persistence failure")
+
+
+def test_persistence_failure_after_audio_removes_invocation_audio(tmp_path):
+    store = PersistenceFailureStore()
+    job = store.create_job()
+    audio = LessonAudioService(ByteSpeechClient(), tmp_path / "audio")
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            audio,
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "failed"
+    assert not (tmp_path / "audio" / "lesson-1").exists()
+
+
+def test_duplicate_lesson_is_rejected_before_tts_and_old_audio_is_untouched(
+    tmp_path,
+):
+    store = MemoryStore()
+    lesson = runtime_lesson(problem_input())
+    store.save_lesson(lesson)
+    old_dir = tmp_path / "audio" / lesson.lesson_id
+    old_dir.mkdir(parents=True)
+    old_audio = old_dir / "old.mp3"
+    old_audio.write_bytes(b"old-audio")
+    speech = ByteSpeechClient()
+    job = store.create_job()
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            LessonAudioService(speech, tmp_path / "audio"),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "failed"
+    assert speech.texts == []
+    assert old_audio.read_bytes() == b"old-audio"
+
+
+def test_cancellation_after_audio_cleans_invocation_audio(tmp_path):
+    class CancelledStore(MemoryStore):
+        def save_lesson(self, lesson, generation_record=None):
+            del lesson, generation_record
+            raise asyncio.CancelledError()
+
+    store = CancelledStore()
+    job = store.create_job()
+    audio = LessonAudioService(ByteSpeechClient(), tmp_path / "audio")
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            run_generation(
+                job.job_id,
+                problem_input(),
+                store,
+                FakeGenerator(),
+                audio,
+            )
+        )
+
+    assert not (tmp_path / "audio" / "lesson-1").exists()
+
+
+def test_cleanup_failure_does_not_mask_safe_persistence_failure():
+    class CleanupFailureAudio(FakeAudioService):
+        def __init__(self):
+            super().__init__()
+            self.cleanup_calls = 0
+
+        def cleanup_lesson_audio(self, lesson_id):
+            del lesson_id
+            self.cleanup_calls += 1
+            raise OSError("private cleanup path")
+
+    store = PersistenceFailureStore()
+    job = store.create_job()
+    audio = CleanupFailureAudio()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            audio,
+        )
+    )
+
+    failed = store.get_job(job.job_id)
+    assert failed.status == "failed"
+    assert failed.error == "课程生成失败，请稍后重试。"
+    assert "private cleanup path" not in failed.error
+    assert audio.cleanup_calls == 1
 
 
 def build_client(**overrides):

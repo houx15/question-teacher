@@ -12,6 +12,7 @@ from app.schemas import (
     ProblemInput,
     RuntimeBeat,
     RuntimeLesson,
+    RuntimeSyncCue,
     TransferItem,
 )
 from app.preparation_models import GenerationRecord
@@ -40,6 +41,13 @@ def runtime_lesson() -> RuntimeLesson:
                 narration="请选出配方后的等式。",
                 board_actions=[],
                 layer="interaction",
+                sync_cues=[
+                    RuntimeSyncCue(
+                        cue_id=f"runtime-authored-{index}",
+                        spoken_text="我们把等式两边同时减一。",
+                    )
+                    for index in range(1, 4)
+                ],
                 interaction=Interaction(
                     interaction_id="interaction-private-answer",
                     kind="choice",
@@ -69,6 +77,18 @@ def runtime_lesson() -> RuntimeLesson:
         validation_report={
             "math_status": "verified",
             "independent_solutions": ["x=1", "x=5"],
+            "teaching_route_fingerprint": "route-persisted-1",
+            "pedagogy_rubric_version": "0.1",
+            "artifact_versions": {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_script": 1,
+                "interaction_plan": 1,
+                "performance_score": 1,
+                "simulation_report": 1,
+            },
+            "repair_count": 0,
+            "review_status": "approved",
         },
     )
 
@@ -78,12 +98,26 @@ def private_generation_record(
     *,
     generation_id: str = "generation-persisted-1",
 ) -> GenerationRecord:
+    prepared = prepared_lesson()
+    prepared["rubric_version"] = "0.1"
+    prepared["performance_score"] = {
+        "cues": [
+            {
+                "cue_id": f"performance-{index}",
+                "clause_ids": [clause_id],
+            }
+            for index, clause_id in enumerate(
+                ["open-1", "method-1", "close-1"],
+                start=1,
+            )
+        ]
+    }
     return GenerationRecord.model_validate(
         {
             "generation_id": generation_id,
             "lesson_id": lesson.lesson_id,
             "route_fingerprint": "route-persisted-1",
-            "prepared_lesson": prepared_lesson(),
+            "prepared_lesson": prepared,
             "role_calls": [
                 {
                     "role": role,
@@ -106,11 +140,15 @@ def private_generation_record(
             "cue_provenance": [
                 {
                     "episode_id": "episode-1",
-                    "clause_id": "open-1",
-                    "original_performance_cue_id": "cue-1",
-                    "runtime_cue_id": "runtime-cue-1",
+                    "clause_id": clause_id,
+                    "original_performance_cue_id": f"performance-{index}",
+                    "runtime_cue_id": f"runtime-authored-{index}",
                     "spoken_text": "我们把等式两边同时减一。",
                 }
+                for index, clause_id in enumerate(
+                    ["open-1", "method-1", "close-1"],
+                    start=1,
+                )
             ],
             "created_at": "2026-08-11T10:00:00+08:00",
         }
@@ -369,14 +407,10 @@ def test_store_rejects_generation_record_for_another_lesson_before_writing(
 
 def test_store_rejects_record_rubric_that_disagrees_with_lesson(tmp_path):
     database_path = tmp_path / "lessons.sqlite3"
-    lesson = runtime_lesson().model_copy(
-        update={
-            "validation_report": {
-                "math_status": "verified",
-                "pedagogy_rubric_version": "different-rubric",
-            }
-        }
-    )
+    lesson = runtime_lesson()
+    report = dict(lesson.validation_report)
+    report["pedagogy_rubric_version"] = "different-rubric"
+    lesson = lesson.model_copy(update={"validation_report": report})
     store = MemoryStore(database_path)
 
     with pytest.raises(
@@ -448,6 +482,93 @@ def test_concurrent_duplicate_generation_ids_roll_back_losing_lesson(
         ).fetchall()
     assert len(lesson_ids) == 1
     assert record_rows == [(next(iter(lesson_ids)), "generation-shared")]
+
+
+def test_memory_store_rejects_duplicate_lesson_id_without_overwrite():
+    store = MemoryStore()
+    lesson = runtime_lesson()
+    store.save_lesson(lesson)
+    replacement = lesson.model_copy(update={"summary": "forged"})
+
+    with pytest.raises(ValueError, match="^lesson id already exists$"):
+        store.save_lesson(replacement)
+
+    assert store.get_lesson(lesson.lesson_id) == lesson
+
+
+def test_memory_store_enforces_unique_generation_id_across_lessons():
+    store = MemoryStore()
+    first = runtime_lesson()
+    store.save_lesson(first, private_generation_record(first))
+    second = first.model_copy(update={"lesson_id": "lesson-memory-second"})
+    duplicate_record = private_generation_record(second)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.save_lesson(second, duplicate_record)
+
+    assert store.get_lesson(second.lesson_id) is None
+    assert store.get_generation_record(second.lesson_id) is None
+
+
+def test_cached_private_record_fails_closed_if_cached_lesson_pair_mutates():
+    store = MemoryStore()
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+    store.save_lesson(lesson, record)
+    cached_lesson = store.get_lesson(lesson.lesson_id)
+    cached_lesson.validation_report["review_status"] = "revision_required"
+
+    assert store.get_generation_record(lesson.lesson_id) is None
+
+
+@pytest.mark.parametrize(
+    ("report_update", "expected_message"),
+    [
+        (
+            {"teaching_route_fingerprint": "forged-route"},
+            "route fingerprint mismatch",
+        ),
+        (
+            {"pedagogy_rubric_version": None},
+            "rubric version mismatch",
+        ),
+        (
+            {"review_status": "revision_required"},
+            "review status mismatch",
+        ),
+        ({"repair_count": 7}, "repair count mismatch"),
+        ({"artifact_versions": {}}, "artifact versions mismatch"),
+    ],
+)
+def test_store_rejects_lesson_record_pair_integrity_mismatches(
+    report_update,
+    expected_message,
+):
+    lesson = runtime_lesson()
+    report = dict(lesson.validation_report)
+    report.update(report_update)
+    forged = lesson.model_copy(update={"validation_report": report})
+    store = MemoryStore()
+
+    with pytest.raises(ValueError, match=expected_message):
+        store.save_lesson(forged, private_generation_record(forged))
+
+    assert store.get_lesson(forged.lesson_id) is None
+
+
+def test_store_rejects_noncurrent_prepared_rubric_even_when_pair_agrees():
+    lesson = runtime_lesson()
+    report = dict(lesson.validation_report)
+    report["pedagogy_rubric_version"] = "forged-rubric"
+    lesson = lesson.model_copy(update={"validation_report": report})
+    record = private_generation_record(lesson)
+    forged_prepared = record.prepared_lesson.model_copy(
+        update={"rubric_version": "forged-rubric"}
+    )
+    record = record.model_copy(update={"prepared_lesson": forged_prepared})
+
+    with pytest.raises(ValueError, match="prepared rubric version invalid"):
+        MemoryStore().save_lesson(lesson, record)
 
 
 def test_sqlite_store_restores_an_equivalent_runtime_lesson(tmp_path):

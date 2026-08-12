@@ -29,6 +29,7 @@ from app.preparation_models import (
     GenerationRecord,
     RuntimeCueProvenanceRecord,
 )
+from app.generation_integrity import validate_lesson_generation_pair
 from app.preparation_pipeline import LessonPreparationPipeline
 from app.prepared_lesson_adapter import (
     PreparedLessonAdaptationError,
@@ -43,7 +44,6 @@ from app.prompts import (
     reference_audit_prompt,
 )
 from app.schemas import (
-    FIXED_RUNTIME_CUE_IDS,
     LessonDraft,
     MathRouteDraft,
     ProblemInput,
@@ -106,51 +106,10 @@ class GeneratedLessonBundle(SchemaModel):
 
     @model_validator(mode="after")
     def validate_private_runtime_links(self) -> "GeneratedLessonBundle":
-        if self.generation_record.lesson_id != self.lesson.lesson_id:
-            raise ValueError("generation record lesson id mismatch")
-        runtime_cues = [
-            cue for beat in self.lesson.beats for cue in beat.sync_cues
-        ]
-        runtime_by_id = {cue.cue_id: cue for cue in runtime_cues}
-        if len(runtime_by_id) != len(runtime_cues):
-            raise ValueError("compiled runtime cue ids must be unique")
-        authored_runtime_ids = set(runtime_by_id) - set(
-            FIXED_RUNTIME_CUE_IDS.values()
+        validate_lesson_generation_pair(
+            self.lesson,
+            self.generation_record,
         )
-        provenance = self.generation_record.cue_provenance
-        prepared = self.generation_record.prepared_lesson
-        clauses = prepared.teaching_script.clauses
-        if [item.clause_id for item in provenance] != [
-            item.clause_id for item in clauses
-        ]:
-            raise ValueError("cue provenance clause order changed")
-        clause_by_id = {item.clause_id: item for item in clauses}
-        original_cue_by_clause = {
-            clause_id: cue.cue_id
-            for cue in prepared.performance_score.cues
-            for clause_id in cue.clause_ids
-        }
-        if any(
-            item.episode_id != clause_by_id[item.clause_id].episode_id
-            or item.spoken_text
-            != clause_by_id[item.clause_id].spoken_text
-            or item.original_performance_cue_id
-            != original_cue_by_clause.get(item.clause_id)
-            for item in provenance
-        ):
-            raise ValueError("cue provenance no longer matches preparation")
-        provenance_ids = {item.runtime_cue_id for item in provenance}
-        if provenance_ids != authored_runtime_ids:
-            raise ValueError("compiled authored cue ids changed")
-        grouped = {cue_id: [] for cue_id in provenance_ids}
-        for item in provenance:
-            grouped[item.runtime_cue_id].append(item.spoken_text)
-        if any(
-            "".join(grouped[cue_id])
-            != runtime_by_id[cue_id].spoken_text
-            for cue_id in provenance_ids
-        ):
-            raise ValueError("compiled authored cue text changed")
         return self
 
 
