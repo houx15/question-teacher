@@ -530,7 +530,7 @@ def test_cached_private_record_fails_closed_if_cached_lesson_pair_mutates():
         ),
         (
             {"pedagogy_rubric_version": None},
-            "rubric version mismatch",
+            "pedagogy_rubric_version invalid",
         ),
         (
             {"review_status": "revision_required"},
@@ -569,6 +569,53 @@ def test_store_rejects_noncurrent_prepared_rubric_even_when_pair_agrees():
 
     with pytest.raises(ValueError, match="prepared rubric version invalid"):
         MemoryStore().save_lesson(lesson, record)
+
+
+@pytest.mark.parametrize("value", [False, True, 1.0])
+def test_store_requires_exact_integer_report_repair_count(value):
+    lesson = runtime_lesson()
+    report = dict(lesson.validation_report)
+    report["repair_count"] = value
+    lesson = lesson.model_copy(update={"validation_report": report})
+
+    with pytest.raises(ValueError, match="report repair count invalid"):
+        MemoryStore().save_lesson(lesson, private_generation_record(lesson))
+
+
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_store_requires_exact_positive_integer_artifact_versions(value):
+    lesson = runtime_lesson()
+    report = dict(lesson.validation_report)
+    versions = dict(report["artifact_versions"])
+    versions["solution_trace"] = value
+    report["artifact_versions"] = versions
+    lesson = lesson.model_copy(update={"validation_report": report})
+
+    with pytest.raises(ValueError, match="report artifact versions invalid"):
+        MemoryStore().save_lesson(lesson, private_generation_record(lesson))
+
+
+def test_historical_record_remains_readable_after_current_rubric_upgrade(
+    tmp_path,
+    monkeypatch,
+):
+    import app.generation_integrity as integrity
+
+    database_path = tmp_path / "historical.sqlite3"
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+    MemoryStore(database_path).save_lesson(lesson, record)
+    monkeypatch.setattr(integrity, "PEDAGOGY_RUBRIC_VERSION", "next-version")
+
+    restarted = MemoryStore(database_path)
+    assert restarted.get_generation_record(lesson.lesson_id) == record
+    new_lesson = lesson.model_copy(update={"lesson_id": "lesson-new-write"})
+    old_record = private_generation_record(
+        new_lesson,
+        generation_id="generation-new-write",
+    )
+    with pytest.raises(ValueError, match="prepared rubric version invalid"):
+        restarted.save_lesson(new_lesson, old_record)
 
 
 def test_sqlite_store_restores_an_equivalent_runtime_lesson(tmp_path):

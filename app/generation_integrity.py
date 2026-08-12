@@ -83,6 +83,8 @@ def _latest_artifact_versions(record: GenerationRecord) -> Dict[str, int]:
 def validate_lesson_generation_pair(
     lesson: object,
     generation_record: object,
+    *,
+    require_current_rubric: bool = True,
 ) -> Tuple[RuntimeLesson, GenerationRecord]:
     """Defensively reconstruct and validate one runtime/private pair."""
     validated_lesson = RuntimeLesson.model_validate(_model_payload(lesson))
@@ -94,8 +96,31 @@ def validate_lesson_generation_pair(
 
     prepared = validated_record.prepared_lesson
     report = validated_lesson.validation_report
-    if prepared.rubric_version != PEDAGOGY_RUBRIC_VERSION:
+    if (
+        require_current_rubric
+        and prepared.rubric_version != PEDAGOGY_RUBRIC_VERSION
+    ):
         raise ValueError("generation record prepared rubric version invalid")
+    for field in (
+        "teaching_route_fingerprint",
+        "pedagogy_rubric_version",
+        "review_status",
+    ):
+        if type(report.get(field)) is not str or not report[field].strip():
+            raise ValueError(f"generation report {field} invalid")
+    report_repair_count = report.get("repair_count")
+    if type(report_repair_count) is not int or report_repair_count < 0:
+        raise ValueError("generation report repair count invalid")
+    report_artifact_versions = report.get("artifact_versions")
+    if (
+        type(report_artifact_versions) is not dict
+        or any(type(key) is not str for key in report_artifact_versions)
+        or any(
+            type(value) is not int or value <= 0
+            for value in report_artifact_versions.values()
+        )
+    ):
+        raise ValueError("generation report artifact versions invalid")
     if (
         report.get("teaching_route_fingerprint")
         != validated_record.route_fingerprint
@@ -108,9 +133,9 @@ def validate_lesson_generation_pair(
         or report.get("review_status") != prepared.review.status
     ):
         raise ValueError("generation record review status mismatch")
-    if report.get("repair_count") != prepared.repair_count:
+    if report_repair_count != prepared.repair_count:
         raise ValueError("generation record repair count mismatch")
-    if report.get("artifact_versions") != _latest_artifact_versions(
+    if report_artifact_versions != _latest_artifact_versions(
         validated_record
     ):
         raise ValueError("generation record artifact versions mismatch")

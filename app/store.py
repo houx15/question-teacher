@@ -167,6 +167,7 @@ class MemoryStore:
                     _lesson, cached = validate_lesson_generation_pair(
                         cached_lesson,
                         cached,
+                        require_current_rubric=False,
                     )
                 except (ValidationError, ValueError):
                     return None
@@ -224,6 +225,7 @@ class MemoryStore:
                 _lesson, record = validate_lesson_generation_pair(
                     lesson,
                     record,
+                    require_current_rubric=False,
                 )
             except (ValidationError, ValueError):
                 return None

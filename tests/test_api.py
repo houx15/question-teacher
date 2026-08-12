@@ -12,6 +12,13 @@ from app.api import (
     run_generation,
     safe_generation_error,
 )
+from app.audio_manifest import (
+    audio_asset_url,
+    correct_feedback_asset_id,
+    cue_asset_id,
+    hint_asset_id,
+    option_feedback_asset_id,
+)
 from app.compiler import LessonCompileError, LessonCompiler
 from app.config import Settings
 from app.generation import LessonGenerationService, LessonInputError
@@ -137,6 +144,52 @@ class FakeAudioService:
         self.calls += 1
         if on_stage:
             on_stage("正在生成讲解语音")
+        for beat in lesson.beats:
+            if beat.sync_cues:
+                beat.audio_url = None
+                for cue in beat.sync_cues:
+                    cue.audio_url = audio_asset_url(
+                        lesson.lesson_id,
+                        cue_asset_id(beat.beat_id, cue.cue_id),
+                    )
+            else:
+                beat.audio_url = audio_asset_url(
+                    lesson.lesson_id,
+                    beat.beat_id,
+                )
+            interaction = beat.interaction
+            if interaction is None:
+                continue
+            interaction.hint_audio_urls = [
+                audio_asset_url(
+                    lesson.lesson_id,
+                    hint_asset_id(beat.beat_id, index),
+                )
+                for index, _hint in enumerate(
+                    interaction.hints,
+                    start=1,
+                )
+            ]
+            for index, option in enumerate(
+                interaction.options,
+                start=1,
+            ):
+                option.feedback_audio_url = (
+                    audio_asset_url(
+                        lesson.lesson_id,
+                        option_feedback_asset_id(beat.beat_id, index),
+                    )
+                    if option.feedback
+                    else None
+                )
+            interaction.correct_audio_url = (
+                audio_asset_url(
+                    lesson.lesson_id,
+                    correct_feedback_asset_id(beat.beat_id),
+                )
+                if interaction.explanation_after_correct
+                else None
+            )
         return lesson
 
 
@@ -577,12 +630,7 @@ def test_audio_only_url_changes_preserve_valid_bundle():
 
     class AudioOnly(FakeAudioService):
         async def attach_audio(self, lesson, on_stage=None):
-            del on_stage
-            self.calls += 1
-            lesson.beats[0].audio_url = "/audio/lesson-bundle/beat.mp3"
-            for index, cue in enumerate(lesson.beats[0].sync_cues, start=1):
-                cue.audio_url = f"/audio/lesson-bundle/cue-{index}.mp3"
-            return lesson
+            return await super().attach_audio(lesson, on_stage=on_stage)
 
     store = MemoryStore()
     job = store.create_job()
@@ -630,16 +678,7 @@ def test_all_interaction_audio_url_fields_are_allowed_audio_changes():
 
     class InteractionAudioOnly(FakeAudioService):
         async def attach_audio(self, lesson, on_stage=None):
-            del on_stage
-            interaction = lesson.beats[0].interaction
-            interaction.hint_audio_urls = ["/audio/lesson-bundle/hint.mp3"]
-            interaction.correct_audio_url = (
-                "/audio/lesson-bundle/correct.mp3"
-            )
-            interaction.options[0].feedback_audio_url = (
-                "/audio/lesson-bundle/option.mp3"
-            )
-            return lesson
+            return await super().attach_audio(lesson, on_stage=on_stage)
 
     store = MemoryStore()
     job = store.create_job()
@@ -654,6 +693,72 @@ def test_all_interaction_audio_url_fields_are_allowed_audio_changes():
     )
 
     assert store.get_job(job.job_id).status == "completed"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "external", "cross_lesson", "swapped"],
+)
+def test_bundle_audio_requires_exact_local_cue_manifest(mutation):
+    class BadManifestAudio(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del on_stage
+            cues = lesson.beats[0].sync_cues
+            expected = [
+                f"/audio/lesson-bundle/beat-1-runtime-authored-{index}.mp3"
+                for index in range(1, 4)
+            ]
+            if mutation == "missing":
+                return lesson
+            if mutation == "external":
+                expected[0] = "https://example.com/private.mp3"
+            elif mutation == "cross_lesson":
+                expected[0] = (
+                    "/audio/another-lesson/beat-1-runtime-authored-1.mp3"
+                )
+            elif mutation == "swapped":
+                expected[0], expected[1] = expected[1], expected[0]
+            for cue, url in zip(cues, expected):
+                cue.audio_url = url
+            return lesson
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            BundleGenerator(),
+            BadManifestAudio(),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "failed"
+    assert store.get_lesson("lesson-bundle") is None
+
+
+def test_legacy_audio_requires_exact_local_beat_manifest():
+    class ExternalBeatAudio(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del on_stage
+            lesson.beats[0].audio_url = "https://example.com/beat.mp3"
+            return lesson
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            ExternalBeatAudio(),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "failed"
+    assert store.get_lesson("lesson-1") is None
 
 
 class ByteSpeechClient:
@@ -771,6 +876,67 @@ def test_cleanup_failure_does_not_mask_safe_persistence_failure():
     assert failed.error == "课程生成失败，请稍后重试。"
     assert "private cleanup path" not in failed.error
     assert audio.cleanup_calls == 1
+
+
+def test_never_ending_async_cleanup_is_internally_bounded():
+    class HangingCleanupAudio(FakeAudioService):
+        async def cleanup_lesson_audio(self, lesson_id):
+            del lesson_id
+            await asyncio.Event().wait()
+
+    async def scenario():
+        store = PersistenceFailureStore()
+        job = store.create_job()
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        await asyncio.wait_for(
+            run_generation(
+                job.job_id,
+                problem_input(),
+                store,
+                FakeGenerator(),
+                HangingCleanupAudio(),
+            ),
+            timeout=0.5,
+        )
+        return store.get_job(job.job_id), loop.time() - started_at
+
+    failed, elapsed = asyncio.run(scenario())
+    assert failed.status == "failed"
+    assert failed.error == "课程生成失败，请稍后重试。"
+    assert elapsed < 0.3
+
+
+def test_caller_cancellation_during_async_cleanup_propagates():
+    class ObservableCleanupAudio(FakeAudioService):
+        def __init__(self):
+            super().__init__()
+            self.cleanup_started = asyncio.Event()
+
+        async def cleanup_lesson_audio(self, lesson_id):
+            del lesson_id
+            self.cleanup_started.set()
+            await asyncio.Event().wait()
+
+    async def scenario():
+        store = PersistenceFailureStore()
+        job = store.create_job()
+        audio = ObservableCleanupAudio()
+        task = asyncio.create_task(
+            run_generation(
+                job.job_id,
+                problem_input(),
+                store,
+                FakeGenerator(),
+                audio,
+            )
+        )
+        await asyncio.wait_for(audio.cleanup_started.wait(), timeout=0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
 
 
 def build_client(**overrides):

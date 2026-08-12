@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
+from app.audio_manifest import validate_lesson_audio_manifest
 from app.generation import GeneratedLessonBundle, LessonInputError
 from app.generation_integrity import (
     audio_neutral_lesson_json,
@@ -21,6 +22,9 @@ from app.schemas import (
     RuntimeLesson,
 )
 from app.store import MemoryStore
+
+
+_AUDIO_CLEANUP_TIMEOUT_SECONDS = 0.1
 
 
 class InteractionSubmission(BaseModel):
@@ -115,8 +119,13 @@ async def _cleanup_failed_audio(audio_service: Any, lesson_id: str) -> None:
     try:
         result = cleanup(lesson_id)
         if inspect.isawaitable(result):
-            await result
-    except BaseException:
+            await asyncio.wait_for(
+                result,
+                timeout=_AUDIO_CLEANUP_TIMEOUT_SECONDS,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
         return
 
 
@@ -198,6 +207,7 @@ async def run_generation(
         lesson = RuntimeLesson.model_validate(
             _defensive_model_payload(voiced_lesson)
         )
+        validate_lesson_audio_manifest(lesson)
         if audio_neutral_lesson_json(lesson) != lesson_snapshot:
             raise ValueError("audio service changed lesson semantics")
         current_raw_lesson = RuntimeLesson.model_validate(

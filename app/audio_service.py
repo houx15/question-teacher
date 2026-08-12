@@ -6,6 +6,14 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from app.audio_manifest import (
+    audio_asset_filename,
+    audio_asset_url,
+    correct_feedback_asset_id,
+    cue_asset_id,
+    hint_asset_id,
+    option_feedback_asset_id,
+)
 from app.lesson_ids import is_valid_lesson_id
 from app.schemas import RuntimeLesson, RuntimeSyncCue
 from app.tts_client import SpeechGenerationError
@@ -54,7 +62,7 @@ class LessonAudioService:
         root = self.audio_root.resolve()
         lesson_dir = self._lesson_directory(lesson_id)
         resolved_lesson_dir = lesson_dir.resolve()
-        destination = lesson_dir / f"{asset_id}.mp3"
+        destination = lesson_dir / audio_asset_filename(asset_id)
         if (
             destination.is_symlink()
             or resolved_lesson_dir.parent != root
@@ -90,7 +98,6 @@ class LessonAudioService:
                 f"Audio generation failed for {asset_id}"
             ) from None
 
-        filename = f"{asset_id}.mp3"
         file_descriptor, temporary_name = tempfile.mkstemp(
             dir=lesson_dir,
             prefix=f".{asset_id}-",
@@ -107,7 +114,7 @@ class LessonAudioService:
             os.replace(temporary_path, checked_destination)
         finally:
             temporary_path.unlink(missing_ok=True)
-        return f"/audio/{lesson_id}/{filename}"
+        return audio_asset_url(lesson_id, asset_id)
 
     def _preflight(self, lesson: RuntimeLesson) -> Path:
         lesson_dir = self._lesson_directory(lesson.lesson_id)
@@ -131,7 +138,7 @@ class LessonAudioService:
                 for cue in beat.sync_cues:
                     self._validate_identifier(cue.cue_id)
                     plan_asset(
-                        f"{beat.beat_id}-{cue.cue_id}",
+                        cue_asset_id(beat.beat_id, cue.cue_id),
                     )
             else:
                 plan_asset(beat.beat_id)
@@ -144,7 +151,7 @@ class LessonAudioService:
                 start=1,
             ):
                 plan_asset(
-                    f"{beat.beat_id}-hint-{index}",
+                    hint_asset_id(beat.beat_id, index),
                 )
             for index, option in enumerate(
                 interaction.options,
@@ -152,11 +159,11 @@ class LessonAudioService:
             ):
                 if option.feedback:
                     plan_asset(
-                        f"{beat.beat_id}-option-{index}",
+                        option_feedback_asset_id(beat.beat_id, index),
                     )
             if interaction.explanation_after_correct:
                 plan_asset(
-                    f"{beat.beat_id}-correct",
+                    correct_feedback_asset_id(beat.beat_id),
                 )
         if lesson_dir.exists():
             raise SpeechGenerationError(
@@ -194,7 +201,7 @@ class LessonAudioService:
             async with cue_semaphore:
                 audio_url = await self._write(
                     lesson.lesson_id,
-                    f"{beat_id}-{cue.cue_id}",
+                    cue_asset_id(beat_id, cue.cue_id),
                     cue.spoken_text,
                 )
             return cue.model_copy(
@@ -273,7 +280,7 @@ class LessonAudioService:
                         hint_audio_urls.append(
                             await self._write(
                                 lesson.lesson_id,
-                                f"{beat.beat_id}-hint-{index}",
+                                hint_asset_id(beat.beat_id, index),
                                 hint,
                             )
                         )
@@ -286,7 +293,10 @@ class LessonAudioService:
                             async with option_feedback_semaphore:
                                 feedback_audio_url = await self._write(
                                     lesson.lesson_id,
-                                    f"{beat.beat_id}-option-{index}",
+                                    option_feedback_asset_id(
+                                        beat.beat_id,
+                                        index,
+                                    ),
                                     option.feedback,
                                 )
                         return option.model_copy(
@@ -320,7 +330,7 @@ class LessonAudioService:
                     if interaction.explanation_after_correct:
                         correct_audio_url = await self._write(
                             lesson.lesson_id,
-                            f"{beat.beat_id}-correct",
+                            correct_feedback_asset_id(beat.beat_id),
                             interaction.explanation_after_correct,
                         )
                     interaction = interaction.model_copy(
