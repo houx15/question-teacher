@@ -33,6 +33,14 @@ _EXPLICIT_MATH = re.compile(
     r"\$\$.*?\$\$|\$[^$\r\n]*\$|\\\([^\r\n]*?\\\)|\\\[.*?\\\]",
     re.DOTALL,
 )
+_LATEX_ENVIRONMENT_FRAGMENT = re.compile(
+    r"\\begin\{(?P<environment>[A-Za-z]+)\}.*?"
+    r"\\end\{(?P=environment)\}",
+    re.DOTALL,
+)
+_LATEX_ENVIRONMENT_TOKEN = re.compile(
+    r"\\(?:begin|end)\{(?P<environment>[A-Za-z]+)\}"
+)
 _ASCII_MATH_RUN = re.compile(r"[A-Za-z0-9\\{}()\[\]^_+*/=<>.\-]+")
 _ASCII_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
 _SKELETON_MATH_COMMANDS = frozenset(
@@ -210,7 +218,14 @@ def _short_skeleton(value: str) -> str:
 
 
 def _canonical_math_streams(value: str) -> Tuple[str, str, str]:
-    without_commands = re.sub(r"\\[A-Za-z]+", "", value)
+    without_environments = value
+    if is_strict_math_expression(value):
+        without_environments = _LATEX_ENVIRONMENT_TOKEN.sub("", value)
+    without_commands = re.sub(
+        r"\\[A-Za-z]+",
+        "",
+        without_environments,
+    )
     normalized = without_commands.translate(_UNICODE_DIGIT_TRANSLATION)
     alpha = []
     digits = []
@@ -229,6 +244,17 @@ def _canonical_math_streams(value: str) -> Tuple[str, str, str]:
     return "".join(alpha), "".join(digits), "".join(alnum)
 
 
+def _malformed_environment_streams(value: str) -> Tuple[str, str, str]:
+    names = [
+        match.group("environment").casefold()
+        for match in _LATEX_ENVIRONMENT_TOKEN.finditer(
+            _candidate_source(value)
+        )
+    ]
+    skeleton = "".join(names)
+    return skeleton, "", skeleton
+
+
 def _candidate_kind(token: str) -> str:
     if token.isalpha():
         return "alpha"
@@ -241,67 +267,104 @@ def _candidate_is_long_enough(kind: str, skeleton: str) -> bool:
     return len(skeleton) >= (6 if kind == "digits" else 5)
 
 
-def _sensitive_math_candidates(
-    value: str,
-    *,
-    group_chunks: bool = True,
-) -> Counter:
-    candidates = Counter()
+def _is_complete_math_fragment(value: str) -> bool:
+    stripped = value.strip()
+    if not is_strict_math_expression(stripped):
+        return False
+    return (
+        "\\" in stripped
+        or any(char in stripped for char in "=<>+-*/^_()[]{}&")
+        or any(not char.isascii() and not char.isalnum() for char in stripped)
+    )
+
+
+def _candidate_source(value: str) -> str:
     normalized = value.translate(_UNICODE_DIGIT_TRANSLATION).replace(
         "，", ","
     )
-    balanced_numeric_chain = (
-        re.fullmatch(r"\s*\d{3}(?:-\d{3}){2,}\s*", normalized)
-        is not None
+    if _is_complete_math_fragment(normalized):
+        return ""
+
+    def replace_fragment(match: re.Match) -> str:
+        source = match.group()
+        if source.startswith("$$"):
+            inner = source[2:-2]
+        elif source.startswith("$"):
+            inner = source[1:-1]
+        elif source.startswith((r"\(", r"\[")):
+            inner = source[2:-2]
+        else:
+            inner = source
+        return "界" if is_strict_math_expression(inner.strip()) else inner
+
+    without_environments = _LATEX_ENVIRONMENT_FRAGMENT.sub(
+        replace_fragment,
+        normalized,
     )
-    matches = list(_ASCII_ALNUM_RUN.finditer(normalized))
+    without_explicit_math = _EXPLICIT_MATH.sub(
+        replace_fragment,
+        without_environments,
+    )
+    pieces = []
+    cursor = 0
+    for match in _ASCII_MATH_RUN.finditer(without_explicit_math):
+        pieces.append(without_explicit_math[cursor : match.start()])
+        run = match.group()
+        pieces.append("界" if _is_complete_math_fragment(run) else run)
+        cursor = match.end()
+    pieces.append(without_explicit_math[cursor:])
+    return "".join(pieces)
+
+
+def _sensitive_math_candidates(
+    value: str,
+    *,
+    public_authorization: bool = False,
+) -> Counter:
+    candidates = Counter()
+    source = _candidate_source(value)
+    matches = list(_ASCII_ALNUM_RUN.finditer(source))
     for match in matches:
         token = match.group().casefold()
         kind = _candidate_kind(token)
         if _candidate_is_long_enough(kind, token):
             candidates["%s:%s" % (kind, token)] += 1
 
-    if not group_chunks:
-        return candidates
-
-    group_kind = None
     group_tokens = []
 
     def flush_group() -> None:
-        nonlocal group_kind, group_tokens
-        if len(group_tokens) > 1 and not (
-            group_kind == "digits" and balanced_numeric_chain
+        nonlocal group_tokens
+        if len(group_tokens) > 1 and (
+            not public_authorization
+            or any(len(token) >= 3 for token in group_tokens)
         ):
             for start in range(len(group_tokens)):
                 skeleton = ""
-                for token in group_tokens[start:]:
+                for offset, token in enumerate(
+                    group_tokens[start:],
+                    start=start,
+                ):
                     skeleton += token
+                    if offset == start:
+                        continue
+                    kind = _candidate_kind(skeleton)
                     if _candidate_is_long_enough(
-                        group_kind,
+                        kind,
                         skeleton,
                     ):
                         candidates[
-                            "%s:%s" % (group_kind, skeleton)
+                            "%s:%s" % (kind, skeleton)
                         ] += 1
                         break
-        group_kind = None
         group_tokens = []
 
     previous_end = 0
     for match in matches:
         token = match.group().casefold()
-        kind = _candidate_kind(token)
-        separator = normalized[previous_end : match.start()]
-        separator_is_safe = re.fullmatch(r"[\s_,\-]*", separator) is not None
-        if kind not in {"alpha", "digits"} or (
-            group_kind is not None and kind != group_kind
-        ):
+        separator = source[previous_end : match.start()]
+        if any(char.isalnum() for char in separator):
             flush_group()
-        elif group_kind is not None and not separator_is_safe:
-            flush_group()
-        if kind is not None:
-            group_kind = kind
-            group_tokens.append(token)
+        group_tokens.append(token)
         previous_end = match.end()
     flush_group()
     return candidates
@@ -475,6 +538,15 @@ def _embedded_math_expressions(value: str) -> Iterable[str]:
 
 
 def _problem_premise_text(problem_text: str) -> str:
+    known_position = problem_text.find("已知")
+    if known_position >= 0:
+        boundary = len(problem_text)
+        search_start = known_position + len("已知")
+        for marker in ("则", "求", "问", "选项"):
+            position = problem_text.find(marker, search_start)
+            if position >= 0:
+                boundary = min(boundary, position)
+        return problem_text[known_position:boundary]
     boundary = len(problem_text)
     for marker in ("则", "求", "问", "下列", "选项"):
         position = problem_text.find(marker)
@@ -541,7 +613,10 @@ class ReferenceSafetyPolicy:
         raw_short_skeleton = _short_skeleton(raw)
         sensitive_math_candidates = (
             _sensitive_math_candidates(raw)
-            - _sensitive_math_candidates(public, group_chunks=False)
+            - _sensitive_math_candidates(
+                public,
+                public_authorization=True,
+            )
         )
         return cls(
             sensitive_fingerprints=(
@@ -593,6 +668,10 @@ class ReferenceSafetyPolicy:
         ):
             if structural:
                 continue
+            for index, stream in enumerate(
+                _malformed_environment_streams(text)
+            ):
+                math_streams[index].append(stream)
             for expression in _embedded_math_expressions(text):
                 helper_identifier = self._ensure_authorized_math(
                     expression,

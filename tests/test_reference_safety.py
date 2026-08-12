@@ -670,6 +670,34 @@ def test_grounding_provenance_normalizes_latex_but_rejects_substring_matches():
 
 
 @pytest.mark.parametrize(
+    "problem_text",
+    [
+        "问题：已知x=1，求y。",
+        "阅读下列材料：已知x=1，求y。",
+        "根据运算法则，已知x=1，求y。",
+        "题目要求：已知x=1，求y。",
+    ],
+)
+def test_grounding_provenance_starts_the_premise_at_known_condition(
+    problem_text,
+):
+    source = ProblemInput(
+        problem_text=problem_text,
+        reference_answer="y=2",
+        reference_solution_text="由x=1得到y=2。",
+    )
+
+    sanitized = ReferenceSafetyPolicy.from_problem(
+        source
+    ).sanitize_grounding_brief(
+        _brief_with_model_ids("a", "s", "c"),
+        source.reference_answer,
+    )
+
+    assert sanitized.assumptions[0].source_kind == "problem"
+
+
+@pytest.mark.parametrize(
     ("raw_secret", "recombined_math"),
     [
         ("ADMIN", "a+d+m+i+n"),
@@ -700,6 +728,149 @@ def test_reference_safety_correlates_split_candidates_as_ordered_tokens(
     with pytest.raises(ReferenceContentSafetyError):
         policy.ensure_safe(
             {"state_after": StrictMathText._validate(recombined_math)}
+        )
+
+
+@pytest.mark.parametrize(
+    "raw_secret",
+    [
+        "PASS.WORD",
+        "PASS/WORD",
+        "PASS+WORD",
+        "PASS:WORD",
+        "PASS=WORD",
+        "(PASS)WORD",
+        r"PASS\WORD",
+        "PASS🙂WORD",
+        "PA55 WORD",
+        "API K3Y",
+        "AB12 CD34",
+    ],
+)
+def test_reference_safety_correlates_mixed_candidates_across_any_separator(
+    raw_secret,
+):
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text=(
+                "变量a、b、c、d、e、i、k、o、p、r、s、w均为实数。"
+            ),
+            reference_answer="a=1",
+            reference_solution_text=raw_secret,
+        )
+    )
+    reconstructed = "".join(
+        char.casefold()
+        for char in raw_secret
+        if char.isascii() and char.isalnum()
+    )
+
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe(
+            {
+                "state_after": StrictMathText._validate(
+                    "+".join(reconstructed)
+                )
+            }
+        )
+
+
+def test_reference_safety_subtracts_an_explicit_public_candidate():
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text=(
+                "公开标记PASS-WORD；"
+                "变量p、a、s、w、o、r、d均为实数。"
+            ),
+            reference_answer="p=1",
+            reference_solution_text="PASS WORD",
+        )
+    )
+
+    policy.ensure_safe(
+        {
+            "state_after": StrictMathText._validate(
+                "p+a+s+s+w+o+r+d"
+            )
+        }
+    )
+
+
+def test_reference_safety_does_not_subtract_single_letter_public_variables():
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="变量p+a+s+s+w+o+r+d均为实数。",
+            reference_answer="p=1",
+            reference_solution_text="PASS WORD",
+        )
+    )
+
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe(
+            {
+                "state_after": StrictMathText._validate(
+                    "p+a+s+s+w+o+r+d"
+                )
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        r"\sin(x)+\cos(x)=1",
+        r"\begin{cases}x=1\\y=2\end{cases}",
+        r"\begin{array}{cc}x&y\\1&2\end{array}",
+        r"\begin{pmatrix}1&0\\0&1\end{pmatrix}",
+    ],
+)
+def test_reference_safety_excludes_complete_valid_math_fragments(formula):
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="已知x、y为实数。",
+            reference_answer="x=1",
+            reference_solution_text=formula,
+        )
+    )
+
+    policy.ensure_safe({"state_after": StrictMathText._validate(formula)})
+
+
+@pytest.mark.parametrize("environment", ["cases", "array", "pmatrix"])
+def test_latex_environment_names_are_syntax_only_when_paired(environment):
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="已知x为实数。",
+            reference_answer="x=1",
+            reference_solution_text=environment.upper(),
+        )
+    )
+    formula = {
+        "cases": r"\begin{cases}x=1\\x=2\end{cases}",
+        "array": r"\begin{array}{cc}x&1\\2&3\end{array}",
+        "pmatrix": r"\begin{pmatrix}1&0\\0&1\end{pmatrix}",
+    }[environment]
+
+    policy.ensure_safe({"state_after": StrictMathText._validate(formula)})
+    if environment == "pmatrix":
+        with pytest.raises(ReferenceContentSafetyError):
+            policy.ensure_safe({"summary": environment.upper()})
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe({"summary": r"\begin{%s}x" % environment})
+
+
+def test_unrecognized_paired_latex_environment_is_not_syntax():
+    policy = ReferenceSafetyPolicy.from_problem(
+        ProblemInput(
+            problem_text="已知x为实数。",
+            reference_answer="x=1",
+            reference_solution_text="FAKEENV",
+        )
+    )
+
+    with pytest.raises(ReferenceContentSafetyError):
+        policy.ensure_safe(
+            {"summary": r"\begin{fakeenv}x\end{fakeenv}"}
         )
 
 
