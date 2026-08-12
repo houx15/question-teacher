@@ -234,6 +234,65 @@ node --check app/static/runtime-core.mjs
 node --check app/static/math-text.mjs
 ```
 
+### 教学质量黄金题集与版本比较
+
+`tests/fixtures/pedagogy_golden_cases.json` 保存了 18 道经过人工编写与审阅的
+无图初中数学题。每道题都记录了思维轨迹锚点、必讲内容、典型误解、关键板书状态，
+以及可接受和不可接受的讲解片段。这些内容是教师给评估器的质量预期，不代表模型
+已经达到预期，也不代表学生已经学会。
+
+离线检查只验证题集元数据、评估器输出合同和其他确定性程序行为，不调用模型：
+
+```bash
+source /opt/anaconda3/etc/profile.d/conda.sh
+conda activate general
+pytest -q tests/test_pedagogy_evaluation.py
+```
+
+真实评估必须显式开启集成模式，并且使用与当前代码一致的 rubric 版本。标准比较为
+每题生成三次。输出目录必须是新目录或空目录；脚本不会覆盖已有评估结果：
+
+```bash
+source /opt/anaconda3/etc/profile.d/conda.sh
+conda activate general
+set -a
+source .env
+set +a
+RUN_INTEGRATION=1 python scripts/run_pedagogy_evaluation.py \
+  --rubric-version 0.1 \
+  --runs-per-case 3 \
+  --output-dir /tmp/ai-math-pedagogy-v01
+```
+
+如果只修改 prompt 而 rubric 仍为 `0.1`，为两个候选分别增加不同的稳定标签，例如
+`--candidate-version prompt-a` 与 `--candidate-version prompt-b`。比较器以候选标签区分
+版本，并同时核对两次运行的题集指纹；这样 prompt-only 比较不会被误认为同一个候选。
+
+真实模式只调用课程生成服务，不生成语音，也不启动 Web 服务。`private/records/`
+保存完整的内部生成记录，`public/runtime/` 保存移除参考答案、参考解析、正确选项、
+诊断反馈和内部验证报告后的课堂内容。`manifest.json` 只汇总确定性合同指标：生成
+成功、硬门槛审稿状态、必讲内容覆盖、讲稿与视觉动作绑定、Schema/Runtime 通过、
+时长和调用次数。日志不写模型正文、内部审稿反馈或服务密钥；失败项只记录受限的
+失败类别和阶段。
+
+比较两个 rubric 或 prompt 版本时，应在对应版本的代码中分别生成独立目录，且两边
+使用同一题集和相同的 `--runs-per-case`。随后离线生成盲评对：
+
+```bash
+python scripts/run_pedagogy_evaluation.py \
+  --compare-run /tmp/ai-math-pedagogy-v01 /tmp/ai-math-pedagogy-v02 \
+  --output-dir /tmp/ai-math-pedagogy-blind
+```
+
+给教师的文件是 `public/blind_pairs.json`，其中只有随机化后的 candidate A/B，
+没有版本标签。版本对应关系单独保存在 `private/candidate_mapping.json`；收集盲评时
+不要把该私有文件交给评审教师。脚本不会自动填写教师偏好，也不会从自动指标推断
+偏好。
+
+证据边界分为三层：自动审核和确定性指标只能说明生成物符合当前合同；教师成对盲评
+可以说明教师更认可哪一版及其理由；真实学生是否理解、迁移和保持，需要独立的学生
+任务、过程证据和学习效果研究。前两层都不能改写成已经证明学生学会。
+
 配置真实端点后，默认运行不包含参考解析审阅的 core smoke：
 
 ```bash

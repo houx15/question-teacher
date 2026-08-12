@@ -1,0 +1,308 @@
+[
+  {
+    "case_id": "parameter_root_01",
+    "problem": {
+      "problem_text": "若2n（n不等于0）是方程x^2-2mx+2n=0的根，求m-n。",
+      "reference_answer": "1/2",
+      "reference_solution_text": "将x=2n代入，得到4n^2-4mn+2n=0；由n不等于0，整理得4n-4m+2=0，所以m-n=1/2。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["equation_parameter", "omitted_condition"],
+    "trace_anchors": ["是根意味着代入", "约去n前使用n不等于0", "结果重新连接m-n"],
+    "required_reasoning_modes": ["plan", "execute", "monitor"],
+    "required_must_teach": ["目标只需要m与n的关系", "含字母因子约分前确认非零"],
+    "typical_misconceptions": ["直接除以n却不检查非零条件", "只算代入而不解释为什么"],
+    "required_board_states": ["x=2n代入原方程", "提取2n后的关系式", "m-n=1/2"],
+    "acceptable_excerpt_patterns": ["先看目标", "因为n不等于0"],
+    "unacceptable_excerpt_patterns": ["直接把n约掉", "答案显然是二分之一"]
+  },
+  {
+    "case_id": "square_root_condition_02",
+    "problem": {
+      "problem_text": "已知算术平方根√(2a-1)=3，求a。",
+      "reference_answer": "a=5",
+      "reference_solution_text": "算术平方根等于3说明2a-1=9，解得2a=10，所以a=5；此时2a-1=9非负，符合条件。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["concept_condition_conversion", "algebra_execution", "concept_overlay"],
+    "trace_anchors": ["把算术平方根等于3转成被开方数等于9", "解出a后回查被开方数非负"],
+    "required_reasoning_modes": ["understand", "execute", "monitor"],
+    "required_must_teach": ["算术平方根3对应平方9而不是正负3", "根式有意义要求被开方数非负"],
+    "typical_misconceptions": ["把2a-1写成3", "给平方根结果补上正负号"],
+    "required_board_states": ["√(2a-1)=3", "2a-1=3^2=9", "a=5并回查"],
+    "acceptable_excerpt_patterns": ["这里的3是算术平方根", "代回看9大于等于0"],
+    "unacceptable_excerpt_patterns": ["开方后直接去掉根号", "a等于2或5"]
+  },
+  {
+    "case_id": "difference_squares_expand_03",
+    "problem": {
+      "problem_text": "化简：(x+2)^2-(x-2)^2。",
+      "reference_answer": "8x",
+      "reference_solution_text": "把两个平方看成A^2-B^2，其中A=x+2，B=x-2。原式=[(x+2)+(x-2)]·[(x+2)-(x-2)]=2x·4=8x。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["algebra_execution", "method_selection"],
+    "trace_anchors": ["观察两个完整平方构成平方差", "先算两因式再相乘得到8x"],
+    "required_reasoning_modes": ["plan", "execute", "reflect"],
+    "required_must_teach": ["识别结构能避免两次完全展开", "第二个括号相减时要整体加括号"],
+    "typical_misconceptions": ["把平方差误写成两项之差", "漏掉减号对后一括号的影响"],
+    "required_board_states": ["A=x+2且B=x-2", "(A+B)(A-B)", "2x·4=8x"],
+    "acceptable_excerpt_patterns": ["先看结构", "把x-2作为一个整体"],
+    "unacceptable_excerpt_patterns": ["平方可以直接约掉", "两个2互相抵消所以为0"]
+  },
+  {
+    "case_id": "fraction_linear_equation_04",
+    "problem": {
+      "problem_text": "解方程：(x-1)/2-(x+1)/3=1。",
+      "reference_answer": "x=11",
+      "reference_solution_text": "方程两边同乘6，得3(x-1)-2(x+1)=6。去括号得3x-3-2x-2=6，整理得x=11。代回原方程，5-4=1。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["algebra_execution", "omitted_condition"],
+    "trace_anchors": ["用分母最小公倍数6去分母", "减去2乘整个x加1", "代回原分式方程检查"],
+    "required_reasoning_modes": ["plan", "execute", "monitor"],
+    "required_must_teach": ["同乘6要作用于等号两边每一项", "括号前负号同时改变括号内两项"],
+    "typical_misconceptions": ["等号右边忘记乘6", "展开-2(x+1)时常数仍写正2"],
+    "required_board_states": ["最小公倍数为6", "3(x-1)-2(x+1)=6", "x=11及代回"],
+    "acceptable_excerpt_patterns": ["6要乘到每一项", "负号管着整个括号"],
+    "unacceptable_excerpt_patterns": ["分母可以直接删掉", "去括号得到3x-3-2x+2"]
+  },
+  {
+    "case_id": "quadratic_factor_choice_05",
+    "problem": {
+      "problem_text": "选择合适的方法解方程x^2-5x+6=0。",
+      "reference_answer": "x=2或x=3",
+      "reference_solution_text": "常数6可分为2和3，且2+3=5，因此x^2-5x+6=(x-2)(x-3)。由零乘积性质，x-2=0或x-3=0，所以x=2或x=3。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["method_selection", "algebra_execution"],
+    "trace_anchors": ["寻找乘积为6且和为5的两个数", "因式分解后使用零乘积性质"],
+    "required_reasoning_modes": ["plan", "execute", "reflect"],
+    "required_must_teach": ["整数因数组合简单时因式分解更直接", "乘积为零才可令某个因式为零"],
+    "typical_misconceptions": ["找到2和3却把因式写成x加2与x加3", "从两个因式的乘积直接读根而不说明零乘积"],
+    "required_board_states": ["6=2×3且5=2+3", "(x-2)(x-3)=0", "x=2或x=3"],
+    "acceptable_excerpt_patterns": ["先比较哪种方法顺手", "由零乘积性质"],
+    "unacceptable_excerpt_patterns": ["所有二次方程都该套公式", "两个括号分别等于零无需条件"]
+  },
+  {
+    "case_id": "complete_square_equation_06",
+    "problem": {
+      "problem_text": "用配方法解方程x^2+6x-7=0。",
+      "reference_answer": "x=1或x=-7",
+      "reference_solution_text": "移项得x^2+6x=7。两边加9，得(x+3)^2=16，所以x+3=4或x+3=-4，解得x=1或x=-7。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["method_selection", "concept_overlay", "algebra_execution"],
+    "trace_anchors": ["一次项系数6的一半是3", "方程两边同时加9保持相等", "平方等于16分成正负两支"],
+    "required_reasoning_modes": ["understand", "plan", "execute"],
+    "required_must_teach": ["配方目标是制造完全平方式", "开平方求方程解时保留正负两种可能"],
+    "typical_misconceptions": ["只在方程左边加9", "从平方等于16只得到正4"],
+    "required_board_states": ["x^2+6x=7", "x^2+6x+9=(x+3)^2", "x+3=±4"],
+    "acceptable_excerpt_patterns": ["我们想把左边配成一个平方", "等号两边做同样的事"],
+    "unacceptable_excerpt_patterns": ["看到6就直接加6", "平方根只有正数"]
+  },
+  {
+    "case_id": "negative_inequality_07",
+    "problem": {
+      "problem_text": "解不等式-2x+3>7。",
+      "reference_answer": "x<-2",
+      "reference_solution_text": "两边减3，得-2x>4。两边除以负数-2时不等号方向改变，所以x<-2。用x=-3检验，左边9大于7。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["concept_condition_conversion", "algebra_execution", "omitted_condition"],
+    "trace_anchors": ["先把常数3移到右边", "除以负2时反转不等号", "选取区间内数值检验方向"],
+    "required_reasoning_modes": ["execute", "monitor", "reflect"],
+    "required_must_teach": ["负数乘除改变大小次序", "检验点用于检查方向而非代替推导"],
+    "typical_misconceptions": ["除以负2后仍保留大于号", "把-2x大于4写成x大于-2"],
+    "required_board_states": ["-2x>4", "÷(-2)且方向反转", "x<-2"],
+    "acceptable_excerpt_patterns": ["关键在除数是负数", "用-3快速检查"],
+    "unacceptable_excerpt_patterns": ["移项所以不等号反向", "答案是x大于负二"]
+  },
+  {
+    "case_id": "rational_domain_08",
+    "problem": {
+      "problem_text": "化简分式(x^2-4)/(x-2)，并写出x的取值限制。",
+      "reference_answer": "x+2，且x不等于2",
+      "reference_solution_text": "x^2-4=(x-2)(x+2)。当x不等于2时可约去公因式x-2，得到x+2。原分式在x=2时分母为0，所以限制不能丢。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["concept_condition_conversion", "omitted_condition", "concept_overlay"],
+    "trace_anchors": ["先由分母确定x不等于2", "把分子分解为平方差", "约分后保留原式定义域"],
+    "required_reasoning_modes": ["understand", "execute", "monitor"],
+    "required_must_teach": ["约分消去的是非零因式", "化简式相等以原分式有意义为前提"],
+    "typical_misconceptions": ["约分后认为x可以等于2", "把x平方减4分成x减2的平方"],
+    "required_board_states": ["x-2≠0", "(x-2)(x+2)/(x-2)", "x+2且x≠2"],
+    "acceptable_excerpt_patterns": ["先记下原分母不能为零", "式子变短但限制仍在"],
+    "unacceptable_excerpt_patterns": ["约掉以后限制也消失", "x等于2时结果等于4"]
+  },
+  {
+    "case_id": "triangle_exterior_angle_09",
+    "problem": {
+      "problem_text": "三角形ABC的顶点C处外角为120°，内角A为35°，求内角B。",
+      "reference_answer": "85°",
+      "reference_solution_text": "三角形一个外角等于与它不相邻的两个内角之和，因此120°=35°+角B，解得角B=85°。也可用C的内角为60°再由内角和求得。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["text_only_geometry", "concept_condition_conversion", "no_forced_interaction"],
+    "trace_anchors": ["辨认C处外角对应的两个远内角", "把外角定理写成120等于35加B"],
+    "required_reasoning_modes": ["understand", "plan", "execute"],
+    "required_must_teach": ["外角定理只连接两个不相邻内角", "文字条件足以建立角度关系无需想象精确图形"],
+    "typical_misconceptions": ["把相邻的C角也加入外角定理", "用120减去三角形三个内角"],
+    "required_board_states": ["外角C=∠A+∠B", "120°=35°+∠B", "∠B=85°"],
+    "acceptable_excerpt_patterns": ["先找与这个外角不相邻的角", "这一步直接用外角定理"],
+    "unacceptable_excerpt_patterns": ["图上看起来B大约85度", "外角等于三个内角之和"]
+  },
+  {
+    "case_id": "isosceles_perimeter_10",
+    "problem": {
+      "problem_text": "等腰三角形的周长为28厘米，底边长8厘米，求每条腰的长度。",
+      "reference_answer": "10厘米",
+      "reference_solution_text": "设每条腰长为a厘米。由两腰相等，2a+8=28，解得a=10。检验10+10>8且10+8>10，可以组成三角形。",
+      "lesson_length": "concise"
+    },
+    "coverage_tags": ["text_only_geometry", "concept_condition_conversion", "no_forced_emphasis"],
+    "trace_anchors": ["把两条相等的腰统一设为a", "由周长组成写出2a加8等于28", "用三角形两边和检验长度可行"],
+    "required_reasoning_modes": ["understand", "execute", "monitor"],
+    "required_must_teach": ["等腰条件决定有两条相同未知边", "求得边长后要确认能构成三角形"],
+    "typical_misconceptions": ["把剩余20厘米当作一条腰", "只解周长方程不考虑三角形存在性"],
+    "required_board_states": ["腰长=a", "2a+8=28", "a=10及10+10>8"],
+    "acceptable_excerpt_patterns": ["剩下的长度由两条腰平均分", "最后做存在性检查"],
+    "unacceptable_excerpt_patterns": ["腰长就是28减8", "任何三个正数都能组成三角形"]
+  },
+  {
+    "case_id": "circle_radius_change_11",
+    "problem": {
+      "problem_text": "一个圆的半径增加2厘米，它的周长增加多少厘米？",
+      "reference_answer": "4π厘米",
+      "reference_solution_text": "设原半径为r，原周长为2πr，新周长为2π(r+2)。两者相减得2π(r+2)-2πr=4π，所以增量与原半径无关。",
+      "lesson_length": "concise"
+    },
+    "coverage_tags": ["text_only_geometry", "function_relationship", "no_forced_interaction", "no_forced_emphasis"],
+    "trace_anchors": ["用同一个r表示变化前后的半径", "新旧周长相减消去原半径"],
+    "required_reasoning_modes": ["plan", "execute", "reflect"],
+    "required_must_teach": ["题目问的是周长增量而非新周长", "线性关系使增量只由半径变化量决定"],
+    "typical_misconceptions": ["把半径增加2误当周长增加2π", "没有原半径就认为无法计算"],
+    "required_board_states": ["C原=2πr", "C新=2π(r+2)", "C新-C原=4π"],
+    "acceptable_excerpt_patterns": ["我们比较新旧周长", "原来的r正好消掉"],
+    "unacceptable_excerpt_patterns": ["半径未知所以无解", "周长增加2π"]
+  },
+  {
+    "case_id": "linear_function_parameter_12",
+    "problem": {
+      "problem_text": "一次函数y=(k-1)x+2的图象经过点(3,8)，求k。",
+      "reference_answer": "k=3",
+      "reference_solution_text": "点(3,8)在函数图象上，表示x=3时y=8。代入得8=3(k-1)+2，整理为6=3(k-1)，所以k-1=2，k=3。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["function_relationship", "equation_parameter", "concept_condition_conversion"],
+    "trace_anchors": ["把经过点翻译为坐标满足函数式", "代入x为3且y为8形成关于k的方程"],
+    "required_reasoning_modes": ["understand", "execute", "reflect"],
+    "required_must_teach": ["图象上的点与函数对应值是同一条件", "未知的是参数k而不是坐标x或y"],
+    "typical_misconceptions": ["只把横坐标3代入却不令y等于8", "把k减1与x相加而非相乘"],
+    "required_board_states": ["x=3时y=8", "8=3(k-1)+2", "k=3"],
+    "acceptable_excerpt_patterns": ["经过这个点意味着坐标满足关系式", "现在解的是关于k的方程"],
+    "unacceptable_excerpt_patterns": ["图象经过点所以k等于横坐标", "把8代给x"]
+  },
+  {
+    "case_id": "inverse_function_change_13",
+    "problem": {
+      "problem_text": "反比例函数y=12/x中，当x从2变为3时，y如何变化？",
+      "reference_answer": "y从6变为4，减小2",
+      "reference_solution_text": "分别代入x=2和x=3，得到y=12/2=6和y=12/3=4。因此x由2增至3时，y由6降至4，减小2。",
+      "lesson_length": "concise"
+    },
+    "coverage_tags": ["function_relationship", "algebra_execution", "no_forced_emphasis"],
+    "trace_anchors": ["分别计算两个自变量对应的函数值", "用后值4减前值6判断变化方向与大小"],
+    "required_reasoning_modes": ["execute", "monitor", "reflect"],
+    "required_must_teach": ["变化需要比较前后两个对应值", "减小量写作前值减后值而变化量为后值减前值"],
+    "typical_misconceptions": ["只说反比例函数递减却不算对应值", "把减小2说成变化量正2"],
+    "required_board_states": ["x=2→y=6", "x=3→y=4", "由6到4减小2"],
+    "acceptable_excerpt_patterns": ["先算变化前后两个点", "从6降到4"],
+    "unacceptable_excerpt_patterns": ["x增加1所以y也增加1", "y从4变成6"]
+  },
+  {
+    "case_id": "consecutive_product_explore_14",
+    "problem": {
+      "problem_text": "两个连续正整数的积是72，求这两个正整数。",
+      "reference_answer": "8和9",
+      "reference_solution_text": "设较小的正整数为n，则另一个为n+1，满足n(n+1)=72。先观察√72在8和9之间，可尝试相邻的8和9；8×9=72，因此两数为8和9。也可解n^2+n-72=0并舍去负根-9。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["exploration_or_revision", "method_selection", "omitted_condition"],
+    "trace_anchors": ["用平方根附近估计连续因数位置", "尝试8和9后用乘积72确认", "若列方程需舍去不合正整数条件的负根"],
+    "required_reasoning_modes": ["plan", "explore", "monitor", "reflect"],
+    "required_must_teach": ["连续关系把两个未知数压缩为n与n加1", "估计与试探需要用原条件验证"],
+    "typical_misconceptions": ["只找乘积72而忽略连续", "解出-9和8后把-9也当作所求正整数"],
+    "required_board_states": ["n与n+1", "√72介于8与9", "8×9=72"],
+    "acceptable_excerpt_patterns": ["先估计这两个数大约在哪里", "试出来后还要代回确认"],
+    "unacceptable_excerpt_patterns": ["猜到8和9就不必说明", "答案包含负9"]
+  },
+  {
+    "case_id": "discount_original_price_15",
+    "problem": {
+      "problem_text": "一件商品按原价的八折出售，售价为240元，求原价。",
+      "reference_answer": "300元",
+      "reference_solution_text": "八折表示售价是原价的80%。设原价为p元，则0.8p=240，所以p=240÷0.8=300。代回检验，300×80%=240。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["concept_condition_conversion", "algebra_execution"],
+    "trace_anchors": ["把八折翻译为原价乘80%", "根据售价等于240列0.8p等于240", "用300乘0.8回查售价"],
+    "required_reasoning_modes": ["understand", "execute", "monitor"],
+    "required_must_teach": ["八折是现价占原价的比例", "未知原价应作为被乘的整体"],
+    "typical_misconceptions": ["把售价240再乘0.8得到原价", "把八折理解成减8元"],
+    "required_board_states": ["售价=原价×80%", "0.8p=240", "p=300"],
+    "acceptable_excerpt_patterns": ["先把折扣语言翻译成等量关系", "300的八折正好是240"],
+    "unacceptable_excerpt_patterns": ["原价等于240乘0.8", "八折就是少八元"]
+  },
+  {
+    "case_id": "mean_add_data_16",
+    "problem": {
+      "problem_text": "4个数的平均数是10，加入一个数15后，新的平均数是多少？",
+      "reference_answer": "11",
+      "reference_solution_text": "原来4个数的总和为4×10=40。加入15后总和为55，数据个数变为5，所以新平均数为55÷5=11。",
+      "lesson_length": "concise"
+    },
+    "coverage_tags": ["concept_condition_conversion", "algebra_execution", "no_forced_interaction"],
+    "trace_anchors": ["由平均数10和个数4恢复总和40", "加入15后同时更新总和与数据个数"],
+    "required_reasoning_modes": ["understand", "execute", "monitor"],
+    "required_must_teach": ["平均数乘数据个数得到总和", "新增数据会让分子和分母同时变化"],
+    "typical_misconceptions": ["把10和15直接平均得到12.5", "新总和55仍除以原个数4"],
+    "required_board_states": ["原总和=4×10=40", "新总和=40+15=55", "55÷5=11"],
+    "acceptable_excerpt_patterns": ["平均数背后先还原总和", "现在一共有5个数"],
+    "unacceptable_excerpt_patterns": ["新平均数就是10和15的平均", "仍然除以4"]
+  },
+  {
+    "case_id": "simple_probability_17",
+    "problem": {
+      "problem_text": "袋中有3个红球和2个蓝球，除颜色外完全相同。随机摸出1个球，摸到红球的概率是多少？",
+      "reference_answer": "3/5",
+      "reference_solution_text": "共有3+2=5个等可能的球，其中红球有3个，所以摸到红球的概率为3/5。",
+      "lesson_length": "concise"
+    },
+    "coverage_tags": ["concept_condition_conversion", "no_forced_interaction", "no_forced_emphasis"],
+    "trace_anchors": ["由除颜色外相同确认五个球等可能", "用红球个数3除以球总数5"],
+    "required_reasoning_modes": ["understand", "execute"],
+    "required_must_teach": ["古典概率计算依赖每个球被摸到的机会相同", "有利结果数是红球数而样本总数是全部球数"],
+    "typical_misconceptions": ["只看两种颜色就写二分之一", "用蓝球数2作为分母"],
+    "required_board_states": ["总数=3+2=5", "有利结果数=3", "P(红)=3/5"],
+    "acceptable_excerpt_patterns": ["颜色种类不等于结果个数", "五个球机会相同"],
+    "unacceptable_excerpt_patterns": ["红蓝两种所以各二分之一", "概率是三分之五"]
+  },
+  {
+    "case_id": "square_symbol_distinction_18",
+    "problem": {
+      "problem_text": "分别计算(-3)^2与√9，并说明两者为什么不同。",
+      "reference_answer": "(-3)^2=9，√9=3",
+      "reference_solution_text": "(-3)^2表示-3与-3相乘，结果为9；√9表示9的算术平方根，按定义取非负值3。一个是平方运算，一个是求算术平方根，含义不同。",
+      "lesson_length": "standard"
+    },
+    "coverage_tags": ["concept_condition_conversion", "concept_overlay", "no_forced_emphasis"],
+    "trace_anchors": ["把括号平方解释为负3乘负3", "把根号9解释为非负的算术平方根", "对照运算对象说明结果符号差异"],
+    "required_reasoning_modes": ["understand", "execute", "reflect"],
+    "required_must_teach": ["括号决定负号属于被平方的底数", "根号记号表示非负的算术平方根"],
+    "typical_misconceptions": ["认为负数平方仍为负数", "把√9写成正负3"],
+    "required_board_states": ["(-3)^2=(-3)×(-3)=9", "√9=3且3≥0", "平方与算术平方根对照"],
+    "acceptable_excerpt_patterns": ["这两个符号在问不同的运算", "根号本身取算术平方根"],
+    "unacceptable_excerpt_patterns": ["平方和开方总能互相抵消", "根号9等于正负3"]
+  }
+]
