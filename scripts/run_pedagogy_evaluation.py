@@ -45,6 +45,9 @@ MAX_RUNS_PER_CASE = 10
 MAX_JSON_INPUT_BYTES = 16 * 1024 * 1024
 MAX_JSON_OUTPUT_BYTES = 32 * 1024 * 1024
 MANIFEST_SCHEMA_VERSION = 1
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+UNSAFE_DIRECTORY_WRITE_MASK = stat.S_IWGRP | stat.S_IWOTH
 _SAFE_ID = re.compile(r"[a-z][a-z0-9_]{2,63}")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _CASE_KEYS = {
@@ -314,10 +317,27 @@ class _OutputGuard:
             os.name == "posix"
             and hasattr(os, "O_DIRECTORY")
             and hasattr(os, "O_NOFOLLOW")
+            and hasattr(os, "geteuid")
+            and hasattr(os, "fchmod")
             and os.open in os.supports_dir_fd
             and os.mkdir in os.supports_dir_fd
             and os.stat in os.supports_dir_fd
+            and os.chmod in os.supports_dir_fd
+            and os.chmod in os.supports_follow_symlinks
         )
+
+    @staticmethod
+    def _validate_directory_stat(value: object, label: str) -> None:
+        if not stat.S_ISDIR(value.st_mode):
+            raise EvaluationConfigurationError("%s is not a directory" % label)
+        if value.st_uid != os.geteuid():
+            raise EvaluationConfigurationError(
+                "%s owner is not the current user" % label
+            )
+        if value.st_mode & UNSAFE_DIRECTORY_WRITE_MASK:
+            raise EvaluationConfigurationError(
+                "%s permissions allow group or other writes" % label
+            )
 
     @classmethod
     def create(cls, output_dir: Path) -> "_OutputGuard":
@@ -329,17 +349,19 @@ class _OutputGuard:
             output_dir = Path(output_dir)
         if output_dir.is_symlink():
             raise EvaluationConfigurationError("output root cannot be a symlink")
-        if output_dir.exists():
-            if not output_dir.is_dir():
-                raise EvaluationConfigurationError(
-                    "output path is not a directory"
+        created = not output_dir.exists()
+        try:
+            if created:
+                output_dir.mkdir(parents=True, mode=PRIVATE_DIRECTORY_MODE)
+                os.chmod(
+                    output_dir,
+                    PRIVATE_DIRECTORY_MODE,
+                    follow_symlinks=False,
                 )
-            if any(output_dir.iterdir()):
-                raise EvaluationConfigurationError(
-                    "output directory is non-empty"
-                )
-        else:
-            output_dir.mkdir(parents=True)
+        except OSError:
+            raise EvaluationConfigurationError(
+                "output root could not be created securely"
+            ) from None
         if output_dir.is_symlink():
             raise EvaluationConfigurationError("output root cannot be a symlink")
         try:
@@ -347,8 +369,23 @@ class _OutputGuard:
             root_stat = os.stat(output_dir, follow_symlinks=False)
         except OSError:
             raise EvaluationConfigurationError("output root is unavailable") from None
-        if not stat.S_ISDIR(root_stat.st_mode):
-            raise EvaluationConfigurationError("output root is not a directory")
+        cls._validate_directory_stat(root_stat, "output root")
+        if created and stat.S_IMODE(root_stat.st_mode) != PRIVATE_DIRECTORY_MODE:
+            raise EvaluationConfigurationError(
+                "new output root permissions are not private"
+            )
+        if not created:
+            try:
+                if any(output_dir.iterdir()):
+                    raise EvaluationConfigurationError(
+                        "output directory is non-empty"
+                    )
+            except EvaluationConfigurationError:
+                raise
+            except OSError:
+                raise EvaluationConfigurationError(
+                    "output root is unavailable"
+                ) from None
         guard = cls(
             output_dir,
             resolved,
@@ -370,10 +407,8 @@ class _OutputGuard:
             root_stat = os.stat(self.root, follow_symlinks=False)
         except OSError:
             raise EvaluationConfigurationError("output root is unavailable") from None
-        if (
-            not stat.S_ISDIR(root_stat.st_mode)
-            or (root_stat.st_dev, root_stat.st_ino) != self._root_identity
-        ):
+        self._validate_directory_stat(root_stat, "output root")
+        if (root_stat.st_dev, root_stat.st_ino) != self._root_identity:
             raise EvaluationConfigurationError("output root identity changed")
 
     @staticmethod
@@ -416,10 +451,12 @@ class _OutputGuard:
         except BaseException:
             self._close_descriptor(descriptor)
             raise
-        if (
-            not stat.S_ISDIR(root_stat.st_mode)
-            or (root_stat.st_dev, root_stat.st_ino) != self._root_identity
-        ):
+        try:
+            self._validate_directory_stat(root_stat, "output root")
+        except EvaluationConfigurationError:
+            self._close_descriptor(descriptor)
+            raise
+        if (root_stat.st_dev, root_stat.st_ino) != self._root_identity:
             self._close_descriptor(descriptor)
             raise EvaluationConfigurationError("output root identity changed")
         return descriptor
@@ -434,21 +471,44 @@ class _OutputGuard:
         try:
             for part in parts:
                 next_fd = None
+                created = False
                 if create:
                     try:
-                        os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                        os.mkdir(
+                            part,
+                            mode=PRIVATE_DIRECTORY_MODE,
+                            dir_fd=current_fd,
+                        )
+                        created = True
                     except FileExistsError:
                         pass
+                    if created:
+                        os.chmod(
+                            part,
+                            PRIVATE_DIRECTORY_MODE,
+                            dir_fd=current_fd,
+                            follow_symlinks=False,
+                        )
                 try:
                     next_fd = os.open(
                         part,
                         self._directory_open_flags(),
                         dir_fd=current_fd,
                     )
+                    if created:
+                        os.fchmod(next_fd, PRIVATE_DIRECTORY_MODE)
                     next_stat = os.fstat(next_fd)
-                    if not stat.S_ISDIR(next_stat.st_mode):
+                    self._validate_directory_stat(
+                        next_stat,
+                        "controlled output directory",
+                    )
+                    if (
+                        created
+                        and stat.S_IMODE(next_stat.st_mode)
+                        != PRIVATE_DIRECTORY_MODE
+                    ):
                         raise EvaluationConfigurationError(
-                            "controlled output directory is invalid"
+                            "new controlled directory permissions are not private"
                         )
                 except BaseException:
                     self._close_descriptor(next_fd)
@@ -486,11 +546,20 @@ class _OutputGuard:
                 | os.O_CREAT
                 | os.O_EXCL
                 | os.O_NOFOLLOW,
-                0o600,
+                PRIVATE_FILE_MODE,
                 dir_fd=parent_fd,
             )
+            os.fchmod(file_fd, PRIVATE_FILE_MODE)
             opened_stat = os.fstat(file_fd)
-            if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_nlink != 1:
+            if opened_stat.st_uid != os.geteuid():
+                raise EvaluationConfigurationError(
+                    "controlled output file owner is not the current user"
+                )
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or opened_stat.st_nlink != 1
+                or stat.S_IMODE(opened_stat.st_mode) != PRIVATE_FILE_MODE
+            ):
                 raise EvaluationConfigurationError(
                     "controlled output file is not a regular file"
                 )
@@ -501,6 +570,8 @@ class _OutputGuard:
             )
             if (
                 not stat.S_ISREG(path_stat.st_mode)
+                or path_stat.st_uid != os.geteuid()
+                or stat.S_IMODE(path_stat.st_mode) != PRIVATE_FILE_MODE
                 or (path_stat.st_dev, path_stat.st_ino)
                 != (opened_stat.st_dev, opened_stat.st_ino)
             ):
@@ -521,6 +592,10 @@ class _OutputGuard:
             )
             if (
                 not stat.S_ISREG(final_stat.st_mode)
+                or final_stat.st_uid != os.geteuid()
+                or stat.S_IMODE(final_stat.st_mode) != PRIVATE_FILE_MODE
+                or final_path_stat.st_uid != os.geteuid()
+                or stat.S_IMODE(final_path_stat.st_mode) != PRIVATE_FILE_MODE
                 or (final_stat.st_dev, final_stat.st_ino)
                 != (final_path_stat.st_dev, final_path_stat.st_ino)
             ):

@@ -728,6 +728,50 @@ def test_output_guard_rejects_root_and_controlled_child_symlinks(tmp_path):
         guard.write_json("public/runtime.json", {"safe": True})
 
 
+def test_output_guard_rejects_group_or_world_writable_existing_root(tmp_path):
+    for mode in (0o720, 0o702, 0o777):
+        root = tmp_path / ("root-%o" % mode)
+        root.mkdir()
+        root.chmod(mode)
+
+        with pytest.raises(evaluation.EvaluationConfigurationError, match="permissions"):
+            evaluation._OutputGuard.create(root)
+
+        assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", [0o720, 0o702, 0o777])
+def test_output_guard_rejects_replaced_writable_child_before_content_write(
+    tmp_path,
+    mode,
+):
+    root = tmp_path / "root"
+    guard = evaluation._OutputGuard.create(root)
+    child = guard.ensure_directory("public")
+    child.chmod(mode)
+
+    with pytest.raises(evaluation.EvaluationConfigurationError, match="permissions"):
+        guard.write_json("public/runtime.json", {"safe": True})
+
+    assert not (child / "runtime.json").exists()
+
+
+def test_output_guard_forces_secure_modes_despite_restrictive_umask(tmp_path):
+    root = tmp_path / "root"
+    previous_umask = evaluation.os.umask(0o777)
+    try:
+        guard = evaluation._OutputGuard.create(root)
+        child = guard.ensure_directory("public/runtime")
+        guard.write_json("public/runtime/lesson.json", {"safe": True})
+    finally:
+        evaluation.os.umask(previous_umask)
+
+    assert root.stat().st_mode & 0o777 == 0o700
+    assert (root / "public").stat().st_mode & 0o777 == 0o700
+    assert child.stat().st_mode & 0o777 == 0o700
+    assert (child / "lesson.json").stat().st_mode & 0o777 == 0o600
+
+
 def test_output_guard_leaf_write_cannot_follow_directory_swap(tmp_path, monkeypatch):
     external = tmp_path / "external"
     external.mkdir()
@@ -809,6 +853,50 @@ def test_output_guard_closes_every_descriptor_when_validation_fails(
     with pytest.raises(evaluation.EvaluationConfigurationError):
         guard.ensure_directory("public")
 
+    assert opened
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            real_fstat(descriptor)
+
+
+@pytest.mark.parametrize("wrong_owner_call", [1, 2])
+def test_output_guard_rejects_wrong_owner_and_closes_descriptors(
+    tmp_path,
+    monkeypatch,
+    wrong_owner_call,
+):
+    root = tmp_path / "root"
+    guard = evaluation._OutputGuard.create(root)
+    guard.ensure_directory("public")
+    real_open = evaluation.os.open
+    real_fstat = evaluation.os.fstat
+    opened = []
+    calls = {"value": 0}
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        opened.append(descriptor)
+        return descriptor
+
+    def wrong_owner_fstat(descriptor):
+        result = real_fstat(descriptor)
+        calls["value"] += 1
+        if calls["value"] != wrong_owner_call:
+            return result
+        return SimpleNamespace(
+            st_mode=result.st_mode,
+            st_dev=result.st_dev,
+            st_ino=result.st_ino,
+            st_uid=evaluation.os.geteuid() + 1,
+            st_nlink=result.st_nlink,
+        )
+
+    monkeypatch.setattr(evaluation.os, "open", tracking_open)
+    monkeypatch.setattr(evaluation.os, "fstat", wrong_owner_fstat)
+    with pytest.raises(evaluation.EvaluationConfigurationError, match="owner"):
+        guard.write_json("public/runtime.json", {"safe": True})
+
+    assert not (root / "public" / "runtime.json").exists()
     assert opened
     for descriptor in opened:
         with pytest.raises(OSError):
