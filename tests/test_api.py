@@ -800,6 +800,142 @@ def test_persistence_failure_phase_overrides_exception_type_without_public_leak(
     assert "secret" not in str(diagnostic)
 
 
+@pytest.mark.parametrize("failure_phase", ["tts", "persistence"])
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        lambda: ModelResponseError("private provider api-key=secret"),
+        lambda: LessonInputError("题目格式不正确。"),
+    ],
+    ids=["provider-error", "allowlisted-input-error"],
+)
+def test_stale_validation_progress_cannot_regress_later_failure_phase(
+    failure_phase,
+    failure_factory,
+):
+    failure = failure_factory()
+
+    class CallbackCapturingGenerator(FakeGenerator):
+        async def generate(self, problem, on_stage=None):
+            self.stale_callback = on_stage
+            return await super().generate(problem, on_stage=on_stage)
+
+    generator = CallbackCapturingGenerator()
+
+    class StaleProgressTts(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            del lesson
+            assert on_stage is not None
+            on_stage("正在验证数学路线")
+            raise failure
+
+    class StaleProgressStore(MemoryStore):
+        def save_lesson(self, lesson, generation_record=None):
+            del lesson, generation_record
+            assert generator.stale_callback is not None
+            generator.stale_callback("正在验证数学路线")
+            raise failure
+
+    if failure_phase == "tts":
+        store = MemoryStore()
+        audio_service = StaleProgressTts()
+        expected_category = "tts_failed"
+    else:
+        store = StaleProgressStore()
+        audio_service = FakeAudioService()
+        expected_category = "persistence_failed"
+
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            generator,
+            audio_service,
+        )
+    )
+
+    public_job = store.get_job(job.job_id).model_dump()
+    diagnostic = store.get_job_diagnostic(job.job_id)
+    assert public_job["error"] == "课程生成失败，请稍后重试。"
+    assert diagnostic.model_dump() == {"category": expected_category}
+    assert "secret" not in str(public_job)
+    assert "secret" not in str(diagnostic)
+
+
+def test_stale_failure_callbacks_are_isolated_across_concurrent_jobs():
+    callbacks = {}
+
+    class CapturingGenerator(FakeGenerator):
+        def __init__(self, lesson_id):
+            super().__init__()
+            self.lesson_id = lesson_id
+
+        async def generate(self, problem, on_stage=None):
+            callbacks[self.lesson_id] = on_stage
+            lesson = await super().generate(problem, on_stage=on_stage)
+            await asyncio.sleep(0)
+            return lesson.model_copy(update={"lesson_id": self.lesson_id})
+
+    class ConcurrentFailureStore(MemoryStore):
+        def save_lesson(self, lesson, generation_record=None):
+            if lesson.lesson_id == "lesson-persistence-stale":
+                callback = callbacks[lesson.lesson_id]
+                assert callback is not None
+                callback("正在验证数学路线")
+                raise LessonInputError("题目格式不正确。")
+            return super().save_lesson(
+                lesson,
+                generation_record=generation_record,
+            )
+
+    class ConcurrentFailureTts(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            if lesson.lesson_id == "lesson-tts-stale":
+                assert on_stage is not None
+                on_stage("正在验证数学路线")
+                await asyncio.sleep(0)
+                raise ModelResponseError("private provider api-key=secret")
+            return await super().attach_audio(lesson, on_stage=on_stage)
+
+    store = ConcurrentFailureStore()
+    audio_service = ConcurrentFailureTts()
+    tts_job = store.create_job()
+    persistence_job = store.create_job()
+
+    async def run_both():
+        await asyncio.gather(
+            run_generation(
+                tts_job.job_id,
+                problem_input(),
+                store,
+                CapturingGenerator("lesson-tts-stale"),
+                audio_service,
+            ),
+            run_generation(
+                persistence_job.job_id,
+                problem_input(),
+                store,
+                CapturingGenerator("lesson-persistence-stale"),
+                audio_service,
+            ),
+        )
+
+    asyncio.run(run_both())
+
+    for job, category in [
+        (tts_job, "tts_failed"),
+        (persistence_job, "persistence_failed"),
+    ]:
+        public_job = store.get_job(job.job_id).model_dump()
+        diagnostic = store.get_job_diagnostic(job.job_id)
+        assert public_job["error"] == "课程生成失败，请稍后重试。"
+        assert diagnostic.model_dump() == {"category": category}
+        assert "secret" not in str(public_job)
+        assert "secret" not in str(diagnostic)
+
+
 def test_arbitrary_lesson_input_error_message_is_rejected():
     with pytest.raises(ValueError, match="unknown input error message"):
         LessonInputError("private adapter output api-key=secret")

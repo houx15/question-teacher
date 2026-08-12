@@ -89,6 +89,16 @@ _PUBLIC_GENERATION_STAGE_ORDINALS = {
     for ordinal, stage in enumerate(_PUBLIC_GENERATION_STAGE_ORDER)
 }
 
+_FAILURE_PHASE_ORDINALS = {
+    "generation": 0,
+    "input_validation": 1,
+    "preparation": 2,
+    "compile": 3,
+    "persistence_preflight": 4,
+    "tts": 5,
+    "persistence": 6,
+}
+
 
 def safe_generation_error(
     error: Exception,
@@ -124,7 +134,7 @@ def _private_failure_category(
 ) -> Optional[GenerationFailureCategory]:
     if phase == "tts":
         return "tts_failed"
-    if phase == "persistence":
+    if phase in {"persistence_preflight", "persistence"}:
         return "persistence_failed"
     if phase == "compile":
         if isinstance(
@@ -229,23 +239,28 @@ async def run_generation(
     current_stage_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
         "正在理解题目"
     ]
-    failure_phase = "preparation"
+    failure_phase = "generation"
+    failure_phase_ordinal = _FAILURE_PHASE_ORDINALS[failure_phase]
+
+    def advance_failure_phase(phase: str) -> None:
+        nonlocal failure_phase, failure_phase_ordinal
+        phase_ordinal = _FAILURE_PHASE_ORDINALS[phase]
+        if phase_ordinal <= failure_phase_ordinal:
+            return
+        failure_phase = phase
+        failure_phase_ordinal = phase_ordinal
 
     def report_stage(stage: str) -> None:
-        nonlocal current_stage_ordinal, failure_phase
+        nonlocal current_stage_ordinal
         if stage in {
             "正在验证数学路线",
             "正在审阅参考解析",
         }:
-            failure_phase = "input_validation"
+            advance_failure_phase("input_validation")
         elif stage == "正在编译课堂":
-            failure_phase = "compile"
-        elif stage == "正在生成讲解语音":
-            failure_phase = "tts"
-        elif stage == "正在保存课程":
-            failure_phase = "persistence"
+            advance_failure_phase("compile")
         elif stage in _PUBLIC_GENERATION_STAGES:
-            failure_phase = "preparation"
+            advance_failure_phase("preparation")
         public_stage = _PUBLIC_GENERATION_STAGES.get(stage)
         if public_stage is None:
             return
@@ -291,14 +306,15 @@ async def run_generation(
             generation_record = None
             raw_record = None
             record_snapshot = None
+        advance_failure_phase("compile")
         raw_lesson_snapshot = RuntimeLesson.model_validate(
             _defensive_model_payload(raw_lesson)
         ).model_dump_json()
         lesson_id = lesson.lesson_id
-        failure_phase = "persistence"
+        advance_failure_phase("persistence_preflight")
         if store.lesson_exists(lesson_id):
             raise ValueError("lesson id already exists")
-        failure_phase = "tts"
+        advance_failure_phase("tts")
         lesson_snapshot = audio_neutral_lesson_json(lesson)
         voiced_lesson = await audio_service.attach_audio(
             lesson.model_copy(deep=True),
@@ -330,7 +346,7 @@ async def run_generation(
                 generation_record,
             )
         # Expose the lesson ID only after its durable save succeeds.
-        failure_phase = "persistence"
+        advance_failure_phase("persistence")
         report_stage("正在保存课程")
         store.save_lesson(lesson, generation_record=generation_record)
         lesson_saved = True
