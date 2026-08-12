@@ -728,6 +728,153 @@ def test_output_guard_rejects_root_and_controlled_child_symlinks(tmp_path):
         guard.write_json("public/runtime.json", {"safe": True})
 
 
+def test_output_guard_leaf_write_cannot_follow_directory_swap(tmp_path, monkeypatch):
+    external = tmp_path / "external"
+    external.mkdir()
+    root = tmp_path / "root"
+    guard = evaluation._OutputGuard.create(root)
+    guard.ensure_directory("public")
+    original_open = Path.open
+    raced = {"value": False}
+
+    def swap_before_leaf_open(path, *args, **kwargs):
+        if path == root / "public" / "runtime.json":
+            (root / "public").rename(root / "held-public")
+            (root / "public").symlink_to(external, target_is_directory=True)
+            raced["value"] = True
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", swap_before_leaf_open)
+    try:
+        guard.write_json("public/runtime.json", {"safe": True})
+    except evaluation.EvaluationConfigurationError:
+        pass
+
+    assert raced["value"] is False
+    assert not (external / "runtime.json").exists()
+
+
+def test_output_guard_fails_closed_if_child_is_swapped_during_dirfd_walk(
+    tmp_path,
+    monkeypatch,
+):
+    external = tmp_path / "external"
+    external.mkdir()
+    root = tmp_path / "root"
+    guard = evaluation._OutputGuard.create(root)
+    guard.ensure_directory("public")
+    real_open = evaluation.os.open
+    raced = {"value": False}
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+        if path == "public" and dir_fd is not None and not raced["value"]:
+            (root / "public").rename(root / "held-public")
+            (root / "public").symlink_to(external, target_is_directory=True)
+            raced["value"] = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(evaluation.os, "open", racing_open)
+    with pytest.raises(evaluation.EvaluationConfigurationError):
+        guard.write_json("public/runtime.json", {"safe": True})
+
+    assert raced["value"] is True
+    assert not (external / "runtime.json").exists()
+
+
+@pytest.mark.parametrize("failing_fstat_call", [1, 2])
+def test_output_guard_closes_every_descriptor_when_validation_fails(
+    tmp_path,
+    monkeypatch,
+    failing_fstat_call,
+):
+    guard = evaluation._OutputGuard.create(tmp_path / "root")
+    real_open = evaluation.os.open
+    real_fstat = evaluation.os.fstat
+    opened = []
+    calls = {"value": 0}
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        opened.append(descriptor)
+        return descriptor
+
+    def failing_fstat(descriptor):
+        calls["value"] += 1
+        if calls["value"] == failing_fstat_call:
+            raise OSError("simulated descriptor validation failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(evaluation.os, "open", tracking_open)
+    monkeypatch.setattr(evaluation.os, "fstat", failing_fstat)
+    with pytest.raises(evaluation.EvaluationConfigurationError):
+        guard.ensure_directory("public")
+
+    assert opened
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            real_fstat(descriptor)
+
+
+@pytest.mark.parametrize(
+    ("status", "field", "value"),
+    [
+        ("succeeded", "hard_gate_review_pass", False),
+        ("succeeded", "schema_runtime_pass", False),
+        ("failed", "hard_gate_review_pass", True),
+        ("failed", "schema_runtime_pass", True),
+        ("succeeded", "duration_ms", True),
+        ("succeeded", "call_count", True),
+    ],
+)
+def test_manifest_metrics_reject_status_and_boolean_contradictions(
+    status,
+    field,
+    value,
+):
+    metrics = _success_metrics() if status == "succeeded" else _failure_metrics()
+    metrics[field] = value
+
+    with pytest.raises(evaluation.EvaluationConfigurationError, match="metrics"):
+        evaluation._validate_manifest_metrics(metrics, status)
+
+
+@pytest.mark.parametrize(
+    ("field", "metric"),
+    [
+        (
+            "must_teach_coverage",
+            {"covered": True, "total": 1, "ratio": 1.0},
+        ),
+        (
+            "must_teach_coverage",
+            {"covered": 1, "total": 1, "ratio": 0.5},
+        ),
+        (
+            "must_teach_coverage",
+            {"covered": 1, "total": 1, "ratio": 1},
+        ),
+        (
+            "must_teach_coverage",
+            {"covered": 1, "total": 1, "ratio": float("nan")},
+        ),
+        (
+            "clause_action_binding",
+            {"valid": 1, "total": 2, "ratio": 0.75},
+        ),
+        (
+            "clause_action_binding",
+            {"valid": 0, "total": 0, "ratio": 0.0},
+        ),
+    ],
+)
+def test_manifest_metrics_require_exact_finite_count_ratios(field, metric):
+    metrics = _success_metrics()
+    metrics[field] = metric
+
+    with pytest.raises(evaluation.EvaluationConfigurationError, match="metrics"):
+        evaluation._validate_manifest_metrics(metrics, "succeeded")
+
+
 def test_unhashable_case_and_manifest_values_fail_as_configuration_errors(tmp_path):
     malformed_case = _single_case()[0].copy()
     malformed_case["coverage_tags"] = [["unhashable"]]

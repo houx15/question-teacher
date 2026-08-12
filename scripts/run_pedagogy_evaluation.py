@@ -6,9 +6,11 @@ import asyncio
 import hashlib
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import time
 from typing import Callable, Dict, List, Literal, Optional, Sequence
@@ -296,12 +298,33 @@ def _json_content(payload: object) -> str:
 class _OutputGuard:
     """Own one stable, non-symlink output tree and never overwrite files."""
 
-    def __init__(self, root: Path, resolved_root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        resolved_root: Path,
+        root_identity: tuple,
+    ) -> None:
         self.root = root
         self._resolved_root = resolved_root
+        self._root_identity = root_identity
+
+    @staticmethod
+    def _secure_dirfd_supported() -> bool:
+        return (
+            os.name == "posix"
+            and hasattr(os, "O_DIRECTORY")
+            and hasattr(os, "O_NOFOLLOW")
+            and os.open in os.supports_dir_fd
+            and os.mkdir in os.supports_dir_fd
+            and os.stat in os.supports_dir_fd
+        )
 
     @classmethod
     def create(cls, output_dir: Path) -> "_OutputGuard":
+        if not cls._secure_dirfd_supported():
+            raise EvaluationConfigurationError(
+                "secure descriptor-relative output is unavailable"
+            )
         if type(output_dir) is not Path:
             output_dir = Path(output_dir)
         if output_dir.is_symlink():
@@ -321,9 +344,16 @@ class _OutputGuard:
             raise EvaluationConfigurationError("output root cannot be a symlink")
         try:
             resolved = output_dir.resolve(strict=True)
+            root_stat = os.stat(output_dir, follow_symlinks=False)
         except OSError:
             raise EvaluationConfigurationError("output root is unavailable") from None
-        guard = cls(output_dir, resolved)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise EvaluationConfigurationError("output root is not a directory")
+        guard = cls(
+            output_dir,
+            resolved,
+            (root_stat.st_dev, root_stat.st_ino),
+        )
         guard._assert_stable()
         return guard
 
@@ -336,6 +366,15 @@ class _OutputGuard:
             raise EvaluationConfigurationError("output root is unavailable") from None
         if current != self._resolved_root:
             raise EvaluationConfigurationError("output root resolution changed")
+        try:
+            root_stat = os.stat(self.root, follow_symlinks=False)
+        except OSError:
+            raise EvaluationConfigurationError("output root is unavailable") from None
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or (root_stat.st_dev, root_stat.st_ino) != self._root_identity
+        ):
+            raise EvaluationConfigurationError("output root identity changed")
 
     @staticmethod
     def _parts(relative: str) -> Sequence[str]:
@@ -350,54 +389,157 @@ class _OutputGuard:
             raise EvaluationConfigurationError("controlled output path is invalid")
         return path.parts
 
-    def ensure_directory(self, relative: str) -> Path:
+    @staticmethod
+    def _directory_open_flags() -> int:
+        return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    @staticmethod
+    def _close_descriptor(descriptor: Optional[int]) -> None:
+        if descriptor is None:
+            return
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+    def _open_root_fd(self) -> int:
         self._assert_stable()
-        current = self.root
-        for part in self._parts(relative):
-            current = current / part
-            if current.is_symlink():
-                raise EvaluationConfigurationError(
-                    "controlled output path cannot be a symlink"
-                )
-            if current.exists():
-                if not current.is_dir():
-                    raise EvaluationConfigurationError(
-                        "controlled output directory is invalid"
+        descriptor = None
+        try:
+            descriptor = os.open(self.root, self._directory_open_flags())
+            root_stat = os.fstat(descriptor)
+        except OSError:
+            self._close_descriptor(descriptor)
+            raise EvaluationConfigurationError(
+                "output root could not be opened safely"
+            ) from None
+        except BaseException:
+            self._close_descriptor(descriptor)
+            raise
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or (root_stat.st_dev, root_stat.st_ino) != self._root_identity
+        ):
+            self._close_descriptor(descriptor)
+            raise EvaluationConfigurationError("output root identity changed")
+        return descriptor
+
+    def _open_directory_chain(
+        self,
+        parts: Sequence[str],
+        *,
+        create: bool,
+    ) -> int:
+        current_fd = self._open_root_fd()
+        try:
+            for part in parts:
+                next_fd = None
+                if create:
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                    except FileExistsError:
+                        pass
+                try:
+                    next_fd = os.open(
+                        part,
+                        self._directory_open_flags(),
+                        dir_fd=current_fd,
                     )
-            else:
-                current.mkdir()
-            if current.is_symlink():
-                raise EvaluationConfigurationError(
-                    "controlled output path cannot be a symlink"
-                )
+                    next_stat = os.fstat(next_fd)
+                    if not stat.S_ISDIR(next_stat.st_mode):
+                        raise EvaluationConfigurationError(
+                            "controlled output directory is invalid"
+                        )
+                except BaseException:
+                    self._close_descriptor(next_fd)
+                    raise
+                self._close_descriptor(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except EvaluationConfigurationError:
+            self._close_descriptor(current_fd)
+            raise
+        except OSError:
+            self._close_descriptor(current_fd)
+            raise EvaluationConfigurationError(
+                "controlled output path cannot traverse a symlink safely"
+            ) from None
+        except BaseException:
+            self._close_descriptor(current_fd)
+            raise
+
+    def ensure_directory(self, relative: str) -> Path:
+        parts = self._parts(relative)
+        descriptor = self._open_directory_chain(parts, create=True)
+        self._close_descriptor(descriptor)
         self._assert_stable()
-        return current
+        return self.root.joinpath(*parts)
 
     def _write_text(self, relative: str, content: str) -> None:
         parts = self._parts(relative)
-        if len(parts) > 1:
-            self.ensure_directory(str(Path(*parts[:-1])))
-        self._assert_stable()
-        target = self.root.joinpath(*parts)
-        if target.is_symlink():
-            raise EvaluationConfigurationError(
-                "controlled output file cannot be a symlink"
-            )
+        parent_fd = self._open_directory_chain(parts[:-1], create=True)
+        file_fd = None
         try:
-            with target.open("x", encoding="utf-8") as output:
-                output.write(content)
+            file_fd = os.open(
+                parts[-1],
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            opened_stat = os.fstat(file_fd)
+            if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_nlink != 1:
+                raise EvaluationConfigurationError(
+                    "controlled output file is not a regular file"
+                )
+            path_stat = os.stat(
+                parts[-1],
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(path_stat.st_mode)
+                or (path_stat.st_dev, path_stat.st_ino)
+                != (opened_stat.st_dev, opened_stat.st_ino)
+            ):
+                raise EvaluationConfigurationError(
+                    "controlled output file identity changed"
+                )
+            remaining = memoryview(content.encode("utf-8"))
+            while remaining:
+                written = os.write(file_fd, remaining)
+                if written <= 0:
+                    raise OSError("short output write")
+                remaining = remaining[written:]
+            final_stat = os.fstat(file_fd)
+            final_path_stat = os.stat(
+                parts[-1],
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(final_stat.st_mode)
+                or (final_stat.st_dev, final_stat.st_ino)
+                != (final_path_stat.st_dev, final_path_stat.st_ino)
+            ):
+                raise EvaluationConfigurationError(
+                    "controlled output file identity changed"
+                )
         except FileExistsError:
             raise EvaluationConfigurationError(
                 "controlled output file already exists"
             ) from None
+        except EvaluationConfigurationError:
+            raise
         except OSError:
             raise EvaluationConfigurationError(
                 "controlled output file could not be written"
             ) from None
-        if target.is_symlink():
-            raise EvaluationConfigurationError(
-                "controlled output file became a symlink"
-            )
+        finally:
+            self._close_descriptor(file_fd)
+            self._close_descriptor(parent_fd)
         self._assert_stable()
 
     def write_json(self, relative: str, payload: object) -> None:
@@ -707,7 +849,7 @@ def _contract_metrics(
         "covered": covered,
         "total": len(required_must_teach),
         "ratio": (
-            round(covered / len(required_must_teach), 6)
+            covered / len(required_must_teach)
             if required_must_teach
             else 1.0
         ),
@@ -732,7 +874,7 @@ def _contract_metrics(
         "valid": valid_actions,
         "total": len(all_actions),
         "ratio": (
-            round(valid_actions / len(all_actions), 6)
+            valid_actions / len(all_actions)
             if all_actions
             else 1.0
         ),
@@ -1087,12 +1229,16 @@ def _validate_manifest_metrics(payload: object, status: str) -> None:
     }
     if type(payload) is not dict or set(payload) != keys:
         raise EvaluationConfigurationError("comparison run metrics are invalid")
+    if status not in {"succeeded", "failed"}:
+        raise EvaluationConfigurationError("comparison run metrics are invalid")
     expected_success = status == "succeeded"
     if (
         type(payload["generation_success"]) is not bool
         or payload["generation_success"] is not expected_success
         or type(payload["hard_gate_review_pass"]) is not bool
+        or payload["hard_gate_review_pass"] is not expected_success
         or type(payload["schema_runtime_pass"]) is not bool
+        or payload["schema_runtime_pass"] is not expected_success
         or type(payload["duration_ms"]) is not int
         or payload["duration_ms"] < 0
         or (
@@ -1122,9 +1268,14 @@ def _validate_manifest_metrics(payload: object, status: str) -> None:
             or type(metric["total"]) is not int
             or metric[count_key] < 0
             or metric["total"] < metric[count_key]
-            or type(metric["ratio"]) not in {int, float}
-            or type(metric["ratio"]) is bool
-            or not 0 <= metric["ratio"] <= 1
+            or type(metric["ratio"]) is not float
+            or not math.isfinite(metric["ratio"])
+            or metric["ratio"]
+            != (
+                metric[count_key] / metric["total"]
+                if metric["total"]
+                else 1.0
+            )
         ):
             raise EvaluationConfigurationError(
                 "comparison run metrics are invalid"
