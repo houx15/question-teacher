@@ -90,9 +90,15 @@ _PUBLIC_GENERATION_STAGE_ORDINALS = {
 }
 
 
-def safe_generation_error(error: Exception) -> str:
-    if isinstance(error, LessonInputError):
-        return error.public_message
+def safe_generation_error(
+    error: Exception,
+    *,
+    trusted_input_validation: bool = False,
+) -> str:
+    if trusted_input_validation:
+        public_message = LessonInputError.validated_public_message(error)
+        if public_message is not None:
+            return public_message
     return "课程生成失败，请稍后重试。"
 
 
@@ -116,7 +122,24 @@ def _private_failure_category(
     phase: str,
     stage_ordinal: int,
 ) -> Optional[GenerationFailureCategory]:
-    if isinstance(error, LessonInputError):
+    if phase == "tts":
+        return "tts_failed"
+    if phase == "persistence":
+        return "persistence_failed"
+    if phase == "compile":
+        if isinstance(
+            error,
+            (LessonQualityError, ModelResponseError),
+        ):
+            return "compile_failed"
+        return None
+    if phase == "input_validation":
+        if isinstance(error, LessonInputError):
+            return None
+        if isinstance(error, ModelStructureError):
+            return "invalid_structure"
+        if isinstance(error, ModelResponseError):
+            return "provider_error"
         return None
     if isinstance(error, PreparationFailure):
         mapped = _PREPARATION_FAILURE_CATEGORY_MAP.get(error.category)
@@ -133,19 +156,10 @@ def _private_failure_category(
         return "invalid_structure"
     if isinstance(error, ModelResponseError):
         return "provider_error"
-    if phase == "tts":
-        return "tts_failed"
-    if phase == "persistence":
-        return "persistence_failed"
     if isinstance(error, LessonQualityError):
-        compile_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
-            "正在编译课堂"
-        ]
         trajectory_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
             "正在设计解题思维轨迹"
         ]
-        if stage_ordinal >= compile_ordinal:
-            return "compile_failed"
         if stage_ordinal < trajectory_ordinal:
             return "reference_trace_failed"
         return "reasoning_design_failed"
@@ -213,9 +227,23 @@ async def run_generation(
     current_stage_ordinal = _PUBLIC_GENERATION_STAGE_ORDINALS[
         "正在理解题目"
     ]
+    failure_phase = "preparation"
 
     def report_stage(stage: str) -> None:
-        nonlocal current_stage_ordinal
+        nonlocal current_stage_ordinal, failure_phase
+        if stage in {
+            "正在验证数学路线",
+            "正在审阅参考解析",
+        }:
+            failure_phase = "input_validation"
+        elif stage == "正在编译课堂":
+            failure_phase = "compile"
+        elif stage == "正在生成讲解语音":
+            failure_phase = "tts"
+        elif stage == "正在保存课程":
+            failure_phase = "persistence"
+        elif stage in _PUBLIC_GENERATION_STAGES:
+            failure_phase = "preparation"
         public_stage = _PUBLIC_GENERATION_STAGES.get(stage)
         if public_stage is None:
             return
@@ -228,7 +256,6 @@ async def run_generation(
     lesson_id = None
     audio_attached = False
     lesson_saved = False
-    failure_phase = "generation"
     try:
         generate_bundle = getattr(generator, "generate_bundle", None)
         if callable(generate_bundle):
@@ -329,7 +356,12 @@ async def run_generation(
             job_id,
             status="failed",
             stage="生成失败",
-            error=safe_generation_error(exc),
+            error=safe_generation_error(
+                exc,
+                trusted_input_validation=(
+                    failure_phase == "input_validation"
+                ),
+            ),
         )
 
 

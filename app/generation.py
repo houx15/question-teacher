@@ -130,12 +130,41 @@ class GeneratedLessonBundle(SchemaModel):
         return self
 
 
+_PUBLIC_INPUT_ERROR_MESSAGES = frozenset(
+    {
+        "输入包含不安全或过长的内容。",
+        "参考答案与题目实际结果不一致。",
+        "题目格式不正确。",
+        "参考答案格式不正确。",
+        "题目不能为空。",
+        "参考答案不能为空。",
+        "题目格式不完整，请检查后再试。",
+        "参考答案与题目不一致，请检查后再试。",
+        "参考解析与题目或参考答案存在数学冲突，请检查后再试。",
+    }
+)
+
+
 class LessonInputError(LessonQualityError):
     """Safe, user-correctable input failure that may be shown publicly."""
 
     def __init__(self, public_message: str) -> None:
+        if public_message not in _PUBLIC_INPUT_ERROR_MESSAGES:
+            raise ValueError("unknown input error message")
         super().__init__(public_message)
         self.public_message = public_message
+
+    @staticmethod
+    def validated_public_message(error: Exception) -> Optional[str]:
+        if type(error) is not LessonInputError:
+            return None
+        message = error.public_message
+        if (
+            message not in _PUBLIC_INPUT_ERROR_MESSAGES
+            or error.args != (message,)
+        ):
+            return None
+        return message
 
 
 class _RouteValidationError(LessonQualityError):

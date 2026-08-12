@@ -26,7 +26,7 @@ from app.audio_service import LessonAudioService
 from app.preparation_models import GenerationRecord
 from app.main import PROJECT_ROOT, create_app
 from app.math_engine import MathEngine
-from app.llm_client import ModelStructureError
+from app.llm_client import ModelResponseError, ModelStructureError
 from app.preparation_pipeline import PreparationFailure
 from app.tts_client import SpeechGenerationError
 from app.schemas import (
@@ -664,20 +664,172 @@ def test_save_stage_precedes_atomic_save_and_lesson_id_publication():
 def test_input_error_remains_correctable_without_internal_failure_category():
     store = MemoryStore()
     job = store.create_job()
-    public_message = "请补充参考答案。"
+    public_message = "题目格式不正确。"
+
+    class TrustedInputValidator:
+        async def generate(self, problem, on_stage=None):
+            del problem
+            if on_stage is not None:
+                on_stage("正在验证数学路线")
+            raise LessonInputError(public_message)
 
     asyncio.run(
         run_generation(
             job.job_id,
             problem_input(),
             store,
-            FakeGenerator(LessonInputError(public_message)),
+            TrustedInputValidator(),
             FakeAudioService(),
         )
     )
 
     assert store.get_job(job.job_id).error == public_message
     assert store.get_job_diagnostic(job.job_id) is None
+
+
+def test_real_input_validation_contradiction_keeps_correctable_public_message():
+    store = MemoryStore()
+    job = store.create_job()
+    audio = FakeAudioService()
+    source_problem = problem_input().model_copy(
+        update={"reference_answer": "x=3"}
+    )
+
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            source_problem,
+            store,
+            LessonGenerationService(FakeClient([]), MathEngine()),
+            audio,
+        )
+    )
+
+    failed = store.get_job(job.job_id)
+    assert failed.error == "参考答案与题目实际结果不一致。"
+    assert store.get_job_diagnostic(job.job_id) is None
+    assert audio.calls == 0
+
+
+def _tainted_input_error():
+    error = LessonInputError("题目格式不正确。")
+    error.public_message = "private input error api-key=secret"
+    error.args = ("private input error api-key=secret",)
+    return error
+
+
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        _tainted_input_error,
+        lambda: ModelResponseError("private provider api-key=secret"),
+        lambda: ModelStructureError(
+            "invalid_json", "private structure api-key=secret"
+        ),
+    ],
+    ids=["input-error", "provider-error", "structure-error"],
+)
+def test_tts_failure_phase_overrides_exception_type_without_public_leak(
+    failure_factory,
+):
+    failure = failure_factory()
+
+    class AdversarialTts:
+        async def attach_audio(self, lesson, on_stage=None):
+            del lesson, on_stage
+            raise failure
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            AdversarialTts(),
+        )
+    )
+
+    public_job = store.get_job(job.job_id).model_dump()
+    diagnostic = store.get_job_diagnostic(job.job_id)
+    assert public_job["error"] == "课程生成失败，请稍后重试。"
+    assert diagnostic.model_dump() == {"category": "tts_failed"}
+    assert "secret" not in str(public_job)
+    assert "secret" not in str(diagnostic)
+
+
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        _tainted_input_error,
+        lambda: ModelResponseError("private provider api-key=secret"),
+        lambda: ModelStructureError(
+            "invalid_json", "private structure api-key=secret"
+        ),
+    ],
+    ids=["input-error", "provider-error", "structure-error"],
+)
+def test_persistence_failure_phase_overrides_exception_type_without_public_leak(
+    failure_factory,
+):
+    failure = failure_factory()
+
+    class AdversarialStore(MemoryStore):
+        def save_lesson(self, lesson, generation_record=None):
+            del lesson, generation_record
+            raise failure
+
+    store = AdversarialStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            FakeGenerator(),
+            FakeAudioService(),
+        )
+    )
+
+    public_job = store.get_job(job.job_id).model_dump()
+    diagnostic = store.get_job_diagnostic(job.job_id)
+    assert public_job["error"] == "课程生成失败，请稍后重试。"
+    assert diagnostic.model_dump() == {"category": "persistence_failed"}
+    assert "secret" not in str(public_job)
+    assert "secret" not in str(diagnostic)
+
+
+def test_arbitrary_lesson_input_error_message_is_rejected():
+    with pytest.raises(ValueError, match="unknown input error message"):
+        LessonInputError("private adapter output api-key=secret")
+
+
+def test_tainted_input_error_at_trusted_boundary_still_fails_closed():
+    failure = _tainted_input_error()
+
+    class AdversarialInputValidator:
+        async def generate(self, problem, on_stage=None):
+            del problem
+            if on_stage is not None:
+                on_stage("正在验证数学路线")
+            raise failure
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            AdversarialInputValidator(),
+            FakeAudioService(),
+        )
+    )
+
+    public_job = store.get_job(job.job_id).model_dump()
+    assert public_job["error"] == "课程生成失败，请稍后重试。"
+    assert "secret" not in str(public_job)
 
 
 def test_run_generation_prefers_bundle_and_keeps_record_private(tmp_path):
@@ -1716,9 +1868,11 @@ def test_same_problem_payload_generates_distinct_persisted_lessons(
 def test_generation_failure_exposes_only_typed_safe_input_errors():
     public_message = "参考解析与题目或参考答案存在数学冲突，请检查后再试。"
 
-    assert safe_generation_error(LessonInputError(public_message)) == (
-        public_message
-    )
+    error = LessonInputError(public_message)
+    assert safe_generation_error(
+        error, trusted_input_validation=True
+    ) == public_message
+    assert safe_generation_error(error) == "课程生成失败，请稍后重试。"
     assert safe_generation_error(RuntimeError("private-provider-detail")) == (
         "课程生成失败，请稍后重试。"
     )
@@ -1726,15 +1880,17 @@ def test_generation_failure_exposes_only_typed_safe_input_errors():
 
 def test_unsupported_math_does_not_return_math_validation_error():
     error = safe_generation_error(
-        LessonInputError("暂时无法整理参考解析，请稍后重试。")
+        LessonInputError("题目格式不正确。"),
+        trusted_input_validation=True,
     )
 
-    assert error == "暂时无法整理参考解析，请稍后重试。"
+    assert error == "题目格式不正确。"
 
 
 def test_contradiction_returns_specific_safe_message():
     assert safe_generation_error(
-        LessonInputError("参考答案与题目实际结果不一致。")
+        LessonInputError("参考答案与题目实际结果不一致。"),
+        trusted_input_validation=True,
     ) == "参考答案与题目实际结果不一致。"
 
 
