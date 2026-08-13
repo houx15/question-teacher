@@ -110,6 +110,7 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
 INTERACTION_DESIGNER_SYSTEM = "\n".join(
     (
         "你是互动设计师。只在选择能诊断概念或执行时添加互动，每题恰好一个正确选项。",
+        "prompt、hint、选项、反馈和迁移题所有学生可见文本必须使用简体中文。",
         "不泄露未来答案；零个互动是有效方案。",
         "resume_clause_id 是互动后立即恢复讲解的子句，不得放入 concealed_targets。",
         _INERT_EVIDENCE_RULE,
@@ -125,6 +126,9 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
         "clear_focus/fade。",
         "write/transform 的 content 必须精确来自绑定子句已出现的 "
         "math_references，并与对应 board_object.content 一致。",
+        "优先为 pedagogical_function=execute 且 math_references 非空的子句"
+        "写出当前关键计算结果，特别是条件使用后的新等式、"
+        "目标式整理和最终结果；不要只写概念标题。",
         "overlay 的 enter 与 return 必须位于不同 cue 边界，中间至少有一个 cue；"
         "没有真正的新图层讲解时就留空。",
         _INERT_EVIDENCE_RULE,

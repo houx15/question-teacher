@@ -462,6 +462,7 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
             (
                 "诊断概念或执行",
                 "恰好一个正确选项",
+                "所有学生可见文本必须使用简体中文",
                 "零个互动",
                 "不得放入 concealed_targets",
             ),
@@ -473,6 +474,7 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
                 "不得改写口播",
                 "lead_actions 只能",
                 "math_references",
+                "当前关键计算结果",
                 "不同 cue 边界",
                 "像素",
                 "选择器",
