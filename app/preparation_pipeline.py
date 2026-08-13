@@ -862,7 +862,22 @@ class LessonPreparationPipeline:
                 state.teaching_script,
                 state.interaction_plan,
             )
-        except PreparationValidationError:
+        except PreparationValidationError as initial_error:
+            if initial_error.code not in {
+                "overlay_transition_invalid",
+                "visual_action_too_early",
+                "visual_target_invalid",
+            }:
+                self._mark_last_call_failed(
+                    state,
+                    "classroom_director",
+                    "performance_score_failed",
+                )
+                raise PreparationFailure(
+                    category="performance_score_failed",
+                    role="classroom_director",
+                    detail="板书与高亮编排未通过确定性校验。",
+                ) from None
             score = normalize_performance_control_metadata(
                 score,
                 problem_focus_targets,

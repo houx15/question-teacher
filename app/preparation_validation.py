@@ -588,6 +588,29 @@ def normalize_performance_control_metadata(
             if target_id in declared_board_targets:
                 action["surface"] = "board"
                 normalized_phase = phase
+            elif target_id in problem_content:
+                matching_clauses = [
+                    clause.clause_id
+                    for clause in script.clauses
+                    if any(
+                        contains_normalized_cross_artifact_math_identity(
+                            reference,
+                            problem_content[target_id],
+                        )
+                        for reference in references_by_clause[
+                            clause.clause_id
+                        ]
+                    )
+                ]
+                if not matching_clauses:
+                    continue
+                clause_id = matching_clauses[0]
+                item["clause_id"] = clause_id
+                normalized_phase = (
+                    "lead_actions"
+                    if action_type in {"focus", "emphasize"}
+                    else "start_actions"
+                )
             else:
                 normalized_phase = phase
             other_candidates.append(
