@@ -109,6 +109,25 @@ ROLE_ORDER = {
 }
 
 
+def _normalize_solution_trace_control_metadata(
+    trace: SolutionTrace,
+) -> SolutionTrace:
+    """Bind verified-route anchors to their typed source-step authority."""
+    payload = trace.model_dump(mode="python")
+    changed = False
+    for step in payload["source_steps"]:
+        anchor = step["source_anchor"]
+        if (
+            anchor["source_kind"] == "verified_route"
+            and anchor["source_id"] != step["source_step_id"]
+        ):
+            anchor["source_id"] = step["source_step_id"]
+            changed = True
+    if not changed:
+        return trace
+    return SolutionTrace.model_validate(payload)
+
+
 def _normalize_script_section_metadata(
     script: TeachingScript,
     trajectory: ReasoningTrajectory,
@@ -604,6 +623,7 @@ class LessonPreparationPipeline:
             prompt,
             SolutionTrace,
         )
+        trace = _normalize_solution_trace_control_metadata(trace)
         try:
             validate_solution_trace(trace, teaching_route)
         except PreparationValidationError:

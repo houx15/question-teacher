@@ -2173,6 +2173,18 @@ def test_deterministic_trace_failure_stops_before_designer_without_retry():
     assert captured.value.audit.role_calls[-1].output_artifact_version is None
 
 
+def test_pipeline_binds_verified_route_anchor_to_its_source_step_id():
+    trace = trace_payload()
+    for index, step in enumerate(trace["source_steps"], start=1):
+        step["source_anchor"]["source_id"] = "route-step-%03d" % index
+
+    result = run_early(LessonPreparationPipeline(client(trace=trace)))
+
+    assert [
+        step.source_anchor.source_id for step in result.solution_trace.source_steps
+    ] == [step.source_step_id for step in result.solution_trace.source_steps]
+
+
 def test_deterministic_trajectory_failure_is_not_a_structure_retry():
     invalid_trajectory = trajectory_payload()
     invalid_trajectory["episodes"][0]["source_step_ids"] = ["missing-step"]
