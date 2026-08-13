@@ -492,7 +492,7 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
                 "标准答案内容",
             ),
         ),
-        (LESSON_REVIEWER_SYSTEM, ("引用证据", "最早责任角色", "不得改写产物", "blocking", "material")),
+        (LESSON_REVIEWER_SYSTEM, ("引用证据", "最早责任角色", "不得改写产物", "blocking", "material", "status=approved", "retained_artifacts 必须为空")),
     )
     for system_prompt, phrases in expected_phrases:
         for phrase in phrases:

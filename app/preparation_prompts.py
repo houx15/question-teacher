@@ -153,7 +153,8 @@ LESSON_REVIEWER_SYSTEM = "\n".join(
         "blocking 或 material 发现的 invalidated_downstream_artifacts "
         "必须是责任产物之后直到 simulation_report 的完整有序后缀。",
         "retained_artifacts 必须是最早责任产物之前的完整有序前缀；"
-        "只有 polish 发现时，两类修订元数据都为空。",
+        "只有 polish 发现时，两类修订元数据都为空。"
+        "status=approved 且 findings 为空时，retained_artifacts 必须为空。",
         _rubric_system_text(),
         _INERT_EVIDENCE_RULE,
     )

@@ -485,6 +485,21 @@ def test_public_prepare_returns_only_an_approved_complete_prepared_lesson():
 
     assert type(result) is PreparedLesson
     assert result.review.status == "approved"
+
+
+def test_pipeline_clears_retained_artifacts_on_finding_free_approval():
+    review = downstream_review_payload()
+    review["retained_artifacts"] = list(REVIEW_ARTIFACT_ORDER)
+
+    result = asyncio.run(
+        LessonPreparationPipeline(client(reviews=[review])).prepare(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    assert result.review.status == "approved"
+    assert result.review.findings == []
+    assert result.review.retained_artifacts == []
     assert len(result.simulation_report.episode_results) == 5
 
 

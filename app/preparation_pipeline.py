@@ -128,6 +128,21 @@ def _normalize_solution_trace_control_metadata(
     return SolutionTrace.model_validate(payload)
 
 
+def _normalize_review_control_metadata(
+    decision: LessonReviewDecision,
+) -> LessonReviewDecision:
+    """Approved, finding-free reviews have no repair dependency prefix."""
+    if (
+        decision.status != "approved"
+        or decision.findings
+        or not decision.retained_artifacts
+    ):
+        return decision
+    payload = decision.model_dump(mode="python")
+    payload["retained_artifacts"] = []
+    return LessonReviewDecision.model_validate(payload)
+
+
 def _normalize_script_section_metadata(
     script: TeachingScript,
     trajectory: ReasoningTrajectory,
@@ -1000,6 +1015,7 @@ class LessonPreparationPipeline:
             ),
             LessonReviewDecision,
         )
+        decision = _normalize_review_control_metadata(decision)
         try:
             self._reference_safety(state).ensure_safe(
                 decision,
