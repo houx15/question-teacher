@@ -61,6 +61,8 @@ from app.preparation_prompts import (
 from app.preparation_validation import (
     PreparationValidationError,
     blocking_signature,
+    normalize_interaction_control_metadata,
+    normalize_performance_control_metadata,
     validate_interaction_plan,
     validate_performance_score,
     validate_reasoning_trajectory,
@@ -105,6 +107,49 @@ ROLE_ORDER = {
     "interaction_designer": 3,
     "classroom_director": 4,
 }
+
+
+def _normalize_script_section_metadata(
+    script: TeachingScript,
+    trajectory: ReasoningTrajectory,
+) -> TeachingScript:
+    """Bind fixed script sections to boundary episodes, not invented ones."""
+    first_episode_id = trajectory.episodes[0].episode_id
+    last_episode_id = trajectory.episodes[-1].episode_id
+    must_teach_owner = {
+        item.must_teach_id: episode.episode_id
+        for episode in trajectory.episodes
+        for item in episode.must_teach
+    }
+    opening_ids = {
+        *script.opening_clause_ids,
+        *script.method_introduction_clause_ids,
+    }
+    closing_ids = set(script.closing_summary_clause_ids)
+    payload = script.model_dump(mode="python")
+    changed = False
+    for clause in payload["clauses"]:
+        clause_id = clause["clause_id"]
+        if clause_id in opening_ids:
+            episode_id = first_episode_id
+        elif clause_id in closing_ids:
+            episode_id = last_episode_id
+        else:
+            continue
+        if clause["episode_id"] != episode_id:
+            clause["episode_id"] = episode_id
+            changed = True
+        normalized_refs = [
+            reference
+            for reference in clause["must_teach_refs"]
+            if must_teach_owner.get(reference) == episode_id
+        ]
+        if normalized_refs != clause["must_teach_refs"]:
+            clause["must_teach_refs"] = normalized_refs
+            changed = True
+    if not changed:
+        return script
+    return TeachingScript.model_validate(payload)
 
 
 def earliest_responsible_role(
@@ -677,6 +722,9 @@ class LessonPreparationPipeline:
             ),
             TeachingScript,
         )
+        script = _normalize_script_section_metadata(
+            script, state.reasoning_trajectory
+        )
         try:
             validate_teaching_script(script, state.reasoning_trajectory)
         except PreparationValidationError:
@@ -725,6 +773,11 @@ class LessonPreparationPipeline:
             INTERACTION_DESIGNER_SYSTEM,
             prompt,
             InteractionPlan,
+        )
+        plan = normalize_interaction_control_metadata(
+            plan,
+            state.reasoning_trajectory,
+            state.teaching_script,
         )
         try:
             validate_interaction_plan(
@@ -790,16 +843,29 @@ class LessonPreparationPipeline:
                 state.interaction_plan,
             )
         except PreparationValidationError:
-            self._mark_last_call_failed(
-                state,
-                "classroom_director",
-                "performance_score_failed",
+            score = normalize_performance_control_metadata(
+                score,
+                problem_focus_targets,
+                state.teaching_script,
             )
-            raise PreparationFailure(
-                category="performance_score_failed",
-                role="classroom_director",
-                detail="板书与高亮编排未通过确定性校验。",
-            ) from None
+            try:
+                validate_performance_score(
+                    score,
+                    problem_focus_targets,
+                    state.teaching_script,
+                    state.interaction_plan,
+                )
+            except PreparationValidationError:
+                self._mark_last_call_failed(
+                    state,
+                    "classroom_director",
+                    "performance_score_failed",
+                )
+                raise PreparationFailure(
+                    category="performance_score_failed",
+                    role="classroom_director",
+                    detail="板书与高亮编排未通过确定性校验。",
+                ) from None
         self._accept_artifact(
             state,
             artifact_type="performance_score",

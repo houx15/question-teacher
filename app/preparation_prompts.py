@@ -108,6 +108,7 @@ INTERACTION_DESIGNER_SYSTEM = "\n".join(
     (
         "你是互动设计师。只在选择能诊断概念或执行时添加互动，每题恰好一个正确选项。",
         "不泄露未来答案；零个互动是有效方案。",
+        "resume_clause_id 是互动后立即恢复讲解的子句，不得放入 concealed_targets。",
         _INERT_EVIDENCE_RULE,
     )
 )
@@ -116,6 +117,13 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
     (
         "你是课堂导演。将语义动作绑定到精确子句 ID，不得改写口播文本。",
         "不输出像素、CSS 选择器或毫秒值。强调可选，且必须区分有意义的对象。",
+        "lead_actions 只能是 focus/emphasize；start_actions 只能是 "
+        "write/transform/focus/emphasize/annotate/reveal；end_actions 只能是 "
+        "clear_focus/fade。",
+        "write/transform 的 content 必须精确来自绑定子句已出现的 "
+        "math_references，并与对应 board_object.content 一致。",
+        "overlay 的 enter 与 return 必须位于不同 cue 边界，中间至少有一个 cue；"
+        "没有真正的新图层讲解时就留空。",
         _INERT_EVIDENCE_RULE,
     )
 )

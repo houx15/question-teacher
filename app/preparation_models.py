@@ -301,7 +301,12 @@ class PlannedInteraction(SchemaModel):
     hint: NonEmptyString
     resume_clause_id: GeneratedId
     concealed_targets: List[GeneratedId] = Field(
-        default_factory=list, max_length=MAX_DETAIL_ITEMS
+        default_factory=list,
+        max_length=MAX_DETAIL_ITEMS,
+        description=(
+            "互动前必须隐藏的同 episode 语义目标 ID；"
+            "resume_clause_id 不得放入 concealed_targets。"
+        ),
     )
 
     @model_validator(mode="after")
@@ -337,13 +342,22 @@ class PerformanceCue(SchemaModel):
         min_length=1, max_length=MAX_PREPARATION_ITEMS
     )
     lead_actions: List[ClauseBoundVisualAction] = Field(
-        default_factory=list, max_length=MAX_VISUAL_ACTION_ITEMS
+        default_factory=list,
+        max_length=MAX_VISUAL_ACTION_ITEMS,
+        description="仅允许 focus 或 emphasize，在口播前引导注意。",
     )
     start_actions: List[ClauseBoundVisualAction] = Field(
-        default_factory=list, max_length=MAX_VISUAL_ACTION_ITEMS
+        default_factory=list,
+        max_length=MAX_VISUAL_ACTION_ITEMS,
+        description=(
+            "仅允许 write、transform、focus、emphasize、annotate 或 reveal；"
+            "write/transform content 必须精确对应绑定子句的 math_references。"
+        ),
     )
     end_actions: List[ClauseBoundVisualAction] = Field(
-        default_factory=list, max_length=MAX_VISUAL_ACTION_ITEMS
+        default_factory=list,
+        max_length=MAX_VISUAL_ACTION_ITEMS,
+        description="仅允许 clear_focus 或 fade，用于弱化当前划过的重点。",
     )
 
 
@@ -368,7 +382,12 @@ class PerformanceScore(SchemaModel):
         default_factory=list, max_length=MAX_PREPARATION_ITEMS
     )
     overlay_transitions: List[OverlayTransition] = Field(
-        default_factory=list, max_length=MAX_PREPARATION_ITEMS
+        default_factory=list,
+        max_length=MAX_PREPARATION_ITEMS,
+        description=(
+            "enter 和 return 必须在不同 cue 边界，中间至少有一个 cue；"
+            "无真正新图层时使用空列表。"
+        ),
     )
 
     @model_validator(mode="after")

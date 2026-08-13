@@ -17,6 +17,7 @@ from app.pedagogy_rubric import (
 from app.preparation_models import (
     InteractionPlan,
     PerformanceScore,
+    PlannedInteraction,
     ReasoningTrajectory,
     SimulationReport,
     SolutionTrace,
@@ -446,14 +447,53 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
         (SOLUTION_TRACE_SYSTEM, ("引用", "派生", "推断", "已验证路线", "不得默默修复")),
         (TEACHING_DESIGNER_SYSTEM, ("学习者实际推理顺序", "数学依赖", "注意力", "探索", "监控", "修订")),
         (SCRIPT_TEACHER_SYSTEM, ("学生能听见", "must_teach", "不做视觉设计")),
-        (INTERACTION_DESIGNER_SYSTEM, ("诊断概念或执行", "恰好一个正确选项", "零个互动")),
-        (CLASSROOM_DIRECTOR_SYSTEM, ("精确子句 ID", "不得改写口播", "像素", "选择器", "毫秒")),
+        (
+            INTERACTION_DESIGNER_SYSTEM,
+            (
+                "诊断概念或执行",
+                "恰好一个正确选项",
+                "零个互动",
+                "不得放入 concealed_targets",
+            ),
+        ),
+        (
+            CLASSROOM_DIRECTOR_SYSTEM,
+            (
+                "精确子句 ID",
+                "不得改写口播",
+                "lead_actions 只能",
+                "math_references",
+                "不同 cue 边界",
+                "像素",
+                "选择器",
+                "毫秒",
+            ),
+        ),
         (STUDENT_SIMULATOR_SYSTEM, ("识别当前重点", "说明决定理由", "用结果继续")),
         (LESSON_REVIEWER_SYSTEM, ("引用证据", "最早责任角色", "不得改写产物", "blocking", "material")),
     )
     for system_prompt, phrases in expected_phrases:
         for phrase in phrases:
             assert phrase in system_prompt
+
+
+def test_interaction_schema_excludes_resume_clause_from_concealed_targets():
+    schema = PlannedInteraction.model_json_schema()
+    description = schema["properties"]["concealed_targets"]["description"]
+
+    assert "resume_clause_id" in description
+    assert "不得" in description
+
+
+def test_performance_schema_states_action_phase_and_overlay_contracts():
+    schema_text = json.dumps(
+        PerformanceScore.model_json_schema(), ensure_ascii=False
+    )
+
+    assert "仅允许 focus 或 emphasize" in schema_text
+    assert "write/transform content" in schema_text
+    assert "仅允许 clear_focus 或 fade" in schema_text
+    assert "enter 和 return 必须在不同 cue 边界" in schema_text
 
 
 def test_reference_analyst_preserves_all_route_evidence_levels():

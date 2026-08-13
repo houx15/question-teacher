@@ -1570,6 +1570,167 @@ def test_multiple_interactions_in_one_episode_fail_before_performance_stage():
     assert "classroom_director" not in [call.role for call in fake.calls]
 
 
+def test_pipeline_removes_resume_clause_from_concealed_control_metadata():
+    interaction = downstream_planned_interaction()
+    interaction["concealed_targets"] = [
+        interaction["resume_clause_id"],
+        "must-2",
+    ]
+    fake = client(
+        interaction={
+            "interactions": [interaction],
+            "transfer_item": downstream_transfer_payload(),
+        }
+    )
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    accepted = run.prepared_lesson.interaction_plan.interactions[0]
+    assert accepted.concealed_targets == ["must-2"]
+    assert [call.role for call in fake.calls].count("interaction_designer") == 1
+
+
+def test_pipeline_removes_already_visible_concealed_control_metadata():
+    interaction = downstream_planned_interaction()
+    interaction["concealed_targets"] = ["must-2"]
+    interaction["prompt"] = "当前决定与依据是什么？"
+
+    run = asyncio.run(
+        LessonPreparationPipeline(
+            client(
+                interaction={
+                    "interactions": [interaction],
+                    "transfer_item": downstream_transfer_payload(),
+                }
+            )
+        ).prepare_with_audit(problem(), route(), focus_targets())
+    )
+
+    accepted = run.prepared_lesson.interaction_plan.interactions[0]
+    assert accepted.concealed_targets == []
+
+
+def test_pipeline_normalizes_section_only_script_episode_metadata():
+    script = downstream_script_payload()
+    section_ids = {
+        *script["opening_clause_ids"],
+        *script["method_introduction_clause_ids"],
+        *script["closing_summary_clause_ids"],
+    }
+    for clause in script["clauses"]:
+        if clause["clause_id"] in section_ids:
+            clause["episode_id"] = "model-section-episode"
+            clause["must_teach_refs"] = [
+                "must-1",
+                "must-2",
+                "must-3",
+                "must-4",
+                "must-5",
+            ]
+
+    run = asyncio.run(
+        LessonPreparationPipeline(client(script=script)).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    accepted = run.prepared_lesson.teaching_script
+    first_episode = run.prepared_lesson.reasoning_trajectory.episodes[0]
+    last_episode = run.prepared_lesson.reasoning_trajectory.episodes[-1]
+    by_id = {clause.clause_id: clause for clause in accepted.clauses}
+    for clause_id in (
+        *accepted.opening_clause_ids,
+        *accepted.method_introduction_clause_ids,
+    ):
+        assert by_id[clause_id].episode_id == first_episode.episode_id
+        assert set(by_id[clause_id].must_teach_refs).issubset(
+            {item.must_teach_id for item in first_episode.must_teach}
+        )
+    for clause_id in accepted.closing_summary_clause_ids:
+        assert by_id[clause_id].episode_id == last_episode.episode_id
+        assert set(by_id[clause_id].must_teach_refs).issubset(
+            {item.must_teach_id for item in last_episode.must_teach}
+        )
+
+
+def test_pipeline_rebinds_board_writes_to_first_spoken_math_reference():
+    score = downstream_score_payload()
+    score["board_objects"] = [
+        {"board_object_id": "board-result", "content": "m-n=1/2"},
+        {"board_object_id": "board-decoration", "content": "解题标题"},
+    ]
+    score["cues"][0]["lead_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "problem",
+                "type": "focus",
+                "target": "board-decoration",
+            },
+        }
+    ]
+    score["cues"][0]["start_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "board-decoration",
+                "content": "解题标题",
+            },
+        },
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "board",
+                "type": "write",
+                "target": "board-result",
+                "content": "m-n=1/2",
+            },
+        },
+    ]
+    score["overlay_transitions"] = [
+        {
+            "transition_id": "enter-empty",
+            "after_clause_id": "clause-open",
+            "action": "enter",
+            "layer": "micro_explanation",
+        },
+        {
+            "transition_id": "return-empty",
+            "after_clause_id": "clause-open",
+            "action": "return",
+            "layer": "micro_explanation",
+        },
+    ]
+
+    run = asyncio.run(
+        LessonPreparationPipeline(client(performance=score)).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    accepted = run.prepared_lesson.performance_score
+    result_actions = [
+        bound
+        for cue in accepted.cues
+        for bound in cue.start_actions
+        if bound.action.target == "board-result"
+    ]
+    assert len(result_actions) == 1
+    assert result_actions[0].clause_id == "clause-close"
+    assert all(
+        bound.action.target != "board-decoration"
+        for cue in accepted.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+    )
+    assert accepted.overlay_transitions == []
+
+
 def test_overlay_history_does_not_hide_sole_base_object_emphasis():
     score = downstream_score_payload()
     score["board_objects"] = [

@@ -466,6 +466,219 @@ def _leaks_concealed_content(
     return False
 
 
+def normalize_interaction_control_metadata(
+    plan: InteractionPlan,
+    trajectory: ReasoningTrajectory,
+    script: TeachingScript,
+) -> InteractionPlan:
+    """Drop only control targets that are already visibly disclosed."""
+    _require_exact(plan, InteractionPlan, "plan")
+    _require_exact(trajectory, ReasoningTrajectory, "trajectory")
+    _require_exact(script, TeachingScript, "script")
+    payload = plan.model_dump(mode="python")
+    changed = False
+    for interaction, interaction_payload in zip(
+        plan.interactions, payload["interactions"]
+    ):
+        registry = _concealed_registry(
+            interaction.episode_id, trajectory, script
+        )
+        visible_parts = [interaction.prompt, interaction.hint]
+        visible_parts.extend(
+            option.display_text
+            for option in interaction.options
+            if option.option_id != interaction.correct_option_id
+        )
+        normalized_targets = []
+        for target_id in interaction.concealed_targets:
+            if target_id == interaction.resume_clause_id:
+                changed = True
+                continue
+            disclosed = target_id in registry and any(
+                contains_bounded_answer_token(visible, content)
+                for content in registry[target_id]
+                if content
+                for visible in visible_parts
+            )
+            if disclosed:
+                changed = True
+                continue
+            normalized_targets.append(target_id)
+        interaction_payload["concealed_targets"] = normalized_targets
+    if not changed:
+        return plan
+    return InteractionPlan.model_validate(payload)
+
+
+def normalize_performance_control_metadata(
+    score: PerformanceScore,
+    problem_targets: ProblemTargets,
+    script: TeachingScript,
+) -> PerformanceScore:
+    """Conservatively align recoverable visual controls to authored speech."""
+    _require_exact(score, PerformanceScore, "score")
+    _validate_problem_targets(problem_targets)
+    _require_exact(script, TeachingScript, "script")
+    payload = score.model_dump(mode="python")
+    clause_positions = {
+        clause.clause_id: index
+        for index, clause in enumerate(script.clauses)
+    }
+    cue_index_by_clause = {
+        clause_id: cue_index
+        for cue_index, cue in enumerate(payload["cues"])
+        for clause_id in cue["clause_ids"]
+    }
+    references_by_clause = {
+        clause.clause_id: tuple(
+            normalize_cross_artifact_math_identity(reference)
+            for reference in clause.math_references
+        )
+        for clause in script.clauses
+    }
+    problem_content = {
+        target.target_id: normalize_cross_artifact_math_identity(
+            target.math_text
+        )
+        for target in problem_targets
+    }
+    declared_board_targets = {
+        item["board_object_id"] for item in payload["board_objects"]
+    }
+    entries = []
+    sequence = 0
+    for cue_index, cue in enumerate(payload["cues"]):
+        for phase in ("lead_actions", "start_actions", "end_actions"):
+            for item in cue[phase]:
+                entries.append((sequence, cue_index, phase, item))
+                sequence += 1
+            cue[phase] = []
+
+    creation_candidates = []
+    other_candidates = []
+    for sequence, cue_index, phase, item in entries:
+        action = item["action"]
+        action_type = action["type"]
+        if action_type in {"write", "transform"}:
+            content = normalize_cross_artifact_math_identity(
+                action.get("content") or ""
+            )
+            matching_clauses = [
+                clause.clause_id
+                for clause in script.clauses
+                if content
+                and content in references_by_clause[clause.clause_id]
+            ]
+            if not matching_clauses:
+                continue
+            clause_id = matching_clauses[0]
+            item["clause_id"] = clause_id
+            creation_candidates.append(
+                (
+                    clause_positions[clause_id],
+                    sequence,
+                    cue_index_by_clause[clause_id],
+                    item,
+                )
+            )
+            continue
+        if action["surface"] == "problem":
+            target_id = action["target"]
+            clause_id = item["clause_id"]
+            if target_id in declared_board_targets:
+                action["surface"] = "board"
+                normalized_phase = phase
+            else:
+                normalized_phase = phase
+            other_candidates.append(
+                (
+                    clause_positions[clause_id],
+                    sequence,
+                    cue_index_by_clause[clause_id],
+                    normalized_phase,
+                    item,
+                )
+            )
+            continue
+        clause_id = item["clause_id"]
+        if clause_id not in clause_positions:
+            continue
+        other_candidates.append(
+            (
+                clause_positions[clause_id],
+                sequence,
+                cue_index_by_clause[clause_id],
+                phase,
+                item,
+            )
+        )
+
+    created_at = {}
+    accepted = []
+    for position, sequence, cue_index, item in sorted(
+        creation_candidates
+    ):
+        action = item["action"]
+        source = action.get("source")
+        if source is not None and (
+            source not in created_at or created_at[source] > position
+        ):
+            continue
+        created_at[action["target"]] = position
+        accepted.append(
+            (
+                position,
+                0,
+                sequence,
+                cue_index,
+                "start_actions",
+                item,
+            )
+        )
+
+    for position, sequence, cue_index, phase, item in other_candidates:
+        action = item["action"]
+        if action["type"] in {"clear_focus", "fade"}:
+            continue
+        if action["surface"] == "board":
+            target = action["target"]
+            if target not in created_at or created_at[target] > position:
+                continue
+            relation_target = action.get("relation_target")
+            if relation_target is not None and (
+                relation_target not in created_at
+                or created_at[relation_target] > position
+            ):
+                continue
+            phase = "start_actions"
+        accepted.append(
+            (position, 1, sequence, cue_index, phase, item)
+        )
+
+    for _, _, _, cue_index, phase, item in sorted(accepted):
+        payload["cues"][cue_index][phase].append(item)
+
+    board_layers = {
+        item["board_object_id"]: item["layer"]
+        for item in payload["board_objects"]
+    }
+    used_layers = {"base"}
+    for _, _, _, _, _, item in accepted:
+        action = item["action"]
+        if action["surface"] != "board":
+            continue
+        for key in ("target", "source", "relation_target"):
+            target_id = action.get(key)
+            if target_id in board_layers:
+                used_layers.add(board_layers[target_id])
+    payload["overlay_transitions"] = [
+        transition
+        for transition in payload["overlay_transitions"]
+        if transition["layer"] in used_layers
+    ]
+    return PerformanceScore.model_validate(payload)
+
+
 def validate_interaction_plan(
     plan: InteractionPlan,
     trajectory: ReasoningTrajectory,
