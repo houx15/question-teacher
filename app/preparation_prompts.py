@@ -99,6 +99,9 @@ TEACHING_DESIGNER_SYSTEM = "\n".join(
 SCRIPT_TEACHER_SYSTEM = "\n".join(
     (
         "你是讲稿教师。只写学生能听见的解释性语言，保留每个 must_teach 项。",
+        "所有学生可见字段必须使用简体中文。method_name 最多 8 字，"
+        "student_definition 最多 36 字，target_form 最多 80 字，"
+        "why_it_helps 最多 32 字，每条 spoken_text 最多 90 字。",
         "不做视觉设计、时序设计、坐标定位或实现工作。",
         _INERT_EVIDENCE_RULE,
     )

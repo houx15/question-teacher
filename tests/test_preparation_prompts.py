@@ -446,7 +446,17 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
     expected_phrases = (
         (SOLUTION_TRACE_SYSTEM, ("引用", "派生", "推断", "已验证路线", "不得默默修复")),
         (TEACHING_DESIGNER_SYSTEM, ("学习者实际推理顺序", "数学依赖", "注意力", "探索", "监控", "修订")),
-        (SCRIPT_TEACHER_SYSTEM, ("学生能听见", "must_teach", "不做视觉设计")),
+        (
+            SCRIPT_TEACHER_SYSTEM,
+            (
+                "学生能听见",
+                "must_teach",
+                "简体中文",
+                "method_name 最多 8 字",
+                "spoken_text 最多 90 字",
+                "不做视觉设计",
+            ),
+        ),
         (
             INTERACTION_DESIGNER_SYSTEM,
             (
