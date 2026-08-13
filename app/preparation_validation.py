@@ -612,7 +612,7 @@ def normalize_performance_control_metadata(
                     else "start_actions"
                 )
             else:
-                normalized_phase = phase
+                continue
             other_candidates.append(
                 (
                     clause_positions[clause_id],

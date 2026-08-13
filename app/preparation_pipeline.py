@@ -881,7 +881,6 @@ class LessonPreparationPipeline:
             if initial_error.code not in {
                 "overlay_transition_invalid",
                 "visual_action_too_early",
-                "visual_target_invalid",
             }:
                 self._mark_last_call_failed(
                     state,
