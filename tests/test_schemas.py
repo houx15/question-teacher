@@ -774,6 +774,20 @@ def test_sync_visual_action_accepts_problem_emphasis_with_semantic_target():
     assert action.persistence == "trace"
 
 
+def test_sync_visual_action_ignores_known_emphasis_style_on_focus():
+    action = SyncVisualAction.model_validate(
+        {
+            "surface": "problem",
+            "type": "focus",
+            "target": "problem-math-001",
+            "emphasis_style": "highlight",
+        }
+    )
+
+    assert action.type == "focus"
+    assert action.emphasis_style is None
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

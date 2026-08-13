@@ -545,6 +545,18 @@ class SyncVisualAction(SchemaModel):
     ] = None
     persistence: Optional[Literal["transient", "trace"]] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_known_focus_emphasis_style(cls, value: object) -> object:
+        if type(value) is not dict or value.get("type") != "focus":
+            return value
+        style = value.get("emphasis_style")
+        if style not in {"highlight", "underline", "red"}:
+            return value
+        normalized = dict(value)
+        normalized["emphasis_style"] = None
+        return normalized
+
     @model_validator(mode="after")
     def require_executable_payload(self) -> "SyncVisualAction":
         if self.surface == "problem" and self.type in {
