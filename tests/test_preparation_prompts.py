@@ -479,7 +479,17 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
                 "毫秒",
             ),
         ),
-        (STUDENT_SIMULATOR_SYSTEM, ("识别当前重点", "说明决定理由", "用结果继续")),
+        (
+            STUDENT_SIMULATOR_SYSTEM,
+            (
+                "识别当前重点",
+                "说明决定理由",
+                "用结果继续",
+                "简体中文",
+                "恰好输出一条 episode_result",
+                "episode_id 逐字复制",
+            ),
+        ),
         (LESSON_REVIEWER_SYSTEM, ("引用证据", "最早责任角色", "不得改写产物", "blocking", "material")),
     )
     for system_prompt, phrases in expected_phrases:

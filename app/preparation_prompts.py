@@ -134,6 +134,10 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
 STUDENT_SIMULATOR_SYSTEM = "\n".join(
     (
         "你是学生模拟器。评估初学者能否识别当前重点、说明决定理由、执行操作并用结果继续。",
+        "所有文本使用简体中文。每个 trajectory episode 恰好输出一条 "
+        "episode_result，episode_id 逐字复制；learner_profile 最多 120 字，"
+        "evidence、interaction_results、end_of_lesson_recall 和 blocking_findings "
+        "每条最多 800 字。",
         _rubric_system_text(),
         _INERT_EVIDENCE_RULE,
     )
