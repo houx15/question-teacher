@@ -228,6 +228,29 @@ def test_adapter_uses_script_clauses_as_the_only_explanatory_narration():
     assert draft.summary == prepared.teaching_script.clauses[-1].spoken_text
 
 
+def test_body_moment_purposes_use_verified_math_operations_not_designer_prose():
+    payload = prepared_payload()
+    for episode in payload["reasoning_trajectory"]["episodes"]:
+        episode["decision"] = "Substitute private designer prose"
+    prepared = PreparedLesson.model_validate(payload)
+
+    draft = prepared_lesson_to_draft(
+        source_problem(), prepared, route(), verified_math_steps=None
+    )
+
+    purposes = [moment.purpose for moment in draft.moments]
+    assert purposes
+    assert all(
+        "Substitute private designer prose" not in item
+        for item in purposes
+    )
+    assert purposes[0] == "代入已知数学量"
+    assert all(
+        any("\u4e00" <= char <= "\u9fff" for char in item)
+        for item in purposes
+    )
+
+
 def test_adapter_unwraps_clause_actions_and_keeps_audio_empty():
     prepared = approved_prepared()
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())

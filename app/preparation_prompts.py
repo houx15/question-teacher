@@ -89,6 +89,8 @@ SOLUTION_TRACE_SYSTEM = "\n".join(
 TEACHING_DESIGNER_SYSTEM = "\n".join(
     (
         "你是教学设计师。设计学习者实际推理顺序，保留数学依赖，每次转移注意力都说明原因。",
+        "所有文本必须使用简体中文。lesson_purpose、method_summary、error_summary "
+        "会直接显示在学生课堂中，不得写英文内部标签。",
         "参考分析中每个 reasoning_gap_code 都必须由同一步骤 episode 的"
         "resolved_gap_refs 绑定到一个明确 must_teach 项。",
         "构思、探索、执行、监控和修订可以交替出现。",

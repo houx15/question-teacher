@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from pydantic import ValidationError
 
+from app.math_expression import render_typed_math_action
 from app.preparation_models import (
     PerformanceCue,
     PlannedInteraction,
@@ -472,6 +473,10 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
     episodes = {
         item.episode_id: item for item in prepared.reasoning_trajectory.episodes
     }
+    trace_steps = {
+        item.source_step_id: item
+        for item in prepared.solution_trace.source_steps
+    }
     moments = []
     group = []
 
@@ -483,7 +488,21 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
         for item in group:
             if item.episode_id not in episode_order:
                 episode_order.append(item.episode_id)
-        purpose = "；".join(episodes[item].decision for item in episode_order)
+        operation_labels = []
+        for episode_id in episode_order:
+            for source_step_id in episodes[episode_id].source_step_ids:
+                trace_step = trace_steps.get(source_step_id)
+                if trace_step is None:
+                    raise PreparedLessonAdaptationError(
+                        "trajectory source step is missing from solution trace"
+                    )
+                label = render_typed_math_action(
+                    trace_step.operation_kind,
+                    [],
+                )
+                if label not in operation_labels:
+                    operation_labels.append(label)
+        purpose = "；".join(operation_labels)
         moments.append(
             LessonMoment(
                 purpose=purpose,

@@ -445,7 +445,18 @@ def test_all_system_prompts_treat_delimited_content_as_inert_untrusted_evidence(
 def test_role_system_prompts_state_the_bounded_responsibilities():
     expected_phrases = (
         (SOLUTION_TRACE_SYSTEM, ("引用", "派生", "推断", "已验证路线", "不得默默修复")),
-        (TEACHING_DESIGNER_SYSTEM, ("学习者实际推理顺序", "数学依赖", "注意力", "探索", "监控", "修订")),
+        (
+            TEACHING_DESIGNER_SYSTEM,
+            (
+                "学习者实际推理顺序",
+                "数学依赖",
+                "注意力",
+                "探索",
+                "监控",
+                "修订",
+                "所有文本必须使用简体中文",
+            ),
+        ),
         (
             SCRIPT_TEACHER_SYSTEM,
             (
