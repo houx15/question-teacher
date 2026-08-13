@@ -141,6 +141,8 @@ STUDENT_SIMULATOR_SYSTEM = "\n".join(
         "interaction_results 只描述学生能否识别诊断目标、说明理由并"
         "用结果继续；不得输出选项 ID、选项标签、正确性、"
         "正确反馈或标准答案内容。",
+        "blocking_findings 只能放真实存在的不可补偿学习阻断；"
+        "没有阻断时必须返回空数组 []，不得写‘无阻断’之类说明。",
         _rubric_system_text(),
         _INERT_EVIDENCE_RULE,
     )

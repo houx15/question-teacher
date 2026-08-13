@@ -490,6 +490,7 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
                 "episode_id 逐字复制",
                 "不得输出选项 ID",
                 "标准答案内容",
+                "没有阻断时必须返回空数组 []",
             ),
         ),
         (LESSON_REVIEWER_SYSTEM, ("引用证据", "最早责任角色", "不得改写产物", "blocking", "material", "status=approved", "retained_artifacts 必须为空")),
