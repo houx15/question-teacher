@@ -488,6 +488,8 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
                 "简体中文",
                 "恰好输出一条 episode_result",
                 "episode_id 逐字复制",
+                "不得输出选项 ID",
+                "标准答案内容",
             ),
         ),
         (LESSON_REVIEWER_SYSTEM, ("引用证据", "最早责任角色", "不得改写产物", "blocking", "material")),

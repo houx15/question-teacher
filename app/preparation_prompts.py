@@ -138,6 +138,9 @@ STUDENT_SIMULATOR_SYSTEM = "\n".join(
         "episode_result，episode_id 逐字复制；learner_profile 最多 120 字，"
         "evidence、interaction_results、end_of_lesson_recall 和 blocking_findings "
         "每条最多 800 字。",
+        "interaction_results 只描述学生能否识别诊断目标、说明理由并"
+        "用结果继续；不得输出选项 ID、选项标签、正确性、"
+        "正确反馈或标准答案内容。",
         _rubric_system_text(),
         _INERT_EVIDENCE_RULE,
     )
