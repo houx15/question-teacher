@@ -352,6 +352,32 @@ def downstream_script_payload(interactions=None):
         ("clause-4", "episode-4", ["must-4"], "约去之后检查新关系是否能继续。", ["2n-2m+1=0"]),
         ("clause-close", "episode-5", ["must-5"], "最后整理并回到m减n这个目标。", ["m-n=1/2"]),
     )
+    clauses = [
+        {
+            "clause_id": clause_id,
+            "episode_id": episode_id,
+            "lesson_step_id": "teaching-step-%s" % episode_id.split("-")[-1],
+            "pedagogical_function": "explain",
+            "display_text": "说明当前一步的依据与作用",
+            "spoken_text": spoken_text,
+            "math_references": math_references,
+            "learner_gain": "理解当前一步为什么推进",
+            "answer_exposure": clause_id == "clause-close",
+            "must_teach_refs": must_teach_refs,
+        }
+        for (
+            clause_id,
+            episode_id,
+            must_teach_refs,
+            spoken_text,
+            math_references,
+        ) in clause_specs
+    ]
+    seen_steps = set()
+    for clause in clauses:
+        if clause["lesson_step_id"] not in seen_steps:
+            clause["pedagogical_function"] = "question"
+            seen_steps.add(clause["lesson_step_id"])
     return {
         "title": "从参数根到目标关系",
         "learning_goal": "理解代入根与非零条件的作用",
@@ -364,27 +390,7 @@ def downstream_script_payload(interactions=None):
         },
         "opening_clause_ids": ["clause-open"],
         "method_introduction_clause_ids": ["clause-method"],
-        "clauses": [
-            {
-                "clause_id": clause_id,
-                "episode_id": episode_id,
-                "lesson_step_id": "teaching-step-%s" % episode_id.split("-")[-1],
-                "pedagogical_function": "explain",
-                "display_text": "说明当前一步的依据与作用",
-                "spoken_text": spoken_text,
-                "math_references": math_references,
-                "learner_gain": "理解当前一步为什么推进",
-                "answer_exposure": clause_id == "clause-close",
-                "must_teach_refs": must_teach_refs,
-            }
-            for (
-                clause_id,
-                episode_id,
-                must_teach_refs,
-                spoken_text,
-                math_references,
-            ) in clause_specs
-        ],
+        "clauses": clauses,
         "response_scripts": downstream_response_scripts(interactions or []),
         "closing_summary_clause_ids": ["clause-close"],
     }
@@ -437,17 +443,157 @@ def downstream_planned_interaction(interaction_id="interaction-1"):
     }
 
 
-def downstream_score_payload():
-    script = downstream_script_payload()
-    return {
-        "cues": [
+def downstream_score_payload(interactions=None):
+    script = downstream_script_payload(interactions or [])
+    progression = teaching_progression_payload()
+    step_labels = {
+        item["step_id"]: item["directory_label"]
+        for item in progression["steps"]
+    }
+    clauses_by_step = {}
+    for clause in script["clauses"]:
+        clauses_by_step.setdefault(clause["lesson_step_id"], []).append(
+            clause["clause_id"]
+        )
+    cues = []
+    board_objects = []
+    for clause in script["clauses"]:
+        step_id = clause["lesson_step_id"]
+        target = "board-%s" % clause["clause_id"]
+        role = (
+            "knowledge_anchor"
+            if clauses_by_step[step_id][0] == clause["clause_id"]
+            else "working"
+        )
+        board_objects.append(
+            {
+                "board_object_id": target,
+                "content": clause["math_references"][0],
+                "teaching_step_id": step_id,
+                "line_role": role,
+            }
+        )
+        actions = []
+        if clauses_by_step[step_id][0] == clause["clause_id"]:
+            actions.extend(
+                [
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "reveal_step_header",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                            "step_label": step_labels[step_id],
+                        },
+                    },
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "scroll_to_step",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                ]
+            )
+        actions.append(
+            {
+                "clause_id": clause["clause_id"],
+                "action": {
+                    "surface": "board",
+                    "type": "write",
+                    "target": target,
+                    "content": clause["math_references"][0],
+                    "teaching_step_id": step_id,
+                    "board_role": role,
+                },
+            }
+        )
+        if clauses_by_step[step_id][-1] == clause["clause_id"]:
+            actions.append(
+                {
+                    "clause_id": clause["clause_id"],
+                    "action": {
+                        "surface": "board",
+                        "type": "complete_step",
+                        "target": step_id,
+                        "teaching_step_id": step_id,
+                    },
+                }
+            )
+        cues.append(
             {
                 "cue_id": "cue-%s" % clause["clause_id"],
                 "clause_ids": [clause["clause_id"]],
+                "end_actions": actions,
             }
-            for clause in script["clauses"]
-        ],
-        "board_objects": [],
+        )
+    for response in script["response_scripts"]:
+        for clause in response["clauses"]:
+            cue = {
+                "cue_id": "cue-%s" % clause["clause_id"],
+                "clause_ids": [clause["clause_id"]],
+            }
+            if response["classification"] == "incorrect":
+                step_id = clause["lesson_step_id"]
+                target = "support-%s" % response["option_id"]
+                support_target = "support-panel-%s" % response["option_id"]
+                board_objects.append(
+                    {
+                        "board_object_id": target,
+                        "content": clause["display_text"],
+                        "teaching_step_id": step_id,
+                        "line_role": "support",
+                    }
+                )
+                cue["start_actions"] = [
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "open_supporting_explanation",
+                            "target": support_target,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "write",
+                            "target": target,
+                            "content": clause["display_text"],
+                            "teaching_step_id": step_id,
+                            "board_role": "support",
+                        },
+                    },
+                ]
+                cue["end_actions"] = [
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "close_supporting_explanation",
+                            "target": support_target,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "scroll_to_step",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                ]
+            cues.append(cue)
+    return {
+        "cues": cues,
+        "board_objects": board_objects,
         "overlay_transitions": [],
     }
 
@@ -602,7 +748,13 @@ def client(
                 or [selected_interaction]
             ),
             "classroom_director": list(
-                performances or [performance or downstream_score_payload()]
+                performances
+                or [
+                    performance
+                    or downstream_score_payload(
+                        selected_interaction["interactions"]
+                    )
+                ]
             ),
             "student_simulator": list(
                 simulations or [downstream_simulation_payload()]
@@ -747,10 +899,10 @@ def test_repair_rebuilds_exact_seven_artifact_dependency_suffix(
                 downstream_script_payload(interaction["interactions"]),
                 downstream_script_payload(interaction["interactions"]),
             ],
-            "classroom_director": [
-                downstream_score_payload(),
-                downstream_score_payload(),
-            ],
+                "classroom_director": [
+                    downstream_score_payload(interaction["interactions"]),
+                    downstream_score_payload(interaction["interactions"]),
+                ],
             "student_simulator": [
                 downstream_simulation_payload(),
                 downstream_simulation_payload(),
@@ -1889,51 +2041,50 @@ def test_board_object_can_be_emphasized_and_faded_after_introduction():
     script = downstream_script_payload()
     script["clauses"][0]["math_references"].append("x=2n")
     valid = downstream_score_payload()
-    valid["board_objects"] = [
-        {"board_object_id": "target-relation", "content": "m-n"},
-        {"board_object_id": "given-root", "content": "x=2n"},
-    ]
-    valid["cues"][0]["start_actions"] = [
+    valid["board_objects"].append(
+        {
+            "board_object_id": "board-given-root",
+            "content": "x=2n",
+            "teaching_step_id": "teaching-step-1",
+            "line_role": "working",
+        }
+    )
+    valid["cues"][0]["end_actions"].append(
         {
             "clause_id": "clause-open",
             "action": {
                 "surface": "board",
                 "type": "write",
-                "target": "target-relation",
-                "content": "m-n",
-            },
-        },
-        {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "board",
-                "type": "write",
-                "target": "given-root",
+                "target": "board-given-root",
                 "content": "x=2n",
+                "teaching_step_id": "teaching-step-1",
+                "board_role": "working",
             },
-        },
-    ]
-    valid["cues"][1]["start_actions"] = [
+        }
+    )
+    valid["cues"][1]["lead_actions"] = [
         {
             "clause_id": "clause-method",
             "action": {
                 "surface": "board",
                 "type": "emphasize",
-                "target": "target-relation",
+                "target": "board-clause-open",
                 "emphasis_style": "underline",
+                "teaching_step_id": "teaching-step-1",
             },
         }
     ]
-    valid["cues"][1]["end_actions"] = [
+    valid["cues"][1]["end_actions"].append(
         {
             "clause_id": "clause-method",
             "action": {
                 "surface": "board",
                 "type": "fade",
-                "target": "target-relation",
+                "target": "board-clause-open",
+                "teaching_step_id": "teaching-step-1",
             },
         }
-    ]
+    )
 
     asyncio.run(
         LessonPreparationPipeline(
@@ -2093,20 +2244,14 @@ def test_pipeline_normalizes_section_only_script_episode_metadata():
 
 def test_pipeline_rebinds_board_writes_to_first_spoken_math_reference():
     score = downstream_score_payload()
-    score["board_objects"] = [
-        {"board_object_id": "board-result", "content": "m-n=1/2"},
-        {"board_object_id": "board-decoration", "content": "解题标题"},
-    ]
-    score["cues"][0]["lead_actions"] = [
+    score["board_objects"].append(
         {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "problem",
-                "type": "focus",
-                "target": "board-decoration",
-            },
+            "board_object_id": "board-decoration",
+            "content": "解题标题",
+            "teaching_step_id": "teaching-step-1",
+            "line_role": "summary",
         }
-    ]
+    )
     score["cues"][0]["start_actions"] = [
         {
             "clause_id": "clause-open",
@@ -2115,15 +2260,8 @@ def test_pipeline_rebinds_board_writes_to_first_spoken_math_reference():
                 "type": "write",
                 "target": "board-decoration",
                 "content": "解题标题",
-            },
-        },
-        {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "board",
-                "type": "write",
-                "target": "board-result",
-                "content": "m-n=1/2",
+                "teaching_step_id": "teaching-step-1",
+                "board_role": "summary",
             },
         },
     ]
@@ -2152,8 +2290,8 @@ def test_pipeline_rebinds_board_writes_to_first_spoken_math_reference():
     result_actions = [
         bound
         for cue in accepted.cues
-        for bound in cue.start_actions
-        if bound.action.target == "board-result"
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+        if bound.action.target == "board-clause-close"
     ]
     assert len(result_actions) == 1
     assert result_actions[0].clause_id == "clause-close"

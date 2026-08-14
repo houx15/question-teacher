@@ -16,6 +16,7 @@ from app.math_expression import (
 )
 from app.pedagogy_rubric import ReviewCriterionId
 from app.schemas import (
+    BoardLineRole,
     CueSpokenText,
     GeneratedId,
     GeneratedLabelText,
@@ -462,6 +463,8 @@ class PerformanceBoardObject(SchemaModel):
     board_object_id: GeneratedId
     content: NarrativeBoardContent
     layer: Literal["base", "micro_explanation", "comparison"] = "base"
+    teaching_step_id: Optional[GeneratedId] = None
+    line_role: Optional[BoardLineRole] = None
 
 
 class OverlayTransition(SchemaModel):

@@ -152,9 +152,15 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
     (
         "你是课堂导演。将语义动作绑定到精确子句 ID，不得改写口播文本。",
         "不输出像素、CSS 选择器或毫秒值。强调可选，且必须区分有意义的对象。",
-        "lead_actions 只能是 focus/emphasize；start_actions 只能是 "
-        "write/transform/focus/emphasize/annotate/reveal；end_actions 只能是 "
-        "clear_focus/fade。",
+        "每个 teaching step 只能 reveal_step_header 和 complete_step 各一次；"
+        "step_label 必须逐字复制 TeachingProgression.directory_label。",
+        "步骤激活时输出 scroll_to_step。每个错误 response 必须从 "
+        "open_supporting_explanation 开始，包含至少一条 board_role=support "
+        "的 write，再 close_supporting_explanation 并 scroll_to_step。",
+        "主线 write 必须逐字绑定 teaching_step_id 和 board_role；"
+        "题干动作不得带步骤元数据，不得跨步骤或跨 response 移动动作。",
+        "lead_actions 只能是口播前的 focus/emphasize；"
+        "reveal、write、complete、support open/close 和 scroll 必须绑定其语义子句。",
         "write/transform 的 content 必须精确来自绑定子句已出现的 "
         "math_references，并与对应 board_object.content 一致。",
         "优先为 pedagogical_function=execute 且 math_references 非空的子句"
@@ -644,6 +650,7 @@ def performance_score_prompt(
     interaction_plan: InteractionPlan,
     capabilities: _InputDict,
     repair: Optional[_InputDict] = None,
+    teaching_progression: Optional[TeachingProgression] = None,
 ) -> str:
     payload = {
         "problem_targets": _problem_targets_projection(problem_targets),
@@ -655,6 +662,12 @@ def performance_score_prompt(
         ),
         "capabilities": _capabilities_projection(capabilities),
     }
+    if teaching_progression is not None:
+        payload["teaching_progression"] = _artifact_payload(
+            teaching_progression,
+            TeachingProgression,
+            "teaching_progression",
+        )
     return _prompt_envelope(
         "将语义课堂动作绑定到讲稿子句，生成 PerformanceScore。",
         _with_repair(payload, repair),

@@ -20,6 +20,7 @@ from app.schemas import (
     ReviewDecision,
     RuntimeBeat,
     RuntimeLesson,
+    RuntimeSyncCue,
     SupportSyncCue,
     SyncVisualAction,
     TransferItem,
@@ -571,6 +572,69 @@ def test_interaction_option_support_cues_and_advance_flag_keep_legacy_defaults()
     assert option.support_cues[0].cue_id == "factor-support"
     assert legacy.advance_after_response is False
     assert InteractionOption(option_id="plain", label="普通").support_cues == []
+
+
+def test_step_actions_require_exact_board_metadata():
+    reveal = SyncVisualAction(
+        surface="board",
+        type="reveal_step_header",
+        target="teaching-step-1",
+        teaching_step_id="teaching-step-1",
+        step_label="第一步：理解根",
+    )
+    write = SyncVisualAction(
+        surface="board",
+        type="write",
+        target="board-root",
+        content="根代入后等式成立",
+        teaching_step_id="teaching-step-1",
+        board_role="knowledge_anchor",
+    )
+
+    assert reveal.step_label == "第一步：理解根"
+    assert write.board_role == "knowledge_anchor"
+    with pytest.raises(ValidationError, match="matching step id and label"):
+        SyncVisualAction(
+            surface="board",
+            type="reveal_step_header",
+            target="teaching-step-2",
+            teaching_step_id="teaching-step-1",
+            step_label="第一步：理解根",
+        )
+    with pytest.raises(ValidationError, match="step-aware writes"):
+        SyncVisualAction(
+            surface="board",
+            type="write",
+            target="board-root",
+            content="根代入后等式成立",
+            teaching_step_id="teaching-step-1",
+        )
+    with pytest.raises(
+        ValidationError,
+        match="problem actions cannot use step metadata",
+    ):
+        SyncVisualAction(
+            surface="problem",
+            type="focus",
+            target="problem-root",
+            teaching_step_id="teaching-step-1",
+        )
+
+
+def test_main_sync_cues_preserve_optional_display_and_step_identity():
+    legacy = NarrativeSyncCue(cue_id="legacy", spoken_text="继续看。")
+    authored = NarrativeSyncCue(
+        cue_id="authored",
+        teaching_step_id="teaching-step-1",
+        display_text="观察 $m-n$。",
+        spoken_text="观察 m 减 n。",
+    )
+    runtime = RuntimeSyncCue.model_validate(authored.model_dump())
+
+    assert legacy.teaching_step_id is None
+    assert legacy.display_text is None
+    assert runtime.teaching_step_id == "teaching-step-1"
+    assert runtime.display_text == "观察 $m-n$。"
 
 
 def test_transfer_item_accepts_three_diagnostic_options():

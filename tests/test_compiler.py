@@ -823,3 +823,57 @@ def test_compiler_hides_lesson_id_factory_errors():
         compile_lesson(compiler)
 
     assert "private-id-detail" not in str(exc_info.value)
+
+
+def test_compiler_preserves_step_display_and_actions_verbatim():
+    draft_payload = valid_draft()
+    authored = {
+        "cue_id": "step-aware-cue",
+        "teaching_step_id": "teaching-step-1",
+        "display_text": "方程的根代入后等式成立。",
+        "spoken_text": "方程的根代入以后，等式成立。",
+        "lead_actions": [],
+        "start_actions": [
+            {
+                "surface": "board",
+                "type": "reveal_step_header",
+                "target": "teaching-step-1",
+                "teaching_step_id": "teaching-step-1",
+                "step_label": "第一步：理解方程的根",
+            },
+            {
+                "surface": "board",
+                "type": "write",
+                "target": "board-root",
+                "content": "根代入后等式成立",
+                "teaching_step_id": "teaching-step-1",
+                "board_role": "knowledge_anchor",
+            },
+        ],
+        "end_actions": [
+            {
+                "surface": "board",
+                "type": "complete_step",
+                "target": "teaching-step-1",
+                "teaching_step_id": "teaching-step-1",
+            }
+        ],
+    }
+    draft_payload["moments"][0]["sync_cues"] = [authored]
+    lesson = LessonCompiler(lesson_id_factory=lambda: "step-aware").compile(
+        problem(),
+        LessonDraft.model_validate(draft_payload),
+        {"review_status": "approved"},
+    )
+    runtime = next(
+        cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+        if cue.cue_id == "step-aware-cue"
+    )
+
+    assert runtime.model_dump(exclude_none=True) == (
+        NarrativeSyncCue.model_validate(authored).model_dump(
+            exclude_none=True
+        )
+    )

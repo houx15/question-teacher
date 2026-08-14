@@ -296,6 +296,11 @@ def script_payload():
     )
     clauses[1]["must_teach_refs"] = ["must-2"]
     clauses[2]["must_teach_refs"] = []
+    seen_steps = set()
+    for clause in clauses:
+        if clause["lesson_step_id"] not in seen_steps:
+            clause["pedagogical_function"] = "question"
+            seen_steps.add(clause["lesson_step_id"])
     return {
         "title": "参数根与参数关系",
         "learning_goal": "会把已知根代回并得到目标关系",
@@ -408,10 +413,164 @@ def interaction_plan_payload():
     }
 
 
+def structured_score_payload():
+    script = script_payload()
+    progression = progression_payload()
+    step_labels = {
+        step["step_id"]: step["directory_label"]
+        for step in progression["steps"]
+    }
+    clauses_by_step = {}
+    for clause in script["clauses"]:
+        clauses_by_step.setdefault(clause["lesson_step_id"], []).append(
+            clause["clause_id"]
+        )
+    board_objects = []
+    cues = []
+    for clause in script["clauses"]:
+        step_id = clause["lesson_step_id"]
+        target = "board-%s" % clause["clause_id"]
+        role = (
+            "knowledge_anchor"
+            if clauses_by_step[step_id][0] == clause["clause_id"]
+            else "working"
+        )
+        board_objects.append(
+            {
+                "board_object_id": target,
+                "content": clause["math_references"][0],
+                "teaching_step_id": step_id,
+                "line_role": role,
+            }
+        )
+        end_actions = []
+        if clauses_by_step[step_id][0] == clause["clause_id"]:
+            end_actions.extend(
+                [
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "reveal_step_header",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                            "step_label": step_labels[step_id],
+                        },
+                    },
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "scroll_to_step",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                ]
+            )
+        end_actions.append(
+            {
+                "clause_id": clause["clause_id"],
+                "action": {
+                    "surface": "board",
+                    "type": "write",
+                    "target": target,
+                    "content": clause["math_references"][0],
+                    "teaching_step_id": step_id,
+                    "board_role": role,
+                },
+            }
+        )
+        if clauses_by_step[step_id][-1] == clause["clause_id"]:
+            end_actions.append(
+                {
+                    "clause_id": clause["clause_id"],
+                    "action": {
+                        "surface": "board",
+                        "type": "complete_step",
+                        "target": step_id,
+                        "teaching_step_id": step_id,
+                    },
+                }
+            )
+        cues.append(
+            {
+                "cue_id": "cue-%s" % clause["clause_id"],
+                "clause_ids": [clause["clause_id"]],
+                "end_actions": end_actions,
+            }
+        )
+    for response in script["response_scripts"]:
+        for clause in response["clauses"]:
+            cue = {
+                "cue_id": "cue-%s" % clause["clause_id"],
+                "clause_ids": [clause["clause_id"]],
+            }
+            if response["classification"] == "incorrect":
+                step_id = clause["lesson_step_id"]
+                target = "support-%s" % response["option_id"]
+                board_objects.append(
+                    {
+                        "board_object_id": target,
+                        "content": clause["display_text"],
+                        "teaching_step_id": step_id,
+                        "line_role": "support",
+                    }
+                )
+                support_target = "support-panel-%s" % response["option_id"]
+                cue["start_actions"] = [
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "open_supporting_explanation",
+                            "target": support_target,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "write",
+                            "target": target,
+                            "content": clause["display_text"],
+                            "teaching_step_id": step_id,
+                            "board_role": "support",
+                        },
+                    },
+                ]
+                cue["end_actions"] = [
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "close_supporting_explanation",
+                            "target": support_target,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                    {
+                        "clause_id": clause["clause_id"],
+                        "action": {
+                            "surface": "board",
+                            "type": "scroll_to_step",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                ]
+            cues.append(cue)
+    return {"cues": cues, "board_objects": board_objects, "overlay_transitions": []}
+
+
 def score_payload():
     script = script_payload()
     board_objects = [
-        {"board_object_id": "board-%d" % (index + 1), "content": STATES[index]}
+        {
+            "board_object_id": "board-%d" % (index + 1),
+            "content": STATES[index],
+        }
         for index in range(len(STEP_IDS))
     ]
     cues = []
@@ -445,7 +604,11 @@ def score_payload():
                 ],
             }
         )
-    return {"cues": cues, "board_objects": board_objects, "overlay_transitions": []}
+    return {
+        "cues": cues,
+        "board_objects": board_objects,
+        "overlay_transitions": [],
+    }
 
 
 def simulation_payload():
@@ -497,7 +660,7 @@ def prepared_payload():
         "teaching_progression": progression_payload(),
         "interaction_plan": interaction_plan_payload(),
         "teaching_script": script_payload(),
-        "performance_score": score_payload(),
+        "performance_score": structured_score_payload(),
         "simulation_report": simulation_payload(),
         "review": review_payload(),
         "repair_count": 0,
@@ -523,7 +686,7 @@ def models():
         ReasoningTrajectory.model_validate(payload["reasoning_trajectory"]),
         TeachingScript.model_validate(payload["teaching_script"]),
         InteractionPlan.model_validate(payload["interaction_plan"]),
-        PerformanceScore.model_validate(payload["performance_score"]),
+        PerformanceScore.model_validate(score_payload()),
         SimulationReport.model_validate(payload["simulation_report"]),
         LessonReviewDecision.model_validate(payload["review"]),
     )
@@ -700,6 +863,66 @@ def test_parameter_root_full_traceability_matrix_validates():
         )
     ]
     validate_prepared_lesson(prepared, route(), targets)
+
+
+def test_structured_performance_covers_main_and_response_lifecycles():
+    payload = prepared_payload()
+    validate_performance_score(
+        PerformanceScore.model_validate(payload["performance_score"]),
+        [],
+        TeachingProgression.model_validate(payload["teaching_progression"]),
+        TeachingScript.model_validate(payload["teaching_script"]),
+        InteractionPlan.model_validate(payload["interaction_plan"]),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing_reveal", "duplicate_complete", "wrong_step_line", "unclosed_support"),
+)
+def test_structured_performance_rejects_invalid_lifecycle(mutation):
+    payload = prepared_payload()
+    score = payload["performance_score"]
+    if mutation == "missing_reveal":
+        cue = score["cues"][0]
+        cue["end_actions"] = [
+            item
+            for item in cue["end_actions"]
+            if item["action"]["type"] != "reveal_step_header"
+        ]
+    elif mutation == "duplicate_complete":
+        cue = score["cues"][0]
+        cue["end_actions"].append(
+            copy.deepcopy(
+                next(
+                    item
+                    for item in cue["end_actions"]
+                    if item["action"]["type"] == "complete_step"
+                )
+            )
+        )
+    elif mutation == "wrong_step_line":
+        score["board_objects"][0]["teaching_step_id"] = "teaching-step-2"
+    else:
+        response_cue = next(
+            cue
+            for cue in score["cues"]
+            if cue["clause_ids"] == ["response-clause-option-b"]
+        )
+        response_cue["end_actions"] = [
+            item
+            for item in response_cue["end_actions"]
+            if item["action"]["type"] != "close_supporting_explanation"
+        ]
+
+    with pytest.raises(PreparationValidationError):
+        validate_performance_score(
+            PerformanceScore.model_validate(score),
+            [],
+            TeachingProgression.model_validate(payload["teaching_progression"]),
+            TeachingScript.model_validate(payload["teaching_script"]),
+            InteractionPlan.model_validate(payload["interaction_plan"]),
+        )
 
 
 def test_text_only_geometry_trace_and_route_cross_boundary_safely():

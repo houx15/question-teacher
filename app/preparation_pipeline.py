@@ -947,6 +947,10 @@ class LessonPreparationPipeline:
             raise RuntimeError(
                 "script and interaction plan must exist before direction"
             )
+        if state.teaching_progression is None:
+            raise RuntimeError(
+                "teaching progression must exist before direction"
+            )
         await self._emit(on_stage, "编排板书与高亮")
         prompt = self._build_prompt(
             state,
@@ -957,6 +961,7 @@ class LessonPreparationPipeline:
             state.interaction_plan,
             self.capabilities,
             repair,
+            state.teaching_progression,
         )
         score = await self._complete_model(
             "classroom_director",
@@ -968,6 +973,7 @@ class LessonPreparationPipeline:
             validate_performance_score(
                 score,
                 problem_focus_targets,
+                state.teaching_progression,
                 state.teaching_script,
                 state.interaction_plan,
             )
@@ -990,11 +996,13 @@ class LessonPreparationPipeline:
                 score,
                 problem_focus_targets,
                 state.teaching_script,
+                state.teaching_progression,
             )
             try:
                 validate_performance_score(
                     score,
                     problem_focus_targets,
+                    state.teaching_progression,
                     state.teaching_script,
                     state.interaction_plan,
                 )

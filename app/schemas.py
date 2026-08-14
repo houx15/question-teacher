@@ -174,6 +174,13 @@ LessonLayer = Literal[
     "comparison",
     "interaction",
 ]
+BoardLineRole = Literal[
+    "knowledge_anchor",
+    "working",
+    "summary",
+    "error_tip",
+    "support",
+]
 FIXED_RUNTIME_CUE_IDS = MappingProxyType(
     {
         "opening": "runtime-opening-cue",
@@ -533,6 +540,11 @@ class SyncVisualAction(SchemaModel):
         "fade",
         "reveal",
         "clear_focus",
+        "reveal_step_header",
+        "complete_step",
+        "scroll_to_step",
+        "open_supporting_explanation",
+        "close_supporting_explanation",
     ]
     target: GeneratedId
     content: Optional[NarrativeBoardContent] = None
@@ -545,6 +557,20 @@ class SyncVisualAction(SchemaModel):
         Literal["highlight", "underline", "red"]
     ] = None
     persistence: Optional[Literal["transient", "trace"]] = None
+    teaching_step_id: Optional[GeneratedId] = None
+    step_label: Optional[GeneratedLabelText] = None
+    board_role: Optional[BoardLineRole] = None
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_step_metadata(self, handler):
+        payload = handler(self)
+        if self.teaching_step_id is None:
+            payload.pop("teaching_step_id", None)
+        if self.step_label is None:
+            payload.pop("step_label", None)
+        if self.board_role is None:
+            payload.pop("board_role", None)
+        return payload
 
     @model_validator(mode="before")
     @classmethod
@@ -560,6 +586,24 @@ class SyncVisualAction(SchemaModel):
 
     @model_validator(mode="after")
     def require_executable_payload(self) -> "SyncVisualAction":
+        step_types = {
+            "reveal_step_header",
+            "complete_step",
+            "scroll_to_step",
+            "open_supporting_explanation",
+            "close_supporting_explanation",
+        }
+        if self.type in step_types and self.surface != "board":
+            raise ValueError("step actions must use the board surface")
+        if self.surface == "problem" and any(
+            value is not None
+            for value in (
+                self.teaching_step_id,
+                self.step_label,
+                self.board_role,
+            )
+        ):
+            raise ValueError("problem actions cannot use step metadata")
         if self.surface == "problem" and self.type in {
             "write",
             "transform",
@@ -576,15 +620,57 @@ class SyncVisualAction(SchemaModel):
         if self.persistence and self.type != "emphasize":
             raise ValueError("persistence is valid only for emphasize")
 
+        if self.type == "reveal_step_header":
+            if (
+                self.teaching_step_id is None
+                or self.target != self.teaching_step_id
+                or self.step_label is None
+            ):
+                raise ValueError(
+                    "reveal_step_header requires a matching step id and label"
+                )
+        elif self.type in {"complete_step", "scroll_to_step"}:
+            if (
+                self.teaching_step_id is None
+                or self.target != self.teaching_step_id
+            ):
+                raise ValueError(
+                    "%s requires a matching step id" % self.type
+                )
+        elif self.type in {
+            "open_supporting_explanation",
+            "close_supporting_explanation",
+        } and self.teaching_step_id is None:
+            raise ValueError("support actions require a teaching step id")
+        elif self.type == "write":
+            if (self.teaching_step_id is None) != (self.board_role is None):
+                raise ValueError(
+                    "step-aware writes require a teaching step id and board role"
+                )
+
         allowed_fields = {
-            "write": {"content"},
-            "transform": {"content", "source"},
-            "focus": set(),
-            "emphasize": {"emphasis_style", "persistence"},
-            "annotate": {"annotation", "content", "relation_target"},
-            "fade": set(),
-            "reveal": set(),
-            "clear_focus": set(),
+            "write": {"content", "teaching_step_id", "board_role"},
+            "transform": {"content", "source", "teaching_step_id"},
+            "focus": {"teaching_step_id"},
+            "emphasize": {
+                "emphasis_style",
+                "persistence",
+                "teaching_step_id",
+            },
+            "annotate": {
+                "annotation",
+                "content",
+                "relation_target",
+                "teaching_step_id",
+            },
+            "fade": {"teaching_step_id"},
+            "reveal": {"teaching_step_id"},
+            "clear_focus": {"teaching_step_id"},
+            "reveal_step_header": {"teaching_step_id", "step_label"},
+            "complete_step": {"teaching_step_id"},
+            "scroll_to_step": {"teaching_step_id"},
+            "open_supporting_explanation": {"teaching_step_id"},
+            "close_supporting_explanation": {"teaching_step_id"},
         }[self.type]
         optional_fields = {
             "content": self.content,
@@ -593,6 +679,9 @@ class SyncVisualAction(SchemaModel):
             "annotation": self.annotation,
             "emphasis_style": self.emphasis_style,
             "persistence": self.persistence,
+            "teaching_step_id": self.teaching_step_id,
+            "step_label": self.step_label,
+            "board_role": self.board_role,
         }
         irrelevant_fields = [
             field
@@ -627,6 +716,8 @@ class SyncVisualAction(SchemaModel):
 
 class NarrativeSyncCue(SchemaModel):
     cue_id: GeneratedId
+    teaching_step_id: Optional[GeneratedId] = None
+    display_text: Optional[NarrativeBoardContent] = None
     spoken_text: CueSpokenText
     lead_actions: List[SyncVisualAction] = Field(
         default_factory=list,
@@ -640,6 +731,15 @@ class NarrativeSyncCue(SchemaModel):
         default_factory=list,
         max_length=6,
     )
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_structured_fields(self, handler):
+        payload = handler(self)
+        if self.teaching_step_id is None:
+            payload.pop("teaching_step_id", None)
+        if self.display_text is None:
+            payload.pop("display_text", None)
+        return payload
 
     @field_validator("spoken_text")
     @classmethod
@@ -1250,11 +1350,22 @@ class ReviewDecision(SchemaModel):
 
 class RuntimeSyncCue(SchemaModel):
     cue_id: NonEmptyString
+    teaching_step_id: Optional[GeneratedId] = None
+    display_text: Optional[NarrativeBoardContent] = None
     spoken_text: NonEmptyString
     lead_actions: List[SyncVisualAction] = Field(default_factory=list)
     start_actions: List[SyncVisualAction] = Field(default_factory=list)
     end_actions: List[SyncVisualAction] = Field(default_factory=list)
     audio_url: Optional[NonEmptyString] = None
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_structured_fields(self, handler):
+        payload = handler(self)
+        if self.teaching_step_id is None:
+            payload.pop("teaching_step_id", None)
+        if self.display_text is None:
+            payload.pop("display_text", None)
+        return payload
 
 
 class RuntimeBeat(SchemaModel):

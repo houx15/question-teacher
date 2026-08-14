@@ -662,6 +662,24 @@ def test_performance_schema_states_action_phase_and_overlay_contracts():
     assert "enter 和 return 必须在不同 cue 边界" in schema_text
 
 
+def test_performance_prompt_includes_authoritative_teaching_progression():
+    progression = teaching_progression()
+    prompt = performance_score_prompt(
+        [],
+        teaching_script(),
+        interaction_plan(),
+        {"semantic_actions": ["write"]},
+        teaching_progression=progression,
+    )
+
+    payload = _parse_envelope(prompt)[1]
+    assert payload["teaching_progression"] == progression.model_dump(mode="json")
+    assert (
+        payload["teaching_progression"]["steps"][0]["directory_label"]
+        == "形成思路后认识配方法"
+    )
+
+
 def test_reference_analyst_preserves_all_route_evidence_levels():
     for evidence_status in ("reference_only", "checked", "check_warning"):
         assert evidence_status in SOLUTION_TRACE_SYSTEM

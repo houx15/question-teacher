@@ -974,12 +974,120 @@ def normalize_performance_control_metadata(
     score: PerformanceScore,
     problem_targets: ProblemTargets,
     script: TeachingScript,
+    progression: Optional[TeachingProgression] = None,
 ) -> PerformanceScore:
     """Conservatively align recoverable visual controls to authored speech."""
     _require_exact(score, PerformanceScore, "score")
     _validate_problem_targets(problem_targets)
     _require_exact(script, TeachingScript, "script")
+    if progression is not None:
+        _require_exact(progression, TeachingProgression, "progression")
     payload = score.model_dump(mode="python")
+    if progression is not None:
+        clauses = {
+            clause.clause_id: (None, clause)
+            for clause in script.clauses
+        }
+        clauses.update(
+            {
+                clause.clause_id: (response, clause)
+                for response in script.response_scripts
+                for clause in response.clauses
+            }
+        )
+        board_objects = {
+            item["board_object_id"]: item
+            for item in payload["board_objects"]
+            if item.get("teaching_step_id") is not None
+            and item.get("line_role") is not None
+        }
+        written_targets = set()
+        for cue in payload["cues"]:
+            for phase in (
+                "lead_actions",
+                "start_actions",
+                "end_actions",
+            ):
+                normalized_actions = []
+                for bound in cue[phase]:
+                    owner = clauses.get(bound["clause_id"])
+                    if owner is None:
+                        continue
+                    response, clause = owner
+                    action = bound["action"]
+                    if action["surface"] == "problem":
+                        if action["target"] in {
+                            item.target_id for item in problem_targets
+                        }:
+                            normalized_actions.append(bound)
+                        continue
+                    if action["type"] in {
+                        "reveal_step_header",
+                        "complete_step",
+                        "scroll_to_step",
+                        "open_supporting_explanation",
+                        "close_supporting_explanation",
+                    }:
+                        normalized_actions.append(bound)
+                        continue
+                    if action["type"] == "write":
+                        board_object = board_objects.get(action["target"])
+                        normalized_content = normalize_cross_artifact_math_identity(
+                            action.get("content") or ""
+                        )
+                        main_reference = any(
+                            normalized_content
+                            == normalize_cross_artifact_math_identity(reference)
+                            for reference in clause.math_references
+                        )
+                        support_reference = (
+                            response is not None
+                            and action.get("board_role") == "support"
+                            and normalized_content
+                            == normalize_cross_artifact_math_identity(
+                                clause.display_text or ""
+                            )
+                        )
+                        if (
+                            board_object is not None
+                            and board_object.get("teaching_step_id")
+                            == action.get("teaching_step_id")
+                            == clause.lesson_step_id
+                            and board_object.get("line_role")
+                            == action.get("board_role")
+                            and (main_reference or support_reference)
+                        ):
+                            normalized_actions.append(bound)
+                            written_targets.add(action["target"])
+                        continue
+                    if action["target"] in board_objects:
+                        normalized_actions.append(bound)
+                cue[phase] = normalized_actions
+        payload["board_objects"] = [
+            item
+            for item in payload["board_objects"]
+            if item["board_object_id"] in written_targets
+        ]
+        transitions = payload["overlay_transitions"]
+        zero_width = {
+            (first["transition_id"], second["transition_id"])
+            for first, second in zip(transitions, transitions[1:])
+            if first["action"] == "enter"
+            and second["action"] == "return"
+            and first["layer"] == second["layer"]
+            and first["after_clause_id"] == second["after_clause_id"]
+        }
+        dropped_transition_ids = {
+            transition_id
+            for pair in zero_width
+            for transition_id in pair
+        }
+        payload["overlay_transitions"] = [
+            item
+            for item in transitions
+            if item["transition_id"] not in dropped_transition_ids
+        ]
+        return PerformanceScore.model_validate(payload)
     clause_positions = {
         clause.clause_id: index
         for index, clause in enumerate(script.clauses)
@@ -1430,8 +1538,19 @@ def validate_visual_action_references(
             "emphasize",
             "annotate",
             "reveal",
+            "reveal_step_header",
+            "scroll_to_step",
+            "open_supporting_explanation",
         },
-        "end_actions": {"clear_focus", "fade"},
+        "end_actions": {
+            "clear_focus",
+            "fade",
+            "write",
+            "reveal_step_header",
+            "complete_step",
+            "scroll_to_step",
+            "close_supporting_explanation",
+        },
     }
     for moment in moments:
         active_targets = set(base_targets)
@@ -1468,6 +1587,14 @@ def validate_visual_action_references(
                             cue_focused_targets.add(action_key)
                         elif action.type == "emphasize":
                             cue_emphasized_targets.add(action_key)
+                        continue
+                    if action.type in {
+                        "reveal_step_header",
+                        "complete_step",
+                        "scroll_to_step",
+                        "open_supporting_explanation",
+                        "close_supporting_explanation",
+                    }:
                         continue
                     if action.type in {"write", "transform"}:
                         if board_target_ids is not None and action.target not in board_target_ids:
@@ -1641,7 +1768,7 @@ def _validate_problem_targets(problem_targets: ProblemTargets) -> None:
         )
 
 
-def validate_performance_score(
+def _validate_legacy_performance_score(
     score: PerformanceScore,
     problem_targets: ProblemTargets,
     script: TeachingScript,
@@ -1882,6 +2009,384 @@ def validate_performance_score(
                     bound.clause_id,
                     "Label annotation exactly repeats the sole visible target content.",
                 )
+
+
+def _validate_structured_performance_score(
+    score: PerformanceScore,
+    progression: TeachingProgression,
+    script: TeachingScript,
+) -> None:
+    steps = {item.step_id: item for item in progression.steps}
+    main_clauses = {item.clause_id: item for item in script.clauses}
+    response_clauses = {
+        clause.clause_id: (response, clause)
+        for response in script.response_scripts
+        for clause in response.clauses
+    }
+    expected_ids = [item.clause_id for item in script.clauses]
+    expected_ids.extend(
+        clause.clause_id
+        for response in script.response_scripts
+        for clause in response.clauses
+    )
+    flattened = [item for cue in score.cues for item in cue.clause_ids]
+    if flattened != expected_ids:
+        _fail(
+            "cue_clause_coverage_invalid",
+            "performance_score",
+            "Structured performance must cover main and response clauses exactly once in order.",
+        )
+
+    response_by_clause = {
+        clause_id: response.response_id
+        for clause_id, (response, _) in response_clauses.items()
+    }
+    for cue in score.cues:
+        owners = {
+            "main" if clause_id in main_clauses else response_by_clause.get(clause_id)
+            for clause_id in cue.clause_ids
+        }
+        if None in owners or len(owners) != 1:
+            _fail(
+                "visual_clause_invalid",
+                cue.cue_id,
+                "A performance cue cannot cross main or response ownership.",
+            )
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions):
+            if bound.clause_id not in cue.clause_ids:
+                _fail(
+                    "visual_clause_invalid",
+                    cue.cue_id,
+                    "Visual action is bound outside its exact cue.",
+                )
+
+    board_objects = {item.board_object_id: item for item in score.board_objects}
+    for item in score.board_objects:
+        if (
+            item.teaching_step_id is None
+            or item.line_role is None
+            or item.teaching_step_id not in steps
+        ):
+            _fail(
+                "structured_board_object_invalid",
+                item.board_object_id,
+                "Current board objects require a known step and line role.",
+            )
+
+    clause_positions = {
+        clause_id: position for position, clause_id in enumerate(expected_ids)
+    }
+    events = []
+    written_targets = set()
+    phase_order = {
+        "lead_actions": 0,
+        "start_actions": 1,
+        "end_actions": 2,
+    }
+    for cue in score.cues:
+        for phase_name in (
+            "lead_actions",
+            "start_actions",
+            "end_actions",
+        ):
+            for action_index, bound in enumerate(getattr(cue, phase_name)):
+                clause = main_clauses.get(bound.clause_id)
+                response = None
+                if clause is None:
+                    response, clause = response_clauses[bound.clause_id]
+                action = bound.action
+                if clause.lesson_step_id not in steps:
+                    _fail(
+                        "structured_action_step_invalid",
+                        bound.clause_id,
+                        "Structured actions require a known clause step.",
+                    )
+                if (
+                    action.surface == "board"
+                    and action.teaching_step_id != clause.lesson_step_id
+                ):
+                    _fail(
+                        "structured_action_step_invalid",
+                        bound.clause_id,
+                        "Board action ownership must match its clause step.",
+                    )
+                if action.type == "write":
+                    board_object = board_objects.get(action.target)
+                    if (
+                        board_object is None
+                        or board_object.teaching_step_id
+                        != clause.lesson_step_id
+                        or board_object.line_role != action.board_role
+                        or normalize_cross_artifact_math_identity(
+                            board_object.content
+                        )
+                        != normalize_cross_artifact_math_identity(
+                            action.content or ""
+                        )
+                    ):
+                        _fail(
+                            "structured_action_ownership_invalid",
+                            bound.clause_id,
+                            "Board write must match its declared step-aware object.",
+                        )
+                    if not is_valid_generated_display_content(
+                        action.content or ""
+                    ):
+                        _fail(
+                            "board_formula_invalid",
+                            bound.clause_id,
+                            "Structured board write contains invalid display content.",
+                        )
+                    written_targets.add(action.target)
+                elif (
+                    action.surface == "board"
+                    and action.target in board_objects
+                    and board_objects[action.target].teaching_step_id
+                    != clause.lesson_step_id
+                ):
+                    _fail(
+                        "structured_action_ownership_invalid",
+                        bound.clause_id,
+                        "Board action crosses teaching-step ownership.",
+                    )
+                events.append(
+                    (
+                        clause_positions[bound.clause_id],
+                        phase_order[phase_name],
+                        action_index,
+                        bound.clause_id,
+                        action,
+                        response.response_id if response is not None else None,
+                    )
+                )
+
+    if written_targets != set(board_objects):
+        _fail(
+            "structured_board_object_invalid",
+            "performance_score",
+            "Every structured board object must be written exactly through the score.",
+        )
+
+    main_events = [item for item in events if item[5] is None]
+    for step_id, step in steps.items():
+        step_clauses = [
+            clause for clause in script.clauses
+            if clause.lesson_step_id == step_id
+        ]
+        if not step_clauses:
+            _fail(
+                "structured_step_lifecycle_invalid",
+                step_id,
+                "Every teaching step requires main script clauses.",
+            )
+        step_events = [
+            item for item in main_events
+            if item[4].teaching_step_id == step_id
+        ]
+        reveals = [
+            item for item in step_events
+            if item[4].type == "reveal_step_header"
+        ]
+        completes = [
+            item for item in step_events
+            if item[4].type == "complete_step"
+        ]
+        writes = [item for item in step_events if item[4].type == "write"]
+        scrolls = [
+            item for item in step_events
+            if item[4].type == "scroll_to_step"
+        ]
+        if len(reveals) != 1 or len(completes) != 1 or not writes:
+            _fail(
+                "structured_step_lifecycle_invalid",
+                step_id,
+                "Each step requires one reveal, one completion, and a board write.",
+            )
+        reveal = reveals[0]
+        complete = completes[0]
+        if reveal[4].step_label != step.directory_label:
+            _fail(
+                "structured_step_label_invalid",
+                step_id,
+                "Step header label must match the teaching progression exactly.",
+            )
+        question_positions = [
+            clause_positions[clause.clause_id]
+            for clause in step_clauses
+            if clause.pedagogical_function == "question"
+        ]
+        if not question_positions:
+            _fail(
+                "structured_step_lifecycle_invalid",
+                step_id,
+                "Step header requires an authored guiding-question clause.",
+            )
+        question_position = question_positions[0]
+        if reveal[:3] <= (question_position, 1, -1):
+            _fail(
+                "structured_step_lifecycle_invalid",
+                step_id,
+                "Step header must follow its guiding question.",
+            )
+        first_write = min(writes, key=lambda item: item[:3])
+        activation_scrolls = [
+            item for item in scrolls
+            if reveal[:3] < item[:3] <= first_write[:3]
+        ]
+        if not activation_scrolls or reveal[:3] >= first_write[:3]:
+            _fail(
+                "structured_step_lifecycle_invalid",
+                step_id,
+                "Step activation must reveal, scroll, then write.",
+            )
+        last_clause_id = step_clauses[-1].clause_id
+        if (
+            complete[3] != last_clause_id
+            or complete[1] != phase_order["end_actions"]
+            or any(complete[:3] <= item[:3] for item in writes)
+        ):
+            _fail(
+                "structured_step_lifecycle_invalid",
+                step_id,
+                "Step completion must follow its final main-clause write.",
+            )
+
+    events_by_response = {
+        response.response_id: [
+            item for item in events if item[5] == response.response_id
+        ]
+        for response in script.response_scripts
+    }
+    for response in script.response_scripts:
+        response_events = events_by_response[response.response_id]
+        support_events = [
+            item
+            for item in response_events
+            if item[4].type in {
+                "open_supporting_explanation",
+                "close_supporting_explanation",
+            }
+            or (
+                item[4].type == "write"
+                and item[4].board_role == "support"
+            )
+        ]
+        if response.classification == "correct":
+            if support_events:
+                _fail(
+                    "structured_support_lifecycle_invalid",
+                    response.response_id,
+                    "Correct responses cannot open worked support.",
+                )
+            continue
+        ordered = sorted(response_events, key=lambda item: item[:3])
+        opens = [
+            item for item in ordered
+            if item[4].type == "open_supporting_explanation"
+        ]
+        closes = [
+            item for item in ordered
+            if item[4].type == "close_supporting_explanation"
+        ]
+        support_writes = [
+            item for item in ordered
+            if item[4].type == "write" and item[4].board_role == "support"
+        ]
+        scrolls = [
+            item for item in ordered if item[4].type == "scroll_to_step"
+        ]
+        if (
+            len(opens) != 1
+            or len(closes) != 1
+            or not support_writes
+            or not ordered
+            or ordered[0][4].type != "open_supporting_explanation"
+            or opens[0][:3] >= support_writes[0][:3]
+            or support_writes[-1][:3] >= closes[0][:3]
+            or not any(item[:3] > closes[0][:3] for item in scrolls)
+            or opens[0][4].target != closes[0][4].target
+        ):
+            _fail(
+                "structured_support_lifecycle_invalid",
+                response.response_id,
+                "Incorrect response support must open, write, close, and restore scroll.",
+            )
+
+
+def validate_performance_score(
+    score: PerformanceScore,
+    problem_targets: ProblemTargets,
+    progression: Optional[Union[TeachingProgression, TeachingScript]] = None,
+    script: Optional[Union[TeachingScript, InteractionPlan]] = None,
+    plan: Optional[InteractionPlan] = None,
+) -> None:
+    if progression is None:
+        current_progression = None
+        current_script = script
+        current_plan = plan
+    elif type(progression) is TeachingScript and type(script) is InteractionPlan:
+        current_progression = None
+        current_script = progression
+        current_plan = script
+        if plan is not None:
+            raise TypeError("legacy performance validation accepts four arguments")
+    else:
+        current_progression = progression
+        current_script = script
+        current_plan = plan
+    _require_exact(current_script, TeachingScript, "script")
+    _require_exact(current_plan, InteractionPlan, "plan")
+    if current_progression is None:
+        main_clause_ids = {item.clause_id for item in current_script.clauses}
+        response_clause_ids = {
+            clause.clause_id
+            for response in current_script.response_scripts
+            for clause in response.clauses
+        }
+        if any(
+            clause_id in response_clause_ids
+            for cue in score.cues
+            for clause_id in cue.clause_ids
+        ):
+            legacy_payload = score.model_dump(mode="python")
+            legacy_payload["cues"] = [
+                cue.model_dump(mode="python")
+                for cue in score.cues
+                if all(
+                    clause_id in main_clause_ids
+                    for clause_id in cue.clause_ids
+                )
+            ]
+            score = PerformanceScore.model_validate(legacy_payload)
+        _validate_legacy_performance_score(
+            score,
+            problem_targets,
+            current_script,
+            current_plan,
+        )
+        return
+    _require_exact(current_progression, TeachingProgression, "progression")
+    main_clause_ids = {item.clause_id for item in current_script.clauses}
+    main_cues = [
+        cue
+        for cue in score.cues
+        if all(item in main_clause_ids for item in cue.clause_ids)
+    ]
+    main_payload = score.model_dump(mode="python")
+    main_payload["cues"] = [
+        cue.model_dump(mode="python") for cue in main_cues
+    ]
+    _validate_legacy_performance_score(
+        PerformanceScore.model_validate(main_payload),
+        problem_targets,
+        current_script,
+        current_plan,
+    )
+    _validate_structured_performance_score(
+        score,
+        current_progression,
+        current_script,
+    )
 
 
 def validate_simulation_report(
@@ -2205,6 +2710,7 @@ def validate_prepared_lesson(
     validate_performance_score(
         prepared.performance_score,
         problem_targets,
+        prepared.teaching_progression,
         prepared.teaching_script,
         prepared.interaction_plan,
     )

@@ -19,7 +19,6 @@ from app.teaching_route import (
     _freeze_route,
 )
 from tests.test_preparation_validation import (
-    overlay_score_payload,
     prepared_payload,
     route,
 )
@@ -55,6 +54,7 @@ def body_interaction_payload(with_overlay=False):
             **clauses[clause_index],
             "clause_id": "clause-3-resume",
             "spoken_text": "用刚才的判断继续处理这一步。",
+            "pedagogical_function": "transition",
             "must_teach_refs": [],
         },
     )
@@ -75,12 +75,30 @@ def body_interaction_payload(with_overlay=False):
                     "action": {
                         "surface": "board",
                         "type": "focus",
-                        "target": "board-3",
+                        "target": "board-clause-3",
+                        "teaching_step_id": "teaching-step-3",
+                    },
+                }
+            ],
+            "end_actions": [
+                {
+                    "clause_id": "clause-3-resume",
+                    "action": {
+                        "surface": "board",
+                        "type": "complete_step",
+                        "target": "teaching-step-3",
+                        "teaching_step_id": "teaching-step-3",
                     },
                 }
             ],
         },
     )
+    original_step_cue = cues[cue_index]
+    original_step_cue["end_actions"] = [
+        item
+        for item in original_step_cue["end_actions"]
+        if item["action"]["type"] != "complete_step"
+    ]
     interaction = payload["interaction_plan"]["interactions"][0]
     interaction.update(
         episode_id="episode-3",
@@ -99,14 +117,49 @@ def body_interaction_payload(with_overlay=False):
             for clause in response["clauses"]:
                 clause["episode_id"] = "episode-3"
                 clause["lesson_step_id"] = "teaching-step-3"
+    response_clause_ids = {
+        clause["clause_id"]
+        for response in payload["teaching_script"]["response_scripts"]
+        for clause in response["clauses"]
+    }
+    for cue in payload["performance_score"]["cues"]:
+        if not response_clause_ids.intersection(cue["clause_ids"]):
+            continue
+        for phase in ("lead_actions", "start_actions", "end_actions"):
+            for bound in cue.get(phase, []):
+                action = bound["action"]
+                action["teaching_step_id"] = "teaching-step-3"
+                if action["type"] == "scroll_to_step":
+                    action["target"] = "teaching-step-3"
+    for board_object in payload["performance_score"]["board_objects"]:
+        if board_object.get("line_role") == "support":
+            board_object["teaching_step_id"] = "teaching-step-3"
     if with_overlay:
-        payload["performance_score"] = overlay_score_payload()
-        resume_cue = cues[cue_index + 1]
-        resume_cue["start_actions"] = []
-        payload["performance_score"]["cues"].insert(
-            cue_index + 1,
-            resume_cue,
-        )
+        score = payload["performance_score"]
+        next(
+            item
+            for item in score["board_objects"]
+            if item["board_object_id"] == "board-clause-3"
+        )["layer"] = "comparison"
+        score["overlay_transitions"] = [
+            {
+                "transition_id": "enter-comparison",
+                "after_clause_id": "clause-2-resume",
+                "action": "enter",
+                "layer": "comparison",
+            },
+            {
+                "transition_id": "return-comparison",
+                "after_clause_id": "clause-3",
+                "action": "return",
+                "layer": "comparison",
+            },
+        ]
+        next(
+            cue
+            for cue in score["cues"]
+            if cue["clause_ids"] == ["clause-3-resume"]
+        )["start_actions"] = []
     return payload
 
 
@@ -116,13 +169,13 @@ def later_clause_action_payload(phase):
     clause_index = next(
         index
         for index, clause in enumerate(clauses)
-        if clause["clause_id"] == "clause-3"
+        if clause["clause_id"] == "clause-2-resume"
     )
     clauses.insert(
         clause_index,
         {
             **clauses[clause_index],
-            "clause_id": "clause-3-prelude",
+            "clause_id": "clause-2-prelude",
             "spoken_text": "先停一下，观察我们已经得到的信息。",
             "must_teach_refs": [],
         },
@@ -130,69 +183,70 @@ def later_clause_action_payload(phase):
     cue = next(
         cue
         for cue in payload["performance_score"]["cues"]
-        if cue["clause_ids"] == ["clause-3"]
+        if cue["clause_ids"] == ["clause-2-resume"]
     )
-    cue["clause_ids"].insert(0, "clause-3-prelude")
-    cue["lead_actions"] = []
-    cue["start_actions"] = []
-    cue["end_actions"] = []
+    cue["clause_ids"].insert(0, "clause-2-prelude")
+    step_id = "teaching-step-2"
+    target = "board-clause-2"
     if phase == "start_actions":
-        cue[phase] = [
+        cue.setdefault(phase, []).append(
             {
-                "clause_id": "clause-3",
-                "action": {
-                    "surface": "board",
-                    "type": "write",
-                    "target": "board-3",
-                    "content": payload["performance_score"][
-                        "board_objects"
-                    ][2]["content"],
-                },
-            }
-        ]
-    elif phase == "lead_actions":
-        cue[phase] = [
-            {
-                "clause_id": "clause-3",
+                "clause_id": "clause-2-resume",
                 "action": {
                     "surface": "board",
                     "type": "focus",
-                    "target": "board-2",
+                    "target": target,
+                    "teaching_step_id": step_id,
                 },
             }
-        ]
-        cue["end_actions"] = [
+        )
+    elif phase == "lead_actions":
+        cue.setdefault(phase, []).append(
             {
-                "clause_id": "clause-3",
+                "clause_id": "clause-2-resume",
+                "action": {
+                    "surface": "board",
+                    "type": "focus",
+                    "target": target,
+                    "teaching_step_id": step_id,
+                },
+            }
+        )
+        cue.setdefault("end_actions", []).append(
+            {
+                "clause_id": "clause-2-resume",
                 "action": {
                     "surface": "board",
                     "type": "clear_focus",
-                    "target": "board-2",
+                    "target": target,
+                    "teaching_step_id": step_id,
                 },
             }
-        ]
+        )
     else:
-        cue["lead_actions"] = [
+        cue.setdefault("lead_actions", []).append(
             {
-                "clause_id": "clause-3",
+                "clause_id": "clause-2-resume",
                 "action": {
                     "surface": "board",
                     "type": "emphasize",
-                    "target": "board-2",
+                    "target": target,
                     "emphasis_style": "underline",
+                    "teaching_step_id": step_id,
                 },
             }
-        ]
-        cue[phase] = [
+        )
+        cue.setdefault(phase, []).append(
             {
-                "clause_id": "clause-3",
+                "clause_id": "clause-2-resume",
                 "action": {
                     "surface": "board",
                     "type": "fade",
-                    "target": "board-2",
+                    "target": target,
+                    "teaching_step_id": step_id,
                 },
             }
-        ]
+        )
     return payload
 
 
@@ -278,6 +332,14 @@ def test_adapter_unwraps_clause_actions_and_keeps_audio_empty():
             for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
         ]
         for cue in prepared.performance_score.cues
+        if all(
+            clause_id
+            in {
+                clause.clause_id
+                for clause in prepared.teaching_script.clauses
+            }
+            for clause_id in cue.clause_ids
+        )
     }
     runtime_cues = {
         cue.cue_id: cue
@@ -323,13 +385,13 @@ def test_later_clause_actions_keep_their_own_runtime_timing_boundary(phase):
     records = [
         item
         for item in run.cue_provenance
-        if item.clause_id in {"clause-3-prelude", "clause-3"}
+        if item.clause_id in {"clause-2-prelude", "clause-2-resume"}
     ]
     prelude = next(
-        item for item in records if item.clause_id == "clause-3-prelude"
+        item for item in records if item.clause_id == "clause-2-prelude"
     )
     action_clause = next(
-        item for item in records if item.clause_id == "clause-3"
+        item for item in records if item.clause_id == "clause-2-resume"
     )
 
     assert prelude.runtime_cue_id != action_clause.runtime_cue_id
@@ -379,6 +441,11 @@ def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
         response.option_id: response
         for response in prepared.teaching_script.response_scripts
     }
+    performance_by_clause = {
+        clause_id: cue
+        for cue in prepared.performance_score.cues
+        for clause_id in cue.clause_ids
+    }
     for option in runtime.options:
         response = response_by_option[option.option_id]
         assert [cue.cue_id for cue in option.support_cues] == [
@@ -391,12 +458,23 @@ def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
             clause.spoken_text for clause in response.clauses
         ]
         assert all(cue.audio_url is None for cue in option.support_cues)
-        assert all(
-            cue.lead_actions == []
-            and cue.start_actions == []
-            and cue.end_actions == []
-            for cue in option.support_cues
-        )
+        for cue, clause in zip(option.support_cues, response.clauses):
+            performance_cue = performance_by_clause[clause.clause_id]
+            assert cue.lead_actions == [
+                item.action
+                for item in performance_cue.lead_actions
+                if item.clause_id == clause.clause_id
+            ]
+            assert cue.start_actions == [
+                item.action
+                for item in performance_cue.start_actions
+                if item.clause_id == clause.clause_id
+            ]
+            assert cue.end_actions == [
+                item.action
+                for item in performance_cue.end_actions
+                if item.clause_id == clause.clause_id
+            ]
     assert all(
         "canonical_answer" not in option.model_dump()
         and "correct" not in option.model_dump()
@@ -544,6 +622,16 @@ def test_adapter_allows_zero_interactions_and_merges_adjacent_free_episodes():
     payload = prepared_payload()
     payload["interaction_plan"]["interactions"] = []
     payload["teaching_script"]["response_scripts"] = []
+    payload["performance_score"]["cues"] = [
+        cue
+        for cue in payload["performance_score"]["cues"]
+        if not cue["clause_ids"][0].startswith("response-clause-")
+    ]
+    payload["performance_score"]["board_objects"] = [
+        item
+        for item in payload["performance_score"]["board_objects"]
+        if item.get("line_role") != "support"
+    ]
     prepared = PreparedLesson.model_validate(payload)
 
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())
@@ -600,6 +688,7 @@ def test_private_prepared_artifacts_reconstruct_episode_to_runtime_cues():
         episode.episode_id: [
             cue.cue_id
             for cue in prepared.performance_score.cues
+            if all(clause_id in clause_episode for clause_id in cue.clause_ids)
             if any(
                 clause_episode[clause_id] == episode.episode_id
                 for clause_id in cue.clause_ids
@@ -630,7 +719,26 @@ def test_adapter_rejects_a_prepared_lesson_that_is_not_approved():
 
 def test_overlay_enters_for_one_teaching_point_then_returns_to_base():
     payload = prepared_payload()
-    payload["performance_score"] = overlay_score_payload()
+    score = payload["performance_score"]
+    next(
+        item
+        for item in score["board_objects"]
+        if item["board_object_id"] == "board-clause-3"
+    )["layer"] = "comparison"
+    score["overlay_transitions"] = [
+        {
+            "transition_id": "enter-comparison",
+            "after_clause_id": "clause-2-resume",
+            "action": "enter",
+            "layer": "comparison",
+        },
+        {
+            "transition_id": "return-comparison",
+            "after_clause_id": "clause-3",
+            "action": "return",
+            "layer": "comparison",
+        },
+    ]
     prepared = PreparedLesson.model_validate(payload)
 
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())
@@ -665,9 +773,11 @@ def test_adapter_carries_authored_base_layer_for_fixed_method_clause():
 
 def test_adapter_carries_comparison_layer_for_fixed_summary_clause():
     payload = prepared_payload()
-    payload["performance_score"]["board_objects"][6]["layer"] = (
-        "comparison"
-    )
+    next(
+        item
+        for item in payload["performance_score"]["board_objects"]
+        if item["board_object_id"] == "board-clause-7"
+    )["layer"] = "comparison"
     payload["performance_score"]["overlay_transitions"] = [
         {
             "transition_id": "enter-summary-comparison",
@@ -854,15 +964,38 @@ def test_prepared_draft_factory_derives_records_without_mutable_alias():
 
 
 def grouped_provenance_run():
-    payload = later_clause_action_payload("start_actions")
-    cue = next(
-        cue
-        for cue in payload["performance_score"]["cues"]
-        if cue["clause_ids"] == ["clause-3-prelude", "clause-3"]
+    payload = prepared_payload()
+    clauses = payload["teaching_script"]["clauses"]
+    resume_index = next(
+        index
+        for index, clause in enumerate(clauses)
+        if clause["clause_id"] == "clause-2-resume"
     )
-    cue["lead_actions"] = []
-    cue["start_actions"] = []
-    cue["end_actions"] = []
+    grouped_clauses = [
+        {
+            **clauses[resume_index],
+            "clause_id": "clause-2-grouped-%d" % index,
+            "spoken_text": "我们补充观察当前条件。",
+            "must_teach_refs": [],
+        }
+        for index in range(2)
+    ]
+    clauses[resume_index:resume_index] = grouped_clauses
+    cues = payload["performance_score"]["cues"]
+    resume_cue_index = next(
+        index
+        for index, cue in enumerate(cues)
+        if cue["clause_ids"] == ["clause-2-resume"]
+    )
+    cues.insert(
+        resume_cue_index,
+        {
+            "cue_id": "cue-clause-2-grouped",
+            "clause_ids": [
+                clause["clause_id"] for clause in grouped_clauses
+            ],
+        },
+    )
     prepared = PreparedLesson.model_validate(payload)
     run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
         source_problem(), prepared, route()
@@ -905,7 +1038,7 @@ def test_prepared_draft_run_direct_constructor_cannot_inject_provenance(
         first_index = next(
             index
             for index, item in enumerate(records)
-            if item.clause_id == "clause-3-prelude"
+            if item.clause_id == "clause-2-grouped-0"
         )
         second_index = first_index + 1
         first = records[first_index]
@@ -1078,8 +1211,35 @@ def test_adapter_splits_more_than_five_adjacent_free_cues_into_moments():
     payload = prepared_payload()
     payload["interaction_plan"]["interactions"] = []
     payload["teaching_script"]["response_scripts"] = []
+    payload["performance_score"]["cues"] = [
+        cue
+        for cue in payload["performance_score"]["cues"]
+        if not cue["clause_ids"][0].startswith("response-clause-")
+    ]
+    payload["performance_score"]["board_objects"] = [
+        item
+        for item in payload["performance_score"]["board_objects"]
+        if item.get("line_role") != "support"
+    ]
     closing = payload["teaching_script"]["clauses"].pop()
-    closing_cue = payload["performance_score"]["cues"].pop()
+    closing_cue_index = next(
+        index
+        for index, cue in enumerate(payload["performance_score"]["cues"])
+        if cue["clause_ids"] == [closing["clause_id"]]
+    )
+    closing_cue = payload["performance_score"]["cues"].pop(
+        closing_cue_index
+    )
+    clause_six_cue = next(
+        cue
+        for cue in payload["performance_score"]["cues"]
+        if cue["clause_ids"] == ["clause-6"]
+    )
+    clause_six_cue["end_actions"] = [
+        item
+        for item in clause_six_cue["end_actions"]
+        if item["action"]["type"] != "complete_step"
+    ]
     for index in range(2):
         clause_id = "clause-6-extra-%d" % index
         payload["teaching_script"]["clauses"].append(
@@ -1088,24 +1248,26 @@ def test_adapter_splits_more_than_five_adjacent_free_cues_into_moments():
                 "clause_id": clause_id,
                 "must_teach_refs": [],
                 "spoken_text": "我们再检查一次当前关系。",
+                "pedagogical_function": "review",
             }
         )
-        payload["performance_score"]["cues"].append(
-            {
-                "cue_id": "cue-%s" % clause_id,
-                "clause_ids": [clause_id],
-                "start_actions": [
-                    {
-                        "clause_id": clause_id,
-                        "action": {
-                            "surface": "board",
-                            "type": "focus",
-                            "target": "board-6",
-                        },
-                    }
-                ],
-            }
-        )
+        extra_cue = {
+            "cue_id": "cue-%s" % clause_id,
+            "clause_ids": [clause_id],
+        }
+        if index == 1:
+            extra_cue["end_actions"] = [
+                {
+                    "clause_id": clause_id,
+                    "action": {
+                        "surface": "board",
+                        "type": "complete_step",
+                        "target": "teaching-step-6",
+                        "teaching_step_id": "teaching-step-6",
+                    },
+                }
+            ]
+        payload["performance_score"]["cues"].append(extra_cue)
     payload["teaching_script"]["clauses"].append(closing)
     payload["performance_score"]["cues"].append(closing_cue)
     prepared = PreparedLesson.model_validate(payload)

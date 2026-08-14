@@ -952,3 +952,21 @@ def test_full_generation_record_with_seven_role_calls_validates():
     })
     assert len(record.role_calls) == 7
     assert record.cue_provenance[0].clause_id == "open-1"
+
+
+def test_performance_board_object_keeps_optional_step_role_compatibility():
+    legacy = preparation_models.PerformanceBoardObject(
+        board_object_id="legacy-line",
+        content="旧板书",
+    )
+    structured = preparation_models.PerformanceBoardObject(
+        board_object_id="step-line",
+        content="根代入后等式成立",
+        teaching_step_id="teaching-step-1",
+        line_role="knowledge_anchor",
+    )
+
+    assert legacy.teaching_step_id is None
+    assert legacy.line_role is None
+    assert structured.teaching_step_id == "teaching-step-1"
+    assert structured.line_role == "knowledge_anchor"

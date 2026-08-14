@@ -147,10 +147,9 @@ class PreparedDraftRun:
         original_cue_by_clause = {}
         for cue in prepared.performance_score.cues:
             for clause_id in cue.clause_ids:
-                if (
-                    clause_id not in clause_ids
-                    or clause_id in original_cue_by_clause
-                ):
+                if clause_id not in clause_ids:
+                    continue
+                if clause_id in original_cue_by_clause:
                     raise PreparedLessonAdaptationError(
                         "performance cue membership must be unique and exact"
                     )
@@ -271,8 +270,18 @@ def _narrative_cue_part(
 ) -> NarrativeSyncCue:
     clauses = {item.clause_id: item for item in script.clauses}
     included = set(clause_ids)
+    step_ids = {clauses[clause_id].lesson_step_id for clause_id in clause_ids}
+    if len(step_ids) != 1 or None in step_ids:
+        raise PreparedLessonAdaptationError(
+            "runtime cue clauses must share one teaching step"
+        )
     return NarrativeSyncCue(
         cue_id=cue_id,
+        teaching_step_id=next(iter(step_ids)),
+        display_text="".join(
+            clauses[clause_id].display_text or ""
+            for clause_id in clause_ids
+        ),
         spoken_text="".join(
             clauses[clause_id].spoken_text for clause_id in clause_ids
         ),
@@ -297,6 +306,7 @@ def _narrative_cue_part(
 def _runtime_interaction(
     planned: PlannedInteraction,
     script: TeachingScript,
+    performance_cues_by_clause: dict,
 ) -> Interaction:
     responses = {
         response.option_id: response
@@ -317,6 +327,27 @@ def _runtime_interaction(
                         cue_id=clause.clause_id,
                         display_text=clause.display_text,
                         spoken_text=clause.spoken_text,
+                        lead_actions=[
+                            item.action.model_copy(deep=True)
+                            for item in performance_cues_by_clause[
+                                clause.clause_id
+                            ].lead_actions
+                            if item.clause_id == clause.clause_id
+                        ],
+                        start_actions=[
+                            item.action.model_copy(deep=True)
+                            for item in performance_cues_by_clause[
+                                clause.clause_id
+                            ].start_actions
+                            if item.clause_id == clause.clause_id
+                        ],
+                        end_actions=[
+                            item.action.model_copy(deep=True)
+                            for item in performance_cues_by_clause[
+                                clause.clause_id
+                            ].end_actions
+                            if item.clause_id == clause.clause_id
+                        ],
                     )
                     for clause in responses[option.option_id].clauses
                 ],
@@ -354,6 +385,11 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
     layer_by_clause = _layer_by_clause(prepared)
     section_cues = {"opening": [], "method": [], "body": [], "summary": []}
     interactions_after_clause = {}
+    performance_cues_by_clause = {
+        clause_id: cue
+        for cue in prepared.performance_score.cues
+        for clause_id in cue.clause_ids
+    }
     for item in prepared.interaction_plan.interactions:
         boundary_clause_id = None
         if item.teaching_step_id is not None:
@@ -373,6 +409,7 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         interactions_after_clause[boundary_clause_id] = _runtime_interaction(
             item,
             script,
+            performance_cues_by_clause,
         )
     interaction_episode_ids = {
         item.episode_id for item in prepared.interaction_plan.interactions
@@ -395,6 +432,8 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
         return "body"
 
     for score_index, score_cue in enumerate(prepared.performance_score.cues):
+        if any(clause_id not in clauses for clause_id in score_cue.clause_ids):
+            continue
         parts = []
         current = []
         current_key = None
@@ -412,12 +451,18 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
             key = (
                 clause_section(clause_id),
                 clause.episode_id,
+                clause.lesson_step_id,
                 layer_by_clause[clause_id],
             )
             spoken_length = len(clause.spoken_text)
+            display_length = len(clause.display_text or "")
             if current and (
                 key != current_key
                 or current_length + spoken_length > 90
+                or sum(
+                    len(clauses[item].display_text or "")
+                    for item in current
+                ) + display_length > 500
                 or clause_id in action_clause_ids
             ):
                 parts.append(tuple(current))

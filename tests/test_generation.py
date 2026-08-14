@@ -1207,10 +1207,15 @@ def test_post_compile_integrity_rejects_any_runtime_semantic_mutation(
     mutation,
 ):
     score = downstream_score_payload()
-    score["board_objects"] = [
-        {"board_object_id": "target-relation", "content": "m-n"}
-    ]
-    score["cues"][0]["start_actions"] = [
+    score["board_objects"].append(
+        {
+            "board_object_id": "target-relation",
+            "content": "m-n",
+            "teaching_step_id": "teaching-step-1",
+            "line_role": "working",
+        }
+    )
+    score["cues"][0]["end_actions"].append(
         {
             "clause_id": "clause-open",
             "action": {
@@ -1218,9 +1223,11 @@ def test_post_compile_integrity_rejects_any_runtime_semantic_mutation(
                 "type": "write",
                 "target": "target-relation",
                 "content": "m-n",
+                "teaching_step_id": "teaching-step-1",
+                "board_role": "working",
             },
         }
-    ]
+    )
     client = _approved_preparation_client(performance=score)
     service = LessonGenerationService(
         client,
