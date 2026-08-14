@@ -358,6 +358,11 @@ def test_script_teacher_requires_natural_adaptive_screen_and_spoken_language():
         "spoken_text",
         "自然口播",
         "运算词",
+        "错误分支",
+        "misconception",
+        "incorrect_feedback_by_option",
+        "直接讲清",
+        "不能只是更长",
     ):
         assert phrase in system
 

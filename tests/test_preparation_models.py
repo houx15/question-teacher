@@ -482,6 +482,37 @@ def test_teaching_script_defaults_response_scripts_to_empty_and_accepts_typed_re
     assert TeachingScript.model_validate(payload).response_scripts[0].depth == "worked"
 
 
+def test_teaching_script_rejects_duplicate_response_ids_across_distinct_bindings():
+    payload = teaching_script()
+    clause = script_clause("response-clause")
+    clause.update(
+        lesson_step_id="teaching-step-1",
+        display_text="直接说明误区与纠正动作",
+    )
+    response = {
+        "response_id": "duplicate-response",
+        "interaction_id": "interaction-1",
+        "option_id": "option-a",
+        "classification": "correct",
+        "error_code": None,
+        "depth": "brief",
+        "clauses": [clause],
+    }
+    payload["response_scripts"] = [
+        response,
+        {
+            **response,
+            "option_id": "option-b",
+            "classification": "incorrect",
+            "depth": "conceptual",
+            "clauses": [dict(clause, clause_id="response-clause-b")],
+        },
+    ]
+
+    with pytest.raises(ValidationError, match="response ids"):
+        TeachingScript.model_validate(payload)
+
+
 def test_explanation_depth_alias_exposes_exact_supported_vocabulary():
     assert ExplanationDepth == Literal["brief", "conceptual", "worked"]
 

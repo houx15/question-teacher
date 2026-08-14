@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
+from pydantic import ValidationError
+
 from app.math_content import (
     contains_bounded_answer_token,
     contains_cross_artifact_math_identity,
@@ -18,7 +20,11 @@ from app.math_content import (
     normalize_grounded_choice_option_label,
     normalize_cross_artifact_math_identity,
 )
-from app.math_speech import MathSpeechError, validate_display_spoken_alignment
+from app.math_speech import (
+    MathSpeechError,
+    contains_deterministic_math_speech,
+    validate_display_spoken_alignment,
+)
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.problem_focus import MAX_PROBLEM_FOCUS_TARGETS
 from app.preparation_models import (
@@ -303,7 +309,17 @@ def validate_teaching_script(
     progression: TeachingProgression,
     interaction_plan: InteractionPlan,
 ) -> None:
-    _require_exact(script, TeachingScript, "script")
+    try:
+        _require_exact(script, TeachingScript, "script")
+        script = TeachingScript.model_validate(
+            script.model_dump(mode="python")
+        )
+    except (ValidationError, TypeError):
+        _fail(
+            "teaching_script_content_invalid",
+            "teaching_script",
+            "Teaching script content failed defensive model validation.",
+        )
     _require_exact(trajectory, ReasoningTrajectory, "trajectory")
     _require_exact(progression, TeachingProgression, "progression")
     _require_exact(interaction_plan, InteractionPlan, "interaction_plan")
@@ -483,6 +499,25 @@ def _response_information(response: object) -> Tuple[int, int]:
     return len(response.clauses), effective_characters
 
 
+def _contains_private_canonical_answer(
+    visible: str,
+    canonical_answer: str,
+) -> bool:
+    if contains_bounded_answer_token(visible, canonical_answer):
+        return True
+    compact_visible = re.sub(r"\s+", "", visible)
+    compact_canonical = re.sub(r"\s+", "", canonical_answer)
+    if contains_bounded_answer_token(
+        compact_visible,
+        compact_canonical,
+    ):
+        return True
+    return contains_deterministic_math_speech(
+        canonical_answer,
+        visible,
+    )
+
+
 def _validate_response_scripts(
     script: TeachingScript,
     interaction_plan: InteractionPlan,
@@ -554,6 +589,13 @@ def _validate_response_scripts(
                     "Incorrect responses require conceptual or worked remediation.",
                 )
 
+            if not is_correct and option.misconception is None:
+                _fail(
+                    "response_misconception_missing",
+                    response.response_id,
+                    "Current incorrect options require a misconception anchor.",
+                )
+
             expected_step_id = episode_steps.get(interaction.episode_id)
             if expected_step_id is None:
                 _fail(
@@ -590,8 +632,26 @@ def _validate_response_scripts(
                     "%s|%s" % (clause.display_text or "", clause.spoken_text)
                     for clause in response.clauses
                 )
+                normalized_visible = normalize_answer_leak_text(visible)
+                misconception_anchor = normalize_answer_leak_text(
+                    option.misconception or ""
+                )
+                correction_anchor = normalize_answer_leak_text(
+                    interaction.incorrect_feedback_by_option[option.option_id]
+                )
+                if (
+                    not misconception_anchor
+                    or not correction_anchor
+                    or misconception_anchor not in normalized_visible
+                    or correction_anchor not in normalized_visible
+                ):
+                    _fail(
+                        "response_semantic_anchor_missing",
+                        response.response_id,
+                        "Incorrect response must directly express its misconception and correction anchors.",
+                    )
                 if any(
-                    contains_bounded_answer_token(
+                    _contains_private_canonical_answer(
                         visible,
                         private_option.canonical_answer,
                     )

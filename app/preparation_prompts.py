@@ -119,6 +119,8 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
         "不得删除 must_teach 中的任何教学要点。",
         "主线讲解与每个 option 的 response language 都要完整、连贯；"
         "用变化转场和短问题推进，不得泛用‘首先、其次、然后’的流水链。",
+        "每个错误分支必须自然地直接讲清该 option 的 misconception "
+        "和 incorrect_feedback_by_option 纠正动作；纠错内容不能只是更长。",
         "display_text 只写屏幕上要看的内容；spoken_text 只写自然口播，"
         "不得含数学标记，屏幕公式必须在口播中读出减、乘、等于等运算词。",
         "所有学生可见字段不得出现内部字段名。method_name 最多 8 字，"

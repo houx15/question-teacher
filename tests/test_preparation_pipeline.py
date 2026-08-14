@@ -302,12 +302,24 @@ def downstream_response_scripts(interactions):
                             "display_text": (
                                 "判断正确"
                                 if correct
-                                else "回到当前条件检查这个判断"
+                                else "%s；%s"
+                                % (
+                                    option["misconception"],
+                                    interaction[
+                                        "incorrect_feedback_by_option"
+                                    ][option["option_id"]],
+                                )
                             ),
                             "spoken_text": (
                                 "对。"
                                 if correct
-                                else "这个选择还没有完成当前数学步骤，回到已知条件再检查一次。"
+                                else "这个选择的问题是%s，%s再回到当前条件检查一次。"
+                                % (
+                                    option["misconception"],
+                                    interaction[
+                                        "incorrect_feedback_by_option"
+                                    ][option["option_id"]],
+                                )
                             ),
                             "learner_gain": (
                                 "确认判断" if correct else "理解错误原因"

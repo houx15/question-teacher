@@ -97,3 +97,29 @@ def test_display_spoken_alignment_requires_every_deterministic_reading():
             "所以 m 减 n 等于二分之一。",
         )
     assert captured.value.code == "display_spoken_math_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("display", "spoken"),
+    (
+        ("$m$ 再看 $n$", "先说 n，再说 m。"),
+        ("$m$ 与 $m$", "只说一次 m。"),
+        ("$m$", "math 方法"),
+        ("$1$", "结果是十一。"),
+        ("$1$ 与 $11$", "结果是十一。"),
+    ),
+)
+def test_display_spoken_alignment_rejects_reordered_overlapping_or_partial_tokens(
+    display,
+    spoken,
+):
+    with pytest.raises(MathSpeechError) as captured:
+        validate_display_spoken_alignment(display, spoken)
+    assert captured.value.code == "display_spoken_math_mismatch"
+
+
+def test_display_spoken_alignment_keeps_natural_sentence_matches():
+    validate_display_spoken_alignment(
+        "$m$ 与 $1$",
+        "变量 m 的当前取值是一。",
+    )

@@ -327,12 +327,20 @@ def script_payload():
                         "display_text": (
                             "判断正确"
                             if option_id == "option-a"
-                            else "回到根的定义再判断当前选择"
+                            else (
+                                "偏离目标；目标只是关系"
+                                if option_id == "option-b"
+                                else "未用已知；先用根条件"
+                            )
                         ),
                         "spoken_text": (
                             "对。"
                             if option_id == "option-a"
-                            else "这个选择还没有用上根的定义，先回到已知条件再判断。"
+                            else (
+                                "这个选择偏离目标，目标只是关系，再回到根条件判断。"
+                                if option_id == "option-b"
+                                else "这个选择未用已知，先用根条件，再继续判断。"
+                            )
                         ),
                         "learner_gain": (
                             "确认判断" if option_id == "option-a" else "理解错误原因"
@@ -517,6 +525,25 @@ def validate_current_script(script, trajectory):
         TeachingProgression.model_validate(progression_payload()),
         InteractionPlan.model_validate(interaction_plan_payload()),
     )
+
+
+def semantically_anchored_script_payload():
+    payload = script_payload()
+    anchors = {
+        "option-b": ("偏离目标", "目标只是关系"),
+        "option-c": ("未用已知", "先用根条件"),
+    }
+    for response in payload["response_scripts"]:
+        if response["option_id"] not in anchors:
+            continue
+        misconception, correction = anchors[response["option_id"]]
+        clause = response["clauses"][0]
+        clause["display_text"] = "%s；%s" % (misconception, correction)
+        clause["spoken_text"] = (
+            "这个选择的问题是%s，%s，再继续判断。"
+            % (misconception, correction)
+        )
+    return payload
 
 
 def test_current_rubric_prepared_lesson_requires_progression_and_seven_history_items():
@@ -1036,13 +1063,66 @@ def test_incorrect_response_must_carry_strictly_more_remediation_than_correct():
     correct_clause["display_text"] = "请回到根的定义检查这一步的条件"
     correct_clause["spoken_text"] = "请回到根的定义，检查这一步是否真的用上了已知条件。"
     wrong_clause = payload["response_scripts"][1]["clauses"][0]
-    wrong_clause["display_text"] = "再检查"
-    wrong_clause["spoken_text"] = "再检查。"
+    wrong_clause["display_text"] = "偏离目标；目标只是关系"
+    wrong_clause["spoken_text"] = "偏离目标，目标只是关系。"
     assert_code(
         "response_remediation_insufficient",
         lambda: validate_current_script(
             TeachingScript.model_validate(payload), trajectory
         ),
+    )
+
+
+def test_current_interaction_requires_misconception_on_every_wrong_option():
+    _, trajectory, _, *_ = models()
+    script = TeachingScript.model_validate(semantically_anchored_script_payload())
+    plan_payload = interaction_plan_payload()
+    plan_payload["interactions"][0]["options"][1]["misconception"] = None
+    plan = InteractionPlan.model_validate(plan_payload)
+
+    assert_code(
+        "response_misconception_missing",
+        lambda: validate_teaching_script(
+            script,
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            plan,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "unrelated_response",
+    (
+        "啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊",
+        "这是未用已知，所以先用根条件，再继续判断。",
+    ),
+)
+def test_wrong_response_requires_its_own_misconception_and_correction_anchors(
+    unrelated_response,
+):
+    _, trajectory, _, *_ = models()
+    payload = semantically_anchored_script_payload()
+    response = next(
+        item for item in payload["response_scripts"]
+        if item["option_id"] == "option-b"
+    )
+    response["clauses"][0]["display_text"] = unrelated_response
+    response["clauses"][0]["spoken_text"] = unrelated_response
+
+    assert_code(
+        "response_semantic_anchor_missing",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+def test_wrong_response_accepts_direct_misconception_and_correction_anchors():
+    _, trajectory, _, *_ = models()
+    validate_current_script(
+        TeachingScript.model_validate(semantically_anchored_script_payload()),
+        trajectory,
     )
 
 
@@ -1080,7 +1160,7 @@ def test_response_clause_requires_interaction_episode_step_and_safe_aligned_lang
 @pytest.mark.parametrize("private_answer", ("solve-separately", "substitute-root"))
 def test_incorrect_response_does_not_expose_any_private_canonical_answer(private_answer):
     _, trajectory, script, *_ = models()
-    payload = script.model_dump()
+    payload = semantically_anchored_script_payload()
     payload["response_scripts"][1]["clauses"][0]["display_text"] = (
         "内部答案 %s" % private_answer
     )
@@ -1088,6 +1168,86 @@ def test_incorrect_response_does_not_expose_any_private_canonical_answer(private
         "response_private_answer_leakage",
         lambda: validate_current_script(
             TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("canonical_answer", "visible_equivalent"),
+    (
+        ("solve-separately", "s o l v e - s e p a r a t e l y"),
+        ("x=1", "x 等于一"),
+        (r"\frac{1}{2}", "二分之一"),
+    ),
+)
+def test_incorrect_response_rejects_compact_or_spoken_canonical_equivalents(
+    canonical_answer,
+    visible_equivalent,
+):
+    _, trajectory, _, *_ = models()
+    payload = semantically_anchored_script_payload()
+    plan_payload = interaction_plan_payload()
+    plan_payload["interactions"][0]["options"][1][
+        "canonical_answer"
+    ] = canonical_answer
+    response = payload["response_scripts"][1]
+    response["clauses"][0]["spoken_text"] += " %s" % visible_equivalent
+
+    assert_code(
+        "response_private_answer_leakage",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(payload),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan_payload),
+        ),
+    )
+
+
+def test_incorrect_response_does_not_treat_x1_as_spoken_prefix_of_x10():
+    _, trajectory, _, *_ = models()
+    payload = semantically_anchored_script_payload()
+    plan_payload = interaction_plan_payload()
+    plan_payload["interactions"][0]["options"][1]["canonical_answer"] = "x=1"
+    payload["response_scripts"][1]["clauses"][0]["spoken_text"] += (
+        " 例如 x 等于十。"
+    )
+
+    validate_teaching_script(
+        TeachingScript.model_validate(payload),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan_payload),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    (
+        ("spoken_text", None, "teaching_script_content_invalid"),
+        ("display_text", None, "clause_display_missing"),
+        ("lesson_step_id", None, "clause_lesson_step_missing"),
+    ),
+)
+def test_teaching_script_entry_revalidates_mutated_clause_content(
+    field,
+    value,
+    code,
+):
+    _, trajectory, script, *_ = models()
+    object.__setattr__(script.clauses[0], field, value)
+    assert_code(code, lambda: validate_current_script(script, trajectory))
+
+
+def test_teaching_script_entry_maps_wrong_type_to_content_free_error():
+    _, trajectory, _, *_ = models()
+    assert_code(
+        "teaching_script_content_invalid",
+        lambda: validate_teaching_script(
+            object(),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(interaction_plan_payload()),
         ),
     )
 

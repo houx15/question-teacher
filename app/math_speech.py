@@ -389,14 +389,69 @@ def _normalized_spoken(value: str) -> str:
     return re.sub(r"[\s，。；：、,.!?！？;:]+", "", value).casefold()
 
 
+_CHINESE_NUMERAL_CHARACTERS = frozenset("零一二三四五六七八九十百千万亿两点")
+
+
+def _reading_pattern(expected: str) -> re.Pattern:
+    parts = []
+    index = 0
+    while index < len(expected):
+        char = expected[index]
+        if char.isascii() and char.isalpha():
+            parts.append(
+                r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])"
+                % re.escape(char)
+            )
+            index += 1
+            continue
+        if char in _CHINESE_NUMERAL_CHARACTERS:
+            end = index + 1
+            while (
+                end < len(expected)
+                and expected[end] in _CHINESE_NUMERAL_CHARACTERS
+            ):
+                end += 1
+            numeral = expected[index:end]
+            numeral_class = "".join(sorted(_CHINESE_NUMERAL_CHARACTERS))
+            parts.append(
+                r"(?<![%s])%s(?![%s])"
+                % (
+                    numeral_class,
+                    re.escape(numeral),
+                    numeral_class,
+                )
+            )
+            index = end
+            continue
+        parts.append(re.escape(char))
+        index += 1
+    return re.compile("".join(parts))
+
+
+def contains_deterministic_math_speech(
+    math_value: str,
+    spoken_text: str,
+) -> bool:
+    """Return whether one safe math reading occurs at token boundaries."""
+    try:
+        expected = _normalized_spoken(display_math_to_spoken(math_value))
+        spoken = _normalized_spoken(spoken_text)
+        return _reading_pattern(expected).search(spoken) is not None
+    except MathSpeechError:
+        return False
+
+
 def validate_display_spoken_alignment(display_text: str, spoken_text: str) -> None:
     """Require every displayed formula's deterministic speech in the narration."""
     try:
         spoken = _normalized_spoken(spoken_text)
+        cursor = 0
         for expression in extract_display_math(display_text):
             expected = _normalized_spoken(display_math_to_spoken(expression))
-            if expected not in spoken:
+            match = _reading_pattern(expected).search(spoken, cursor)
+            if match is None:
                 raise MathSpeechError("display_spoken_math_mismatch")
+            cursor = match.end()
     except MathSpeechError as error:
         if error.code == "display_spoken_math_mismatch":
             raise
