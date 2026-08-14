@@ -204,7 +204,9 @@ def episode_payload(index, step_id):
         "action_justification": "冻结路线支持",
         "result": STATES[index],
         "result_meaning": "为下一步提供依据",
-        "transition_reason": "继续处理目标关系",
+        "transition_reason": (
+            "根据前一步的结果，必须确认当前条件后再推进目标关系。"
+        ),
         "must_teach": [
             {
                 "must_teach_id": "must-%d" % (index + 1),

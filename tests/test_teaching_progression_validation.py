@@ -313,6 +313,27 @@ def test_generic_why_now_is_rejected(generic_why_now):
     assert_code("progression_why_not_explanatory", payload)
 
 
+@pytest.mark.parametrize(
+    "decorated_generic_reason",
+    (
+        "需要继续计算吧",
+        "需要算一算",
+        "根据题意即可",
+        "需要做",
+        "需要往下计算",
+        "现在需要计算",
+        "先确认再计算",
+        "需\u200b要计算",
+        "需\u034f要计算",
+        "根据题意",
+    ),
+)
+def test_why_marker_cannot_decorate_a_generic_action(decorated_generic_reason):
+    payload = progression_payload()
+    payload["steps"][0]["why_now"] = decorated_generic_reason
+    assert_code("progression_why_not_explanatory", payload)
+
+
 def test_mutated_empty_why_now_is_rejected_total_safely():
     trajectory, progression = models()
     object.__setattr__(progression.steps[0], "why_now", "")
@@ -338,6 +359,31 @@ def test_goal_driven_why_now_remains_explanatory():
     payload["steps"][0]["why_now"] = (
         "为了把含n的式子变成目标关系，下一步整理等式。"
     )
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
+
+
+def test_problem_fact_to_executable_condition_is_an_explanatory_reason():
+    payload = progression_payload()
+    payload["steps"][0]["why_now"] = (
+        "先把题目的关键事实变成可执行条件。"
+    )
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
+
+
+def test_default_ignorable_cannot_hide_a_real_explanatory_marker():
+    payload = progression_payload()
+    payload["steps"][0]["why_now"] = (
+        "根\u034f据前一\u034f步已有关系推进结论。"
+    )
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
+
+
+def test_explanatory_reason_accepts_a_meaningful_unicode_math_token():
+    payload = progression_payload()
+    payload["steps"][0]["why_now"] = "因为α已知，所以α。"
     trajectory, progression = models(progression_value=payload)
     validate_teaching_progression(progression, trajectory, targets())
 
@@ -395,6 +441,23 @@ def test_board_summary_unicode_wrappers_cannot_bypass_result_repeat(summary):
     assert_code("progression_board_summary_not_explanatory", payload)
 
 
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "Ⅰ. 答案：4n^2-4mn+2n=0",
+        "Ⅻ、最终结果：4n^2-4mn+2n=0",
+        "一、结果：4n^2-4mn+2n=0",
+        "（二）、答案：4n^2-4mn+2n=0",
+        "㊀\u200b结论：4n^2-4mn+2n=0",
+        "㈩. 当前推理得到：4n^2-4mn+2n=0",
+    ),
+)
+def test_board_summary_extended_numbering_cannot_bypass_result_repeat(summary):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = [summary]
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
 def test_board_summary_rejects_punctuation_only_content():
     payload = progression_payload()
     payload["steps"][0]["board_summary"] = ["【……》“”"]
@@ -425,8 +488,8 @@ def test_multi_episode_board_summaries_cannot_only_repeat_episode_results():
         "misconception-002-001",
     ]
     payload["steps"][0]["board_summary"] = [
-        "①答案：4n^2-4mn+2n=0",
-        "②最终结果：2n-2m+1=0。",
+        "Ⅰ、答案：4n^2-4mn+2n=0",
+        "㊁\u200b最终结果：2n-2m+1=0。",
     ]
     assert_code("progression_board_summary_not_explanatory", payload)
 

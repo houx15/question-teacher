@@ -214,7 +214,7 @@ def trajectory_payload(
                 "action_justification": "题目条件与已得结果共同支持",
                 "result": "得到可以继续判断的新关系",
                 "result_meaning": "离目标m-n更近一步",
-                "transition_reason": "用新信息决定是否继续或修订",
+                "transition_reason": "先把题目的关键事实变成可执行条件。",
                 "must_teach": [
                     {
                         "must_teach_id": "must-%d" % (index + 1),
