@@ -291,6 +291,8 @@ def test_progression_system_and_prompt_define_the_private_teaching_bridge():
         "只输出 Schema TeachingProgression",
         "student_problem",
         "why_now",
+        "具体因果或依赖",
+        "不得只写",
         "标题",
         "不得剧透",
         "每个 must_teach",

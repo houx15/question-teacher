@@ -108,6 +108,10 @@ TEACHING_PROGRESSION_SYSTEM = "\n".join(
     (
         "你是教学设计师。只输出 Schema TeachingProgression，不得输出其他结构。",
         "每一步必须先写 student_problem 和 why_now，再写教学动作与结论。",
+        "why_now 必须解释此刻推进的具体因果或依赖：明确引用题目已知条件、"
+        "前一步得到的结果、当前要解决的学生困难或教学目标，并写出对应的"
+        "具体数学量或概念。不得只写‘接下来计算’‘继续化简’‘然后处理’"
+        "之类的流程性转场。",
         "目录标题只能在学生形成思路后揭示，不得剧透答案或后续决定。",
         "ReasoningTrajectory 中每个 must_teach 都必须被某个步骤的 must_teach_refs 引用。",
         "checkpoint.misconception_ids 只能引用服务端给出的 "
