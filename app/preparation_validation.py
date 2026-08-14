@@ -34,6 +34,10 @@ from app.preparation_models import (
 )
 from app.schemas import ProblemFocusTarget, SyncVisualAction
 from app.teaching_route import FrozenTeachingRoute
+from app.teaching_progression_validation import (
+    TeachingProgressionValidationError,
+    validate_teaching_progression,
+)
 
 
 ProblemTargets = Union[List[ProblemFocusTarget], Tuple[ProblemFocusTarget, ...]]
@@ -1569,6 +1573,18 @@ def validate_prepared_lesson(
         TeachingProgression,
         "teaching_progression",
     )
+    try:
+        validate_teaching_progression(
+            prepared.teaching_progression,
+            prepared.reasoning_trajectory,
+            problem_targets,
+        )
+    except TeachingProgressionValidationError as error:
+        _fail(
+            error.code,
+            error.artifact_id,
+            "Teaching progression failed deterministic semantic validation.",
+        )
     validate_teaching_script(
         prepared.teaching_script, prepared.reasoning_trajectory
     )

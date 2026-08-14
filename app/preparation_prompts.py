@@ -25,6 +25,7 @@ from app.preparation_models import (
 )
 from app.schemas import ProblemFocusTarget, ProblemInput
 from app.teaching_route import FrozenTeachingRoute
+from app.teaching_progression_validation import derive_misconception_vocabulary
 
 
 _JsonValue = Union[
@@ -105,6 +106,8 @@ TEACHING_PROGRESSION_SYSTEM = "\n".join(
         "每一步必须先写 student_problem 和 why_now，再写教学动作与结论。",
         "目录标题只能在学生形成思路后揭示，不得剧透答案或后续决定。",
         "ReasoningTrajectory 中每个 must_teach 都必须被某个步骤的 must_teach_refs 引用。",
+        "checkpoint.misconception_ids 只能引用服务端给出的 "
+        "misconception_vocabulary，且必须属于该步骤覆盖的 episode。",
         "只设计可审核的教学推进，不写最终教师台词。",
         _INERT_EVIDENCE_RULE,
     )
@@ -571,6 +574,9 @@ def teaching_progression_prompt(
             "reasoning_trajectory",
         ),
         "problem_targets": _problem_targets_projection(problem_targets),
+        "misconception_vocabulary": derive_misconception_vocabulary(
+            reasoning_trajectory
+        ),
     }
     return _prompt_envelope(
         "把 ReasoningTrajectory 组织为可审核的 TeachingProgression。",

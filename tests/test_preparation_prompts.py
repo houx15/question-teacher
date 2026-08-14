@@ -201,6 +201,7 @@ def reasoning_trajectory():
                             "why_it_matters": "这决定能否构造完全平方",
                         }
                     ],
+                    "likely_misconceptions": ["只在等式左边加9"],
                 }
             ],
             "method_summary": "配成完全平方后开平方",
@@ -310,7 +311,21 @@ def test_progression_system_and_prompt_define_the_private_teaching_bridge():
     )
     task, payload, _ = _parse_envelope(prompt)
     assert task == "把 ReasoningTrajectory 组织为可审核的 TeachingProgression。"
-    assert set(payload) == {"reasoning_trajectory", "problem_targets"}
+    assert set(payload) == {
+        "reasoning_trajectory",
+        "problem_targets",
+        "misconception_vocabulary",
+    }
+    assert payload["misconception_vocabulary"] == [
+        {
+            "misconception_id": "misconception-001-001",
+            "episode_id": "episode-1",
+            "description": "只在等式左边加9",
+        }
+    ]
+    assert "reference_solution_text" not in json.dumps(
+        payload["misconception_vocabulary"], ensure_ascii=False
+    )
 
 
 def test_final_script_prompt_uses_only_progression_and_interaction_plan():

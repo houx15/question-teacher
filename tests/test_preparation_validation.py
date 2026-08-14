@@ -247,7 +247,7 @@ def progression_payload():
                 "math_action": episode["mathematical_action"],
                 "directory_question": episode["thinking_question"],
                 "directory_label": "第%d步：处理当前问题" % (index + 1),
-                "board_summary": [episode["result"]],
+                "board_summary": ["当前推理得到：%s" % episode["result"]],
                 "error_tip": "注意条件使用范围",
                 "transition_question": episode["transition_reason"],
                 "must_teach_refs": [
@@ -474,6 +474,30 @@ def test_current_rubric_prepared_lesson_requires_progression_and_seven_history_i
     ]
 
     assert_history_invalid(payload)
+
+
+def test_current_rubric_prepared_lesson_runs_progression_semantic_validation():
+    payload = prepared_payload()
+    payload["teaching_progression"]["steps"][0]["evidence_target_ids"] = [
+        "target-not-provided"
+    ]
+    prepared = PreparedLesson.model_validate(payload)
+
+    with pytest.raises(PreparationValidationError) as captured:
+        validate_prepared_lesson(
+            prepared,
+            route(),
+            [
+                ProblemFocusTarget(
+                    target_id="problem-root",
+                    math_text="2n",
+                    ordinal=1,
+                )
+            ],
+        )
+
+    assert captured.value.code == "progression_evidence_target_invalid"
+    assert captured.value.artifact_id == "teaching-step-1"
 
 
 def test_review_dependency_uses_artifact_order_for_progression_interaction_and_script():

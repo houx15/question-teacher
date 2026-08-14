@@ -248,7 +248,7 @@ def teaching_progression_payload():
                 ),
                 "student_problem": episode["thinking_question"],
                 "why_now": episode["transition_reason"],
-                "evidence_target_ids": ["problem-root"],
+                "evidence_target_ids": [],
                 "guiding_questions": [episode["thinking_question"]],
                 "knowledge_anchor": episode["decision_reason"],
                 "checkpoint": None,
@@ -256,7 +256,7 @@ def teaching_progression_payload():
                 "math_action": episode["mathematical_action"],
                 "directory_question": episode["thinking_question"],
                 "directory_label": "第%d步：推进当前问题" % (index + 1),
-                "board_summary": [episode["result"]],
+                "board_summary": ["当前推理得到：%s" % episode["result"]],
                 "error_tip": "注意当前条件的使用范围",
                 "transition_question": episode["transition_reason"],
                 "must_teach_refs": [
@@ -2551,6 +2551,94 @@ def test_deterministic_trajectory_failure_is_not_a_structure_retry():
     ]
     assert captured.value.audit.versions == {"solution_trace": 1}
     assert captured.value.audit.role_calls[-1].failure_category == "reasoning_design_failed"
+
+
+def test_deterministic_progression_failure_is_audited_after_model_call():
+    invalid = teaching_progression_payload()
+    invalid["steps"][0]["why_now"] = "然后计算"
+    fake = client(progression=invalid)
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    assert captured.value.category == "teaching_progression_failed"
+    assert captured.value.role == "teaching_designer"
+    assert [call.role for call in fake.calls] == [
+        "reference_analyst",
+        "teaching_designer",
+        "teaching_designer",
+    ]
+    assert captured.value.audit.versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+    assert captured.value.audit.active_versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+    assert captured.value.audit.role_calls[-1].failure_category == (
+        "teaching_progression_failed"
+    )
+    assert captured.value.audit.role_calls[-1].output_artifact_version is None
+
+
+def test_progression_repair_semantic_failure_retains_trace_and_trajectory_only():
+    invalid_repair = teaching_progression_payload()
+    invalid_repair["steps"][0]["why_now"] = "然后计算"
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [trace_payload()],
+            "teaching_designer": [
+                trajectory_payload(),
+                teaching_progression_payload(),
+                invalid_repair,
+            ],
+            "interaction_designer": [downstream_interaction_payload()],
+            "script_teacher": [downstream_script_payload()],
+            "classroom_director": [downstream_score_payload()],
+            "student_simulator": [downstream_simulation_payload()],
+            "lesson_reviewer": [
+                dependency_review_payload("teaching_progression")
+            ],
+        }
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    audit = captured.value.audit
+    assert captured.value.category == "teaching_progression_failed"
+    assert captured.value.role == "teaching_designer"
+    assert audit.active_versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+    assert audit.versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+        "teaching_progression": 1,
+        "interaction_plan": 1,
+        "teaching_script": 1,
+        "performance_score": 1,
+        "simulation_report": 1,
+    }
+    assert [item.artifact_type for item in audit.history].count(
+        "teaching_progression"
+    ) == 1
+    assert audit.role_calls[-1].failure_category == "teaching_progression_failed"
+    assert audit.role_calls[-1].input_artifact_versions == {
+        "solution_trace": 1,
+        "reasoning_trajectory": 1,
+    }
+    assert audit.role_calls[-1].output_artifact_version is None
 
 
 def test_plan_execute_monitor_revise_execute_trajectory_is_accepted():

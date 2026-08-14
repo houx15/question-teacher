@@ -81,6 +81,10 @@ from app.reference_safety import (
     ReferenceSafetyPolicy,
 )
 from app.teaching_route import FrozenTeachingRoute
+from app.teaching_progression_validation import (
+    TeachingProgressionValidationError,
+    validate_teaching_progression,
+)
 
 
 StageCallback = Callable[[str], Union[None, Awaitable[None]]]
@@ -797,6 +801,23 @@ class LessonPreparationPipeline:
             ),
             TeachingProgression,
         )
+        try:
+            validate_teaching_progression(
+                progression,
+                state.reasoning_trajectory,
+                problem_focus_targets,
+            )
+        except TeachingProgressionValidationError:
+            self._mark_last_call_failed(
+                state,
+                "teaching_designer",
+                "teaching_progression_failed",
+            )
+            raise PreparationFailure(
+                category="teaching_progression_failed",
+                role="teaching_designer",
+                detail="教学推进未通过确定性校验。",
+            ) from None
         self._accept_artifact(
             state,
             artifact_type="teaching_progression",
