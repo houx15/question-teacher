@@ -2879,6 +2879,7 @@ def test_progression_semantic_failure_gets_one_content_free_rewrite():
     assert len(progression_calls) == 2
     assert "progression_why_not_explanatory" in progression_calls[1].user
     assert "；对象：" in progression_calls[1].user
+    assert "本步动作之间的具体因果" in progression_calls[1].user
     assert "然后计算" not in progression_calls[1].user
     audited_progression_calls = [
         call

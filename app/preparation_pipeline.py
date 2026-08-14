@@ -799,6 +799,15 @@ class LessonPreparationPipeline:
         for semantic_attempt in range(2):
             attempt_prompt = base_prompt
             if semantic_attempt and validation_error is not None:
+                correction_guidance = "请逐字段对照系统规则修正该对象。"
+                if (
+                    validation_error.code
+                    == "progression_why_not_explanatory"
+                ):
+                    correction_guidance = (
+                        "请重写该步骤的 why_now，点明已知条件、前一步结果或"
+                        "当前学生困难与本步动作之间的具体因果。"
+                    )
                 attempt_prompt += (
                     "\n上一次教学推进未通过确定性校验。"
                     "请完整重写 TeachingProgression，不要局部补丁。"
@@ -807,6 +816,7 @@ class LessonPreparationPipeline:
                     + "；对象："
                     + validation_error.artifact_id
                     + "。"
+                    + correction_guidance
                 )
             progression = await self._complete_model(
                 "teaching_designer",
