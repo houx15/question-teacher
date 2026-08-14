@@ -276,7 +276,52 @@ def teaching_progression_payload(evidence_target_ids=None):
     }
 
 
-def downstream_script_payload():
+def downstream_response_scripts(interactions):
+    responses = []
+    for interaction in interactions:
+        for option in interaction["options"]:
+            correct = option["option_id"] == interaction["correct_option_id"]
+            responses.append(
+                {
+                    "response_id": "response-%s-%s"
+                    % (interaction["interaction_id"], option["option_id"]),
+                    "interaction_id": interaction["interaction_id"],
+                    "option_id": option["option_id"],
+                    "classification": "correct" if correct else "incorrect",
+                    "error_code": None if correct else "choice-error",
+                    "depth": "brief" if correct else "conceptual",
+                    "clauses": [
+                        {
+                            "clause_id": "response-clause-%s-%s"
+                            % (interaction["interaction_id"], option["option_id"]),
+                            "episode_id": interaction["episode_id"],
+                            "lesson_step_id": "teaching-step-2",
+                            "pedagogical_function": (
+                                "transition" if correct else "correct"
+                            ),
+                            "display_text": (
+                                "判断正确"
+                                if correct
+                                else "回到当前条件检查这个判断"
+                            ),
+                            "spoken_text": (
+                                "对。"
+                                if correct
+                                else "这个选择还没有完成当前数学步骤，回到已知条件再检查一次。"
+                            ),
+                            "learner_gain": (
+                                "确认判断" if correct else "理解错误原因"
+                            ),
+                            "answer_exposure": False,
+                            "must_teach_refs": [],
+                        }
+                    ],
+                }
+            )
+    return responses
+
+
+def downstream_script_payload(interactions=None):
     clause_specs = (
         ("clause-open", "episode-1", ["must-1"], "先找到题目要求的关系。", ["m-n"]),
         ("clause-method", "episode-1", [], "根一定满足原方程，所以先代入。", ["x=2n"]),
@@ -302,7 +347,9 @@ def downstream_script_payload():
             {
                 "clause_id": clause_id,
                 "episode_id": episode_id,
+                "lesson_step_id": "teaching-step-%s" % episode_id.split("-")[-1],
                 "pedagogical_function": "explain",
+                "display_text": "说明当前一步的依据与作用",
                 "spoken_text": spoken_text,
                 "math_references": math_references,
                 "learner_gain": "理解当前一步为什么推进",
@@ -317,6 +364,7 @@ def downstream_script_payload():
                 math_references,
             ) in clause_specs
         ],
+        "response_scripts": downstream_response_scripts(interactions or []),
         "closing_summary_clause_ids": ["clause-close"],
     }
 
@@ -490,6 +538,7 @@ def client(
     reviews=None,
     progression_target_ids=None,
 ):
+    selected_interaction = interaction or downstream_interaction_payload()
     trajectory_responses = list(
         trajectories or [trajectory or trajectory_payload()]
     )
@@ -515,11 +564,17 @@ def client(
             ),
             "teaching_designer": teaching_designer_responses,
             "script_teacher": list(
-                scripts or [script or downstream_script_payload()]
+                scripts
+                or [
+                    script
+                    or downstream_script_payload(
+                        selected_interaction["interactions"]
+                    )
+                ]
             ),
             "interaction_designer": list(
                 interactions
-                or [interaction or downstream_interaction_payload()]
+                or [selected_interaction]
             ),
             "classroom_director": list(
                 performances or [performance or downstream_score_payload()]
@@ -664,8 +719,8 @@ def test_repair_rebuilds_exact_seven_artifact_dependency_suffix(
                 *([interaction] if artifact_type != "teaching_script" else []),
             ],
             "script_teacher": [
-                downstream_script_payload(),
-                downstream_script_payload(),
+                downstream_script_payload(interaction["interactions"]),
+                downstream_script_payload(interaction["interactions"]),
             ],
             "classroom_director": [
                 downstream_score_payload(),
@@ -1130,7 +1185,12 @@ def test_every_repair_rebuild_boundary_preserves_truthful_active_versions(
             downstream_script_payload(),
             failure
             if failure_role == "script_teacher"
-            else downstream_script_payload(),
+            else downstream_script_payload(
+                invalid_interaction["interactions"]
+                if failure_role == "interaction_designer"
+                and failure_kind == "deterministic"
+                else []
+            ),
         ],
         interactions=[
             downstream_interaction_payload(),

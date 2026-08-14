@@ -85,6 +85,11 @@ def body_interaction_payload(with_overlay=False):
         after_clause_id="clause-3",
         resume_clause_id="clause-3-resume",
     )
+    for response in payload["teaching_script"]["response_scripts"]:
+        if response["interaction_id"] == interaction["interaction_id"]:
+            for clause in response["clauses"]:
+                clause["episode_id"] = "episode-3"
+                clause["lesson_step_id"] = "teaching-step-3"
     if with_overlay:
         payload["performance_score"] = overlay_score_payload()
         resume_cue = cues[cue_index + 1]
@@ -428,6 +433,7 @@ def test_overlay_interaction_preserves_authored_comparison_layer():
 def test_adapter_allows_zero_interactions_and_merges_adjacent_free_episodes():
     payload = prepared_payload()
     payload["interaction_plan"]["interactions"] = []
+    payload["teaching_script"]["response_scripts"] = []
     prepared = PreparedLesson.model_validate(payload)
 
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())
@@ -964,6 +970,7 @@ def test_cross_episode_split_provenance_keeps_original_and_generated_ids():
 def test_adapter_splits_more_than_five_adjacent_free_cues_into_moments():
     payload = prepared_payload()
     payload["interaction_plan"]["interactions"] = []
+    payload["teaching_script"]["response_scripts"] = []
     closing = payload["teaching_script"]["clauses"].pop()
     closing_cue = payload["performance_score"]["cues"].pop()
     for index in range(2):

@@ -265,7 +265,9 @@ def clause_payload(index, clause_id=None, episode_id=None, math_reference=None):
     return {
         "clause_id": clause_id or "clause-%d" % (index + 1),
         "episode_id": episode_id or "episode-%d" % (index + 1),
+        "lesson_step_id": "teaching-step-%d" % (index + 1),
         "pedagogical_function": "explain",
+        "display_text": "解释当前这一步为什么成立",
         "spoken_text": "我们解释当前这一步为什么成立。",
         "math_references": [math_reference or STATES[index]],
         "learner_gain": "理解当前依赖",
@@ -300,6 +302,48 @@ def script_payload():
         "opening_clause_ids": ["clause-1"],
         "method_introduction_clause_ids": ["clause-2"],
         "clauses": clauses,
+        "response_scripts": [
+            {
+                "response_id": "response-%s" % option_id,
+                "interaction_id": "interaction-1",
+                "option_id": option_id,
+                "classification": (
+                    "correct" if option_id == "option-a" else "incorrect"
+                ),
+                "error_code": (
+                    None if option_id == "option-a" else "%s-error" % option_id
+                ),
+                "depth": (
+                    "brief" if option_id == "option-a" else "conceptual"
+                ),
+                "clauses": [
+                    {
+                        "clause_id": "response-clause-%s" % option_id,
+                        "episode_id": "episode-2",
+                        "lesson_step_id": "teaching-step-2",
+                        "pedagogical_function": (
+                            "transition" if option_id == "option-a" else "correct"
+                        ),
+                        "display_text": (
+                            "判断正确"
+                            if option_id == "option-a"
+                            else "回到根的定义再判断当前选择"
+                        ),
+                        "spoken_text": (
+                            "对。"
+                            if option_id == "option-a"
+                            else "这个选择还没有用上根的定义，先回到已知条件再判断。"
+                        ),
+                        "learner_gain": (
+                            "确认判断" if option_id == "option-a" else "理解错误原因"
+                        ),
+                        "answer_exposure": False,
+                        "must_teach_refs": [],
+                    }
+                ],
+            }
+            for option_id in ("option-a", "option-b", "option-c")
+        ],
         "closing_summary_clause_ids": ["clause-7"],
     }
 
@@ -463,6 +507,15 @@ def models():
         PerformanceScore.model_validate(payload["performance_score"]),
         SimulationReport.model_validate(payload["simulation_report"]),
         LessonReviewDecision.model_validate(payload["review"]),
+    )
+
+
+def validate_current_script(script, trajectory):
+    validate_teaching_script(
+        script,
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(interaction_plan_payload()),
     )
 
 
@@ -831,11 +884,11 @@ def test_teaching_script_rejects_missing_episode_and_must_teach_coverage():
     payload = script.model_dump()
     payload["clauses"][0]["episode_id"] = "episode-missing"
     invalid = TeachingScript.model_validate(payload)
-    assert_code("clause_episode_missing", lambda: validate_teaching_script(invalid, trajectory))
+    assert_code("clause_episode_missing", lambda: validate_current_script(invalid, trajectory))
     payload = script.model_dump()
     payload["clauses"][0]["must_teach_refs"] = []
     invalid = TeachingScript.model_validate(payload)
-    assert_code("must_teach_uncovered", lambda: validate_teaching_script(invalid, trajectory))
+    assert_code("must_teach_uncovered", lambda: validate_current_script(invalid, trajectory))
 
 
 def test_teaching_script_rejects_invalid_or_cross_episode_must_teach_reference():
@@ -843,11 +896,11 @@ def test_teaching_script_rejects_invalid_or_cross_episode_must_teach_reference()
     payload = script.model_dump()
     payload["clauses"][0]["must_teach_refs"] = ["must-missing"]
     invalid = TeachingScript.model_validate(payload)
-    assert_code("must_teach_ref_invalid", lambda: validate_teaching_script(invalid, trajectory))
+    assert_code("must_teach_ref_invalid", lambda: validate_current_script(invalid, trajectory))
     payload = script.model_dump()
     payload["clauses"][0]["must_teach_refs"] = ["must-2"]
     invalid = TeachingScript.model_validate(payload)
-    assert_code("must_teach_ref_invalid", lambda: validate_teaching_script(invalid, trajectory))
+    assert_code("must_teach_ref_invalid", lambda: validate_current_script(invalid, trajectory))
 
 
 def test_teaching_script_rejects_duplicate_must_teach_ids_across_episodes():
@@ -860,7 +913,7 @@ def test_teaching_script_rejects_duplicate_must_teach_ids_across_episodes():
     script = TeachingScript.model_validate(script_value)
     assert_code(
         "must_teach_id_duplicate",
-        lambda: validate_teaching_script(script, trajectory),
+        lambda: validate_current_script(script, trajectory),
     )
 
 
@@ -868,13 +921,175 @@ def test_teaching_script_rejects_episode_reordering_and_spoken_markup():
     _, trajectory, script, *_ = models()
     payload = script.model_dump()
     payload["clauses"][0]["episode_id"], payload["clauses"][1]["episode_id"] = "episode-2", "episode-1"
+    payload["clauses"][0]["lesson_step_id"], payload["clauses"][1]["lesson_step_id"] = "teaching-step-2", "teaching-step-1"
     payload["clauses"][0]["must_teach_refs"], payload["clauses"][1]["must_teach_refs"] = ["must-2"], ["must-1"]
     invalid = TeachingScript.model_validate(payload)
-    assert_code("clause_episode_order_invalid", lambda: validate_teaching_script(invalid, trajectory))
+    assert_code("clause_episode_order_invalid", lambda: validate_current_script(invalid, trajectory))
     payload = script.model_dump()
     payload["clauses"][0]["spoken_text"] = "得到 $x=2n$。"
     invalid = TeachingScript.model_validate(payload)
-    assert_code("spoken_markup_invalid", lambda: validate_teaching_script(invalid, trajectory))
+    assert_code("spoken_markup_invalid", lambda: validate_current_script(invalid, trajectory))
+
+
+def test_current_teaching_script_requires_step_and_display_on_every_clause():
+    _, trajectory, script, *_ = models()
+    validate_current_script(script, trajectory)
+
+    for field, code in (
+        ("lesson_step_id", "clause_lesson_step_missing"),
+        ("display_text", "clause_display_missing"),
+    ):
+        payload = script.model_dump()
+        payload["clauses"][0][field] = None
+        assert_code(
+            code,
+            lambda payload=payload: validate_current_script(
+                TeachingScript.model_validate(payload), trajectory
+            ),
+        )
+
+        payload = script.model_dump()
+        payload["response_scripts"][0]["clauses"][0][field] = None
+        assert_code(
+            code,
+            lambda payload=payload: validate_current_script(
+                TeachingScript.model_validate(payload), trajectory
+            ),
+        )
+
+
+def test_current_teaching_script_requires_ordered_progression_coverage_and_episode_binding():
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["clauses"][0]["lesson_step_id"] = "teaching-step-2"
+    invalid = TeachingScript.model_validate(payload)
+    assert_code(
+        "clause_episode_step_mismatch",
+        lambda: validate_current_script(invalid, trajectory),
+    )
+
+    progression = TeachingProgression.model_validate(progression_payload())
+    progression_payload_value = progression.model_dump()
+    progression_payload_value["steps"].append(
+        dict(
+            progression_payload_value["steps"][-1],
+            step_id="teaching-step-uncovered",
+            sequence_index=len(progression_payload_value["steps"]),
+        )
+    )
+    assert_code(
+        "progression_step_uncovered",
+        lambda: validate_teaching_script(
+            script,
+            trajectory,
+            TeachingProgression.model_validate(progression_payload_value),
+            InteractionPlan.model_validate(interaction_plan_payload()),
+        ),
+    )
+
+
+def test_response_scripts_cover_each_interaction_option_exactly_once():
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["response_scripts"].pop()
+    assert_code(
+        "response_script_coverage_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+    payload = script.model_dump()
+    payload["response_scripts"][1]["interaction_id"] = "interaction-missing"
+    assert_code(
+        "response_script_binding_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+def test_response_scripts_enforce_classification_depth_and_correct_error_contract():
+    _, trajectory, script, *_ = models()
+    cases = (
+        (0, "classification", "incorrect", "response_classification_invalid"),
+        (0, "depth", "conceptual", "response_depth_invalid"),
+        (0, "error_code", "invented-error", "response_error_code_invalid"),
+        (1, "classification", "correct", "response_classification_invalid"),
+        (1, "depth", "brief", "response_depth_invalid"),
+    )
+    for index, field, value, code in cases:
+        payload = script.model_dump()
+        payload["response_scripts"][index][field] = value
+        assert_code(
+            code,
+            lambda payload=payload: validate_current_script(
+                TeachingScript.model_validate(payload), trajectory
+            ),
+        )
+
+
+def test_incorrect_response_must_carry_strictly_more_remediation_than_correct():
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    correct_clause = payload["response_scripts"][0]["clauses"][0]
+    correct_clause["display_text"] = "请回到根的定义检查这一步的条件"
+    correct_clause["spoken_text"] = "请回到根的定义，检查这一步是否真的用上了已知条件。"
+    wrong_clause = payload["response_scripts"][1]["clauses"][0]
+    wrong_clause["display_text"] = "再检查"
+    wrong_clause["spoken_text"] = "再检查。"
+    assert_code(
+        "response_remediation_insufficient",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+def test_response_clause_requires_interaction_episode_step_and_safe_aligned_language():
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["response_scripts"][1]["clauses"][0]["episode_id"] = "episode-3"
+    assert_code(
+        "response_clause_step_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+    payload = script.model_dump()
+    payload["response_scripts"][1]["clauses"][0]["display_text"] = "<span>提示</span>"
+    assert_code(
+        "display_content_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+    payload = script.model_dump()
+    payload["clauses"][0]["display_text"] = r"由 \(m-n\) 开始"
+    payload["clauses"][0]["spoken_text"] = "我们从当前目标开始。"
+    assert_code(
+        "display_spoken_math_mismatch",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+@pytest.mark.parametrize("private_answer", ("solve-separately", "substitute-root"))
+def test_incorrect_response_does_not_expose_any_private_canonical_answer(private_answer):
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["response_scripts"][1]["clauses"][0]["display_text"] = (
+        "内部答案 %s" % private_answer
+    )
+    assert_code(
+        "response_private_answer_leakage",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
 
 
 def test_interaction_plan_rejects_clause_binding_and_answer_leakage():
@@ -1602,7 +1817,7 @@ def test_spoken_and_board_content_reject_internal_control_fragments(markup):
     invalid_script = TeachingScript.model_validate(script_payload_value)
     assert_code(
         "spoken_markup_invalid",
-        lambda: validate_teaching_script(invalid_script, trajectory),
+        lambda: validate_current_script(invalid_script, trajectory),
     )
     score_payload_value = score.model_dump()
     score_payload_value["board_objects"][0]["content"] = markup
@@ -1659,7 +1874,7 @@ def test_teaching_script_rejects_shared_internal_controls(markup):
     invalid = TeachingScript.model_validate(payload)
     assert_code(
         "spoken_markup_invalid",
-        lambda: validate_teaching_script(invalid, trajectory),
+        lambda: validate_current_script(invalid, trajectory),
     )
 
 

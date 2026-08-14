@@ -333,12 +333,40 @@ def test_final_script_prompt_uses_only_progression_and_interaction_plan():
         teaching_script_prompt(teaching_progression(), interaction_plan())
     )
 
-    assert task == "为主线和每个互动结果写自然、顺畅、可朗读的最终 TeachingScript。"
+    assert task == "为主线和每个互动选项的结果写自然、顺畅、可朗读的最终 TeachingScript。"
     assert set(payload) == {"teaching_progression", "interaction_plan"}
     assert "reasoning_trajectory" not in payload
     assert "reference_solution_text" not in json.dumps(
         payload, ensure_ascii=False
     )
+
+
+def test_script_teacher_requires_natural_adaptive_screen_and_spoken_language():
+    system = preparation_prompts.SCRIPT_TEACHER_SYSTEM
+    for phrase in (
+        "自然的简体中文",
+        "变化转场",
+        "短问题",
+        "不得出现内部字段名",
+        "首先、其次、然后",
+        "不得删除 must_teach",
+        "主线",
+        "每个 option",
+        "response language",
+        "display_text",
+        "屏幕",
+        "spoken_text",
+        "自然口播",
+        "运算词",
+    ):
+        assert phrase in system
+
+    task, payload, _ = _parse_envelope(
+        teaching_script_prompt(teaching_progression(), interaction_plan())
+    )
+    assert "主线" in task
+    assert "每个互动选项" in task
+    assert set(payload) == {"teaching_progression", "interaction_plan"}
 
 
 def interaction_plan():

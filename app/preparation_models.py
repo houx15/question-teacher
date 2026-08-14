@@ -42,6 +42,7 @@ ReasoningMode = Literal["understand", "plan", "explore", "execute", "monitor", "
 TrajectoryType = Literal["planned", "exploratory", "hybrid"]
 PedagogicalFunction = Literal["focus", "question", "explain", "decide", "execute", "observe", "correct", "transition", "review", "summarize"]
 DiagnosticKind = Literal["conception", "execution"]
+ExplanationDepth = Literal["brief", "conceptual", "worked"]
 TeachingPhase = Literal["construct", "explore", "execute", "check"]
 ArtifactType = Literal["solution_trace", "reasoning_trajectory", "teaching_progression", "interaction_plan", "teaching_script", "performance_score", "simulation_report"]
 ResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator"]
@@ -279,7 +280,9 @@ class TeachingProgression(SchemaModel):
 class ScriptClause(SchemaModel):
     clause_id: GeneratedId
     episode_id: GeneratedId
+    lesson_step_id: Optional[GeneratedId] = None
     pedagogical_function: PedagogicalFunction
+    display_text: Optional[NarrativeBoardContent] = None
     spoken_text: CueSpokenText
     math_references: List[GeneratedMathAnswer] = Field(
         default_factory=list, max_length=MAX_MATH_REFERENCE_ITEMS
@@ -289,6 +292,16 @@ class ScriptClause(SchemaModel):
     must_teach_refs: List[GeneratedId] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
     )
+
+
+class ResponseScript(SchemaModel):
+    response_id: GeneratedId
+    interaction_id: GeneratedId
+    option_id: GeneratedId
+    classification: Literal["correct", "incorrect"]
+    error_code: Optional[GeneratedId] = None
+    depth: ExplanationDepth
+    clauses: List[ScriptClause] = Field(min_length=1, max_length=8)
 
 
 class TeachingScript(SchemaModel):
@@ -304,6 +317,9 @@ class TeachingScript(SchemaModel):
     )
     clauses: List[ScriptClause] = Field(
         min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    response_scripts: List[ResponseScript] = Field(
+        default_factory=list, max_length=MAX_PREPARATION_ITEMS
     )
     closing_summary_clause_ids: List[GeneratedId] = Field(
         min_length=1, max_length=MAX_PREPARATION_ITEMS

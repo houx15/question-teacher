@@ -18,6 +18,7 @@ from app.math_content import (
     normalize_grounded_choice_option_label,
     normalize_cross_artifact_math_identity,
 )
+from app.math_speech import MathSpeechError, validate_display_spoken_alignment
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.problem_focus import MAX_PROBLEM_FOCUS_TARGETS
 from app.preparation_models import (
@@ -299,12 +300,25 @@ def validate_reasoning_trajectory(
 def validate_teaching_script(
     script: TeachingScript,
     trajectory: ReasoningTrajectory,
+    progression: TeachingProgression,
+    interaction_plan: InteractionPlan,
 ) -> None:
     _require_exact(script, TeachingScript, "script")
     _require_exact(trajectory, ReasoningTrajectory, "trajectory")
+    _require_exact(progression, TeachingProgression, "progression")
+    _require_exact(interaction_plan, InteractionPlan, "interaction_plan")
     episode_positions = {
         episode.episode_id: index
         for index, episode in enumerate(trajectory.episodes)
+    }
+    step_positions = {
+        step.step_id: index for index, step in enumerate(progression.steps)
+    }
+    step_by_id = {step.step_id: step for step in progression.steps}
+    episode_steps = {
+        episode_id: step.step_id
+        for step in progression.steps
+        for episode_id in step.episode_ids
     }
     must_teach_ids = [
         item.must_teach_id
@@ -337,7 +351,21 @@ def validate_teaching_script(
         )
     covered = set()
     last_episode_position = -1
+    last_step_position = -1
+    covered_steps = set()
     for clause in script.clauses:
+        if clause.lesson_step_id is None:
+            _fail(
+                "clause_lesson_step_missing",
+                clause.clause_id,
+                "Current script clauses require a lesson-step binding.",
+            )
+        if clause.display_text is None:
+            _fail(
+                "clause_display_missing",
+                clause.clause_id,
+                "Current script clauses require display text.",
+            )
         if clause.episode_id not in episode_positions:
             _fail(
                 "clause_episode_missing",
@@ -352,14 +380,29 @@ def validate_teaching_script(
                 "Script clause order violates trajectory order.",
             )
         last_episode_position = episode_position
-        if contains_math_markup(clause.spoken_text) or contains_internal_control_syntax(
-            clause.spoken_text
-        ):
+        if clause.lesson_step_id not in step_positions:
             _fail(
-                "spoken_markup_invalid",
+                "clause_lesson_step_missing",
                 clause.clause_id,
-                "Spoken text contains math or internal visual markup.",
+                "Script clause references an unknown lesson step.",
             )
+        step = step_by_id[clause.lesson_step_id]
+        if clause.episode_id not in step.episode_ids:
+            _fail(
+                "clause_episode_step_mismatch",
+                clause.clause_id,
+                "Script clause episode does not belong to its lesson step.",
+            )
+        step_position = step_positions[clause.lesson_step_id]
+        if step_position < last_step_position:
+            _fail(
+                "clause_step_order_invalid",
+                clause.clause_id,
+                "Script clause order violates teaching progression order.",
+            )
+        last_step_position = step_position
+        covered_steps.add(clause.lesson_step_id)
+        _validate_authored_clause_language(clause)
         for reference in clause.must_teach_refs:
             if (
                 reference not in must_teach_owner
@@ -371,6 +414,13 @@ def validate_teaching_script(
                     "Script clause has an invalid must-teach reference.",
                 )
             covered.add(reference)
+    for step in progression.steps:
+        if step.step_id not in covered_steps:
+            _fail(
+                "progression_step_uncovered",
+                step.step_id,
+                "Every teaching-progression step requires a main script clause.",
+            )
     for must_teach_id in must_teach_owner:
         if must_teach_id not in covered:
             _fail(
@@ -378,6 +428,195 @@ def validate_teaching_script(
                 must_teach_id,
                 "Must-teach item has no script-clause evidence.",
             )
+    _validate_response_scripts(
+        script,
+        interaction_plan,
+        episode_steps,
+    )
+
+
+def _validate_authored_clause_language(clause: object) -> None:
+    if contains_math_markup(clause.spoken_text) or contains_internal_control_syntax(
+        clause.spoken_text
+    ):
+        _fail(
+            "spoken_markup_invalid",
+            clause.clause_id,
+            "Spoken text contains math or internal visual markup.",
+        )
+    if clause.display_text is None:
+        _fail(
+            "clause_display_missing",
+            clause.clause_id,
+            "Current script clauses require display text.",
+        )
+    if not is_valid_generated_display_content(clause.display_text):
+        _fail(
+            "display_content_invalid",
+            clause.clause_id,
+            "Display text is not safe bounded generated content.",
+        )
+    try:
+        validate_display_spoken_alignment(
+            clause.display_text,
+            clause.spoken_text,
+        )
+    except MathSpeechError as error:
+        _fail(
+            error.code,
+            clause.clause_id,
+            "Displayed mathematics is not safely aligned with spoken text.",
+        )
+
+
+def _response_information(response: object) -> Tuple[int, int]:
+    effective_characters = sum(
+        len(
+            re.sub(
+                r"[^0-9A-Za-z\u4e00-\u9fff]",
+                "",
+                "%s%s" % (clause.display_text or "", clause.spoken_text),
+            )
+        )
+        for clause in response.clauses
+    )
+    return len(response.clauses), effective_characters
+
+
+def _validate_response_scripts(
+    script: TeachingScript,
+    interaction_plan: InteractionPlan,
+    episode_steps: Dict[str, str],
+) -> None:
+    interactions = {
+        item.interaction_id: item for item in interaction_plan.interactions
+    }
+    expected = {
+        (interaction.interaction_id, option.option_id)
+        for interaction in interaction_plan.interactions
+        for option in interaction.options
+    }
+    actual: List[Tuple[str, str]] = []
+    response_by_binding = {}
+    for response in script.response_scripts:
+        interaction = interactions.get(response.interaction_id)
+        if interaction is None or response.option_id not in {
+            item.option_id for item in interaction.options
+        }:
+            _fail(
+                "response_script_binding_invalid",
+                response.response_id,
+                "Response script must bind to an exact interaction option.",
+            )
+        binding = (response.interaction_id, response.option_id)
+        actual.append(binding)
+        response_by_binding[binding] = response
+    if len(actual) != len(set(actual)) or set(actual) != expected:
+        _fail(
+            "response_script_coverage_invalid",
+            "teaching_script",
+            "Every interaction option requires exactly one response script.",
+        )
+
+    for interaction in interaction_plan.interactions:
+        correct = response_by_binding[
+            (interaction.interaction_id, interaction.correct_option_id)
+        ]
+        for option in interaction.options:
+            response = response_by_binding[
+                (interaction.interaction_id, option.option_id)
+            ]
+            is_correct = option.option_id == interaction.correct_option_id
+            expected_classification = "correct" if is_correct else "incorrect"
+            if response.classification != expected_classification:
+                _fail(
+                    "response_classification_invalid",
+                    response.response_id,
+                    "Response classification does not match the bound option.",
+                )
+            if is_correct:
+                if response.depth != "brief":
+                    _fail(
+                        "response_depth_invalid",
+                        response.response_id,
+                        "Correct responses must be brief.",
+                    )
+                if response.error_code is not None:
+                    _fail(
+                        "response_error_code_invalid",
+                        response.response_id,
+                        "Correct responses cannot carry an error code.",
+                    )
+            elif response.depth == "brief":
+                _fail(
+                    "response_depth_invalid",
+                    response.response_id,
+                    "Incorrect responses require conceptual or worked remediation.",
+                )
+
+            expected_step_id = episode_steps.get(interaction.episode_id)
+            if expected_step_id is None:
+                _fail(
+                    "response_clause_step_invalid",
+                    response.response_id,
+                    "Interaction episode has no teaching-progression step.",
+                )
+            for clause in response.clauses:
+                if clause.lesson_step_id is None:
+                    _fail(
+                        "clause_lesson_step_missing",
+                        clause.clause_id,
+                        "Current response clauses require a lesson-step binding.",
+                    )
+                if clause.display_text is None:
+                    _fail(
+                        "clause_display_missing",
+                        clause.clause_id,
+                        "Current response clauses require display text.",
+                    )
+                if (
+                    clause.episode_id != interaction.episode_id
+                    or clause.lesson_step_id != expected_step_id
+                ):
+                    _fail(
+                        "response_clause_step_invalid",
+                        clause.clause_id,
+                        "Response clause must stay in the interaction episode step.",
+                    )
+                _validate_authored_clause_language(clause)
+
+            if not is_correct:
+                visible = "|".join(
+                    "%s|%s" % (clause.display_text or "", clause.spoken_text)
+                    for clause in response.clauses
+                )
+                if any(
+                    contains_bounded_answer_token(
+                        visible,
+                        private_option.canonical_answer,
+                    )
+                    for private_option in interaction.options
+                ):
+                    _fail(
+                        "response_private_answer_leakage",
+                        response.response_id,
+                        "Incorrect response exposes private canonical answer data.",
+                    )
+                response_count, response_information = _response_information(
+                    response
+                )
+                correct_count, correct_information = _response_information(
+                    correct
+                )
+                if not (
+                    response_count > correct_count
+                    or response_information > correct_information
+                ):
+                    _fail(
+                        "response_remediation_insufficient",
+                        response.response_id,
+                        "Incorrect response must add strictly more remediation than correct feedback.",
+                    )
 
 
 def _labels_are_unique(labels: Sequence[str]) -> bool:
@@ -1586,7 +1825,10 @@ def validate_prepared_lesson(
             "Teaching progression failed deterministic semantic validation.",
         )
     validate_teaching_script(
-        prepared.teaching_script, prepared.reasoning_trajectory
+        prepared.teaching_script,
+        prepared.reasoning_trajectory,
+        prepared.teaching_progression,
+        prepared.interaction_plan,
     )
     validate_interaction_plan(
         prepared.interaction_plan,

@@ -861,7 +861,12 @@ class LessonPreparationPipeline:
             script, state.reasoning_trajectory
         )
         try:
-            validate_teaching_script(script, state.reasoning_trajectory)
+            validate_teaching_script(
+                script,
+                state.reasoning_trajectory,
+                state.teaching_progression,
+                state.interaction_plan,
+            )
         except PreparationValidationError:
             self._mark_last_call_failed(
                 state,

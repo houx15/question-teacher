@@ -115,8 +115,13 @@ TEACHING_PROGRESSION_SYSTEM = "\n".join(
 
 SCRIPT_TEACHER_SYSTEM = "\n".join(
     (
-        "你是讲稿教师。只写学生能听见的解释性语言，保留每个 must_teach 项。",
-        "所有学生可见字段必须使用简体中文。method_name 最多 8 字，"
+        "你是讲稿教师。用自然的简体中文写学生能听见的解释性语言；"
+        "不得删除 must_teach 中的任何教学要点。",
+        "主线讲解与每个 option 的 response language 都要完整、连贯；"
+        "用变化转场和短问题推进，不得泛用‘首先、其次、然后’的流水链。",
+        "display_text 只写屏幕上要看的内容；spoken_text 只写自然口播，"
+        "不得含数学标记，屏幕公式必须在口播中读出减、乘、等于等运算词。",
+        "所有学生可见字段不得出现内部字段名。method_name 最多 8 字，"
         "student_definition 最多 36 字，target_form 最多 80 字，"
         "why_it_helps 最多 32 字，每条 spoken_text 最多 90 字。",
         "不做视觉设计、时序设计、坐标定位或实现工作。",
@@ -619,7 +624,7 @@ def teaching_script_prompt(
         ),
     }
     return _prompt_envelope(
-        "为主线和每个互动结果写自然、顺畅、可朗读的最终 TeachingScript。",
+        "为主线和每个互动选项的结果写自然、顺畅、可朗读的最终 TeachingScript。",
         _with_repair(payload, repair),
     )
 

@@ -1,4 +1,5 @@
 import copy
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -7,12 +8,14 @@ import app.preparation_models as preparation_models
 from app.preparation_models import (
     ArtifactRevision,
     ClauseBoundVisualAction,
+    ExplanationDepth,
     GenerationRecord,
     InteractionPlan,
     LessonReviewDecision,
     PlannedInteraction,
     PreparedLesson,
     ReasoningTrajectory,
+    ResponseScript,
     RoleCallRecord,
     ScriptClause,
     SimulationReport,
@@ -410,6 +413,77 @@ def test_teaching_script_owns_nonblank_explanatory_narration_in_clauses():
     with pytest.raises(ValidationError):
         ScriptClause.model_validate(payload)
     assert TeachingScript.model_validate(teaching_script()).clauses[0].spoken_text
+
+
+def test_script_clause_preserves_legacy_loading_and_orders_new_authoring_fields():
+    legacy = ScriptClause.model_validate(script_clause("legacy-clause"))
+    assert legacy.lesson_step_id is None
+    assert legacy.display_text is None
+
+    properties = list(ScriptClause.model_json_schema()["properties"])
+    assert properties.index("lesson_step_id") == properties.index("episode_id") + 1
+    assert properties.index("display_text") == properties.index("pedagogical_function") + 1
+
+
+def test_response_script_has_closed_depth_and_bounded_clauses():
+    clause = script_clause("response-clause")
+    clause.update(
+        lesson_step_id="teaching-step-1",
+        display_text=r"因为 \(x=2\)，所以等式成立。",
+    )
+    payload = {
+        "response_id": "response-1",
+        "interaction_id": "interaction-1",
+        "option_id": "option-a",
+        "classification": "correct",
+        "error_code": None,
+        "depth": "brief",
+        "clauses": [clause],
+    }
+    response = ResponseScript.model_validate(payload)
+    assert response.depth == "brief"
+    assert response.clauses[0].display_text
+
+    payload["depth"] = "verbose"
+    with pytest.raises(ValidationError):
+        ResponseScript.model_validate(payload)
+
+    payload["depth"] = "conceptual"
+    payload["clauses"] = [
+        dict(clause, clause_id="response-clause-%d" % index)
+        for index in range(8)
+    ]
+    assert len(ResponseScript.model_validate(payload).clauses) == 8
+    payload["clauses"].append(dict(clause, clause_id="response-overflow"))
+    with pytest.raises(ValidationError, match="at most 8"):
+        ResponseScript.model_validate(payload)
+
+
+def test_teaching_script_defaults_response_scripts_to_empty_and_accepts_typed_responses():
+    assert TeachingScript.model_validate(teaching_script()).response_scripts == []
+
+    payload = teaching_script()
+    clause = script_clause("response-clause")
+    clause.update(
+        lesson_step_id="teaching-step-1",
+        display_text="两边同时减一",
+    )
+    payload["response_scripts"] = [
+        {
+            "response_id": "response-1",
+            "interaction_id": "interaction-1",
+            "option_id": "option-a",
+            "classification": "incorrect",
+            "error_code": "direction-error",
+            "depth": "worked",
+            "clauses": [clause],
+        }
+    ]
+    assert TeachingScript.model_validate(payload).response_scripts[0].depth == "worked"
+
+
+def test_explanation_depth_alias_exposes_exact_supported_vocabulary():
+    assert ExplanationDepth == Literal["brief", "conceptual", "worked"]
 
 
 def test_interaction_plan_allows_zero_interactions():
