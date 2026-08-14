@@ -13,18 +13,9 @@ from app.schemas import ProblemFocusTarget
 
 
 ProblemTargets = Union[List[ProblemFocusTarget], Tuple[ProblemFocusTarget, ...]]
-_GENERIC_WHY_NOW = frozenset(
-    {
-        "然后计算",
-        "继续计算",
-        "接着计算",
-        "再计算",
-        "进行计算",
-        "开始计算",
-    }
-)
 _GENERIC_WHY_NOW_PATTERN = re.compile(
-    r"^(?:然后|接下来|之后|再)(?:进行)?(?:计算|运算)(?:一下)?$"
+    r"^(?:(?:然后|接下来|之后|再|继续|接着|开始)(?:进行)?|进行)?"
+    r"(?:计算|运算)(?:一下)?$"
 )
 _MEANINGLESS_TRAILING_PUNCTUATION = re.compile(r"[，。；;,.!?！？]+$")
 
@@ -83,7 +74,7 @@ def _why_now_is_explanatory(value: str) -> bool:
     if type(value) is not str:
         return False
     normalized = re.sub(r"[\s，。；;,.!?！？]", "", value).lower()
-    return bool(normalized) and normalized not in _GENERIC_WHY_NOW and (
+    return bool(normalized) and (
         _GENERIC_WHY_NOW_PATTERN.fullmatch(normalized) is None
     )
 

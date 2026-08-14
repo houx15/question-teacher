@@ -267,6 +267,9 @@ def test_directory_labels_are_unique():
         "然后进行计算",
         "然后计算一下",
         "接下来计算",
+        "接着进行计算",
+        "继续进行计算",
+        "开始进行运算",
     ),
 )
 def test_generic_why_now_is_rejected(generic_why_now):
