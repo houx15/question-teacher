@@ -532,6 +532,38 @@ def _contains_private_canonical_answer(
     )
 
 
+def _all_occurrence_intervals(
+    value: str,
+    fragment: str,
+) -> List[Tuple[int, int]]:
+    if not fragment:
+        return []
+    intervals = []
+    search_from = 0
+    while search_from <= len(value) - len(fragment):
+        start = value.find(fragment, search_from)
+        if start < 0:
+            break
+        intervals.append((start, start + len(fragment)))
+        search_from = start + 1
+    return intervals
+
+
+def _has_non_overlapping_anchor_evidence(
+    visible: str,
+    first_anchor: str,
+    second_anchor: str,
+) -> bool:
+    first = _all_occurrence_intervals(visible, first_anchor)
+    second = _all_occurrence_intervals(visible, second_anchor)
+    if not first or not second:
+        return False
+    return (
+        first[0][1] <= second[-1][0]
+        or second[0][1] <= first[-1][0]
+    )
+
+
 def _validate_response_scripts(
     script: TeachingScript,
     interaction_plan: InteractionPlan,
@@ -650,12 +682,7 @@ def _validate_response_scripts(
                 correction_anchor = normalize_answer_leak_text(
                     interaction.incorrect_feedback_by_option[option.option_id]
                 )
-                if (
-                    not misconception_anchor
-                    or not correction_anchor
-                    or misconception_anchor not in normalized_visible
-                    or correction_anchor not in normalized_visible
-                ):
+                if not misconception_anchor or not correction_anchor:
                     _fail(
                         "response_semantic_anchor_missing",
                         response.response_id,
@@ -666,6 +693,16 @@ def _validate_response_scripts(
                         "response_remediation_insufficient",
                         response.response_id,
                         "Incorrect response requires distinct reason and correction units.",
+                    )
+                if not _has_non_overlapping_anchor_evidence(
+                    normalized_visible,
+                    misconception_anchor,
+                    correction_anchor,
+                ):
+                    _fail(
+                        "response_semantic_anchor_missing",
+                        response.response_id,
+                        "Incorrect response must directly express its misconception and correction anchors.",
                     )
                 if any(
                     _contains_private_canonical_answer(

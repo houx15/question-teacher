@@ -546,6 +546,19 @@ def semantically_anchored_script_payload():
     return payload
 
 
+def response_anchor_case(misconception, correction, spoken_text):
+    script = semantically_anchored_script_payload()
+    plan = interaction_plan_payload()
+    plan["interactions"][0]["options"][1]["misconception"] = misconception
+    plan["interactions"][0]["incorrect_feedback_by_option"][
+        "option-b"
+    ] = correction
+    response = script["response_scripts"][1]
+    response["clauses"][0]["display_text"] = "检查当前选择"
+    response["clauses"][0]["spoken_text"] = spoken_text
+    return script, plan
+
+
 def test_current_rubric_prepared_lesson_requires_progression_and_seven_history_items():
     payload = prepared_payload()
     payload["teaching_progression"] = None
@@ -1103,6 +1116,76 @@ def test_incorrect_response_accepts_distinct_semantic_units_with_filler():
 
     validate_current_script(
         TeachingScript.model_validate(payload), trajectory
+    )
+
+
+def test_incorrect_response_rejects_one_nested_anchor_occurrence():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "偏离目标关系",
+        "这里只说了偏离目标关系。",
+    )
+
+    assert_code(
+        "response_semantic_anchor_missing",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(script),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan),
+        ),
+    )
+
+
+def test_incorrect_response_rejects_fused_overlapping_anchor_occurrences():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "目标关系",
+        "关系错误",
+        "这里只说了目标关系错误。",
+    )
+
+    assert_code(
+        "response_semantic_anchor_missing",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(script),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan),
+        ),
+    )
+
+
+def test_incorrect_response_accepts_separate_natural_anchor_occurrences():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "回到目标关系",
+        "这个选择偏离目标，需要回到目标关系重新检查。",
+    )
+
+    validate_teaching_script(
+        TeachingScript.model_validate(script),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan),
+    )
+
+
+def test_incorrect_response_accepts_contained_anchor_when_repeated_separately():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "偏离目标关系",
+        "这里是偏离目标关系，另外说明它确实偏离目标。",
+    )
+
+    validate_teaching_script(
+        TeachingScript.model_validate(script),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan),
     )
 
 
