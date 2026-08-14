@@ -260,10 +260,39 @@ def test_directory_labels_are_unique():
     assert_code("progression_directory_label_duplicate", payload)
 
 
-def test_generic_why_now_is_rejected():
+@pytest.mark.parametrize(
+    "generic_why_now",
+    (
+        "然后计算",
+        "然后进行计算",
+        "然后计算一下",
+        "接下来计算",
+    ),
+)
+def test_generic_why_now_is_rejected(generic_why_now):
     payload = progression_payload()
-    payload["steps"][0]["why_now"] = "然后计算"
+    payload["steps"][0]["why_now"] = generic_why_now
     assert_code("progression_why_not_explanatory", payload)
+
+
+def test_mutated_empty_why_now_is_rejected_total_safely():
+    trajectory, progression = models()
+    object.__setattr__(progression.steps[0], "why_now", "")
+
+    with pytest.raises(TeachingProgressionValidationError) as captured:
+        validate_teaching_progression(progression, trajectory, targets())
+
+    assert captured.value.code == "progression_why_not_explanatory"
+    assert captured.value.artifact_id == "progression-1"
+
+
+def test_causal_why_now_remains_explanatory():
+    payload = progression_payload()
+    payload["steps"][0]["why_now"] = (
+        "因为根必须使原方程成立，此时代入才能建立m与n的关系。"
+    )
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
 
 
 def test_board_summary_cannot_only_repeat_the_current_episode_result():
@@ -272,10 +301,46 @@ def test_board_summary_cannot_only_repeat_the_current_episode_result():
     assert_code("progression_board_summary_not_explanatory", payload)
 
 
+@pytest.mark.parametrize(
+    "summaries",
+    (
+        ["4n^2-4mn+2n=0。"],
+        ["4n^2-4mn+2n=0!"],
+        ["4n^2-4mn+2n=0。", "4n^2-4mn+2n=0！"],
+    ),
+)
+def test_board_summary_punctuation_and_duplicates_cannot_bypass_result_repeat(
+    summaries,
+):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = summaries
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "因为x=2n是根，所以代入得：4n^2-4mn+2n=0",
+        "x=2n是根 → 4n^2-4mn+2n=0",
+    ),
+)
+def test_board_summary_with_an_explanatory_relation_remains_valid(summary):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = [summary]
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
+
+
 def test_board_summary_rejects_invalid_display_content():
     payload = progression_payload()
     payload["steps"][0]["board_summary"] = [r"\(4n^2-4mn+2n=0"]
     assert_code("progression_board_content_invalid", payload)
+
+
+def test_evidence_target_cannot_repeat_across_progression_steps():
+    payload = progression_payload()
+    payload["steps"][1]["evidence_target_ids"] = ["target-root"]
+    assert_code("progression_evidence_target_duplicate", payload)
 
 
 @pytest.mark.parametrize(

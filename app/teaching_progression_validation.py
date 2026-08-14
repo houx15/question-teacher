@@ -23,6 +23,10 @@ _GENERIC_WHY_NOW = frozenset(
         "开始计算",
     }
 )
+_GENERIC_WHY_NOW_PATTERN = re.compile(
+    r"^(?:然后|接下来|之后|再)(?:进行)?(?:计算|运算)(?:一下)?$"
+)
+_MEANINGLESS_TRAILING_PUNCTUATION = re.compile(r"[，。；;,.!?！？]+$")
 
 
 class TeachingProgressionValidationError(ValueError):
@@ -76,8 +80,20 @@ def derive_misconception_vocabulary(
 
 
 def _why_now_is_explanatory(value: str) -> bool:
+    if type(value) is not str:
+        return False
     normalized = re.sub(r"[\s，。；;,.!?！？]", "", value).lower()
-    return normalized not in _GENERIC_WHY_NOW
+    return bool(normalized) and normalized not in _GENERIC_WHY_NOW and (
+        _GENERIC_WHY_NOW_PATTERN.fullmatch(normalized) is None
+    )
+
+
+def _normalize_board_identity(value: str) -> str:
+    without_trailing_punctuation = _MEANINGLESS_TRAILING_PUNCTUATION.sub(
+        "",
+        value.rstrip(),
+    ).rstrip()
+    return normalize_cross_artifact_math_identity(without_trailing_punctuation)
 
 
 def validate_teaching_progression(
@@ -127,6 +143,7 @@ def validate_teaching_progression(
         item["misconception_id"]: item["episode_id"] for item in vocabulary
     }
     seen_misconceptions = set()
+    seen_evidence_targets = set()
     directory_labels = set()
 
     for step in progression.steps:
@@ -142,6 +159,9 @@ def validate_teaching_progression(
             _fail("progression_evidence_target_duplicate", step.step_id)
         if not set(step.evidence_target_ids) <= allowed_target_ids:
             _fail("progression_evidence_target_invalid", step.step_id)
+        if seen_evidence_targets.intersection(step.evidence_target_ids):
+            _fail("progression_evidence_target_duplicate", step.step_id)
+        seen_evidence_targets.update(step.evidence_target_ids)
 
         if step.directory_label in directory_labels:
             _fail("progression_directory_label_duplicate", step.step_id)
@@ -153,21 +173,18 @@ def validate_teaching_progression(
         for summary in step.board_summary:
             if not is_valid_generated_display_content(summary):
                 _fail("progression_board_content_invalid", step.step_id)
-        if len(step.board_summary) == 1:
-            normalized_summary = normalize_cross_artifact_math_identity(
-                step.board_summary[0]
+        normalized_summaries = {
+            _normalize_board_identity(item) for item in step.board_summary
+        }
+        visible_episode_results = {
+            _normalize_board_identity(episode_by_id[episode_id].result)
+            for episode_id in step.episode_ids
+        }
+        if normalized_summaries <= visible_episode_results:
+            _fail(
+                "progression_board_summary_not_explanatory",
+                step.step_id,
             )
-            visible_episode_results = {
-                normalize_cross_artifact_math_identity(
-                    episode_by_id[episode_id].result
-                )
-                for episode_id in step.episode_ids
-            }
-            if normalized_summary in visible_episode_results:
-                _fail(
-                    "progression_board_summary_not_explanatory",
-                    step.step_id,
-                )
 
         if step.checkpoint is None:
             continue
