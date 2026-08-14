@@ -489,6 +489,15 @@ def _contains_evidence(container: str, evidence: str) -> bool:
     )
 
 
+def _contains_semantic_anchor(container: str, anchor: str) -> bool:
+    """Match an authored prose anchor through presentation-only variation."""
+    normalized_anchor = normalize_answer_leak_text(anchor)
+    return _contains_evidence(container, anchor) or (
+        bool(normalized_anchor)
+        and normalized_anchor in normalize_answer_leak_text(container)
+    )
+
+
 def _validate_must_teach_script_evidence(
     script: TeachingScript,
     trajectory: ReasoningTrajectory,
@@ -511,6 +520,14 @@ def _validate_must_teach_script_evidence(
                 "must_teach_evidence_missing",
                 item_id,
                 "Current must-teach items require student-visible display and spoken evidence.",
+            )
+        if not _contains_semantic_anchor(
+            item.student_display_evidence, item.content
+        ):
+            _fail(
+                "must_teach_content_anchor_missing",
+                item_id,
+                "Must-teach display evidence must preserve its authored content as a semantic anchor.",
             )
         if not any(
             _contains_evidence(

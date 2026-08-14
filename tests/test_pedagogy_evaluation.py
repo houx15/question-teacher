@@ -44,6 +44,7 @@ CASE_KEYS = {
 }
 STRUCTURED_EXPECTATION_KEYS = {
     "required_step_labels",
+    "required_must_teach_anchors",
     "required_spoken_forms",
     "required_error_codes",
 }
@@ -156,6 +157,33 @@ def test_golden_fixture_starts_with_approved_parameter_root_case():
         "第四步：利用n不等于0约去n",
         "第五步：整理出m-n",
     ]
+    assert case["required_must_teach_anchors"] == [
+        {
+            "content": "方程的根代入后等式仍成立",
+            "display_anchor": "方程的根代入后等式仍成立",
+            "spoken_anchor": "方程的根代入后等式仍然成立",
+        },
+        {
+            "content": "关于x的方程只代入x",
+            "display_anchor": "关于x的方程只代入x",
+            "spoken_anchor": "关于 x 的方程只代入 x",
+        },
+        {
+            "content": "计算(2n)^2时先平方整体",
+            "display_anchor": "计算(2n)^2时先平方整体",
+            "spoken_anchor": "计算二 n 的平方时先平方整个二 n",
+        },
+        {
+            "content": "含字母因子约分前确认非零",
+            "display_anchor": "n≠0才能约去因子n",
+            "spoken_anchor": "n 不等于零才能约去因子 n",
+        },
+        {
+            "content": "n-m与m-n互为相反数",
+            "display_anchor": "n-m与m-n互为相反数",
+            "spoken_anchor": "n 减 m 与 m 减 n 互为相反数",
+        },
+    ]
     assert case["required_spoken_forms"] == [
         {"display": "m-n", "spoken_contains": "m 减 n"},
         {"display": "n≠0", "spoken_contains": "n 不等于零"},
@@ -212,24 +240,24 @@ def _structured_evidence_record(case):
     clauses = [
         SimpleNamespace(
             clause_id="clause-%d" % index,
-            display_text=content,
-            spoken_text=content,
+            display_text=anchor["display_anchor"],
+            spoken_text=anchor["spoken_anchor"],
             must_teach_refs=["must-%d" % index],
         )
-        for index, content in enumerate(case["required_must_teach"], start=1)
+        for index, anchor in enumerate(
+            case["required_must_teach_anchors"], start=1
+        )
     ]
-    clauses[3].display_text += " n≠0"
-    clauses[3].spoken_text += " n 不等于零"
-    clauses[4].display_text += " m-n"
-    clauses[4].spoken_text = "n 减 m 与 m 减 n 互为相反数"
     items = [
         SimpleNamespace(
             must_teach_id="must-%d" % index,
-            content=content,
-            student_display_evidence=content,
-            student_spoken_evidence=clauses[index - 1].spoken_text,
+            content=anchor["content"],
+            student_display_evidence=anchor["display_anchor"],
+            student_spoken_evidence=anchor["spoken_anchor"],
         )
-        for index, content in enumerate(case["required_must_teach"], start=1)
+        for index, anchor in enumerate(
+            case["required_must_teach_anchors"], start=1
+        )
     ]
     options = [
         SimpleNamespace(error_code=error_code)
@@ -276,7 +304,9 @@ def _structured_evidence_record(case):
                             action=SimpleNamespace(
                                 type="write",
                                 surface="board",
-                                content=items[index - 1].student_display_evidence,
+                                content=case["required_must_teach_anchors"][
+                                    index - 1
+                                ]["display_anchor"],
                                 teaching_step_id="step-%d" % index,
                             ),
                         )
@@ -338,13 +368,40 @@ def test_parameter_root_eight_required_mutations_fail_closed(mutation):
     prepared = record.prepared_lesson
     if mutation.startswith("must_teach_"):
         index = int(mutation.rsplit("_", 1)[1]) - 1
-        prepared.teaching_script.clauses[index].must_teach_refs = []
+        generic = "解释当前第%d步" % (index + 1)
+        item = prepared.reasoning_trajectory.episodes[0].must_teach[index]
+        clause = prepared.teaching_script.clauses[index]
+        item.content = generic
+        item.student_display_evidence = generic
+        item.student_spoken_evidence = generic
+        clause.display_text = generic
+        clause.spoken_text = generic
+        prepared.performance_score.cues[index].start_actions[0].action.content = (
+            generic
+        )
     elif mutation == "minus_not_spoken":
         prepared.teaching_script.clauses[4].spoken_text = "n m 互为相反数"
     elif mutation == "wrong_support_not_deeper":
         prepared.teaching_script.response_scripts[1].depth = "brief"
     else:
         prepared.performance_score.cues[2].end_actions = []
+
+    with pytest.raises(evaluation.GoldenEvidenceError):
+        evaluation._validate_structured_case_evidence(case, record)
+
+
+def test_parameter_root_fixture_anchor_rejects_generic_evidence_even_with_provider_content():
+    case = _load_cases()[0]
+    record = _structured_evidence_record(case)
+    prepared = record.prepared_lesson
+    item = prepared.reasoning_trajectory.episodes[0].must_teach[0]
+    item.student_display_evidence = "解释当前这一步"
+    item.student_spoken_evidence = "解释当前这一步"
+    prepared.teaching_script.clauses[0].display_text = "解释当前这一步"
+    prepared.teaching_script.clauses[0].spoken_text = "解释当前这一步"
+    prepared.performance_score.cues[0].start_actions[0].action.content = (
+        "解释当前这一步"
+    )
 
     with pytest.raises(evaluation.GoldenEvidenceError):
         evaluation._validate_structured_case_evidence(case, record)

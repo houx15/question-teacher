@@ -227,7 +227,7 @@ def trajectory_payload(
                         "must_teach_id": "must-%d" % (index + 1),
                         "content": "当前决定与依据",
                         "why_it_matters": "学生需要跟上为什么",
-                        "student_display_evidence": "说明当前一步的依据与作用",
+                        "student_display_evidence": "当前决定与依据：说明当前一步的依据与作用",
                         "student_spoken_evidence": evidence_spoken[index],
                     }
                 ],
@@ -368,7 +368,7 @@ def downstream_script_payload(interactions=None):
             "episode_id": episode_id,
             "lesson_step_id": "teaching-step-%s" % episode_id.split("-")[-1],
             "pedagogical_function": "explain",
-            "display_text": "说明当前一步的依据与作用",
+            "display_text": "当前决定与依据：说明当前一步的依据与作用",
             "spoken_text": spoken_text,
             "math_references": math_references,
             "learner_gain": "理解当前一步为什么推进",

@@ -97,7 +97,8 @@ TEACHING_DESIGNER_SYSTEM = "\n".join(
         "resolved_gap_refs 绑定到一个明确 must_teach 项。",
         "每个 must_teach 必须同时给出 student_display_evidence 与 "
         "student_spoken_evidence；它们是后续讲稿和板书必须原样覆盖的"
-        "学生可见证据，数学运算符的显示与口播必须一致。",
+        "学生可见证据。student_display_evidence 必须完整保留 content 作为"
+        "语义锚点，可以在锚点前后补充自然解释；数学运算符的显示与口播必须一致。",
         "构思、探索、执行、监控和修订可以交替出现。",
         _INERT_EVIDENCE_RULE,
     )

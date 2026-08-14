@@ -212,7 +212,7 @@ def episode_payload(index, step_id):
                 "must_teach_id": "must-%d" % (index + 1),
                 "content": "解释%s" % step_id,
                 "why_it_matters": "学生需要理解依赖",
-                "student_display_evidence": "解释当前这一步为什么成立",
+                "student_display_evidence": "解释%s：说明当前这一步为什么成立" % step_id,
                 "student_spoken_evidence": "我们解释当前这一步为什么成立。",
             }
         ],
@@ -276,7 +276,7 @@ def clause_payload(index, clause_id=None, episode_id=None, math_reference=None):
         "episode_id": episode_id or "episode-%d" % (index + 1),
         "lesson_step_id": "teaching-step-%d" % (index + 1),
         "pedagogical_function": "explain",
-        "display_text": "解释当前这一步为什么成立",
+        "display_text": "解释%s：说明当前这一步为什么成立" % STEP_IDS[index],
         "spoken_text": "我们解释当前这一步为什么成立。",
         "math_references": [math_reference or STATES[index]],
         "learner_gain": "理解当前依赖",
@@ -917,6 +917,41 @@ def test_current_rubric_fails_closed_on_new_student_evidence_ownership(
     assert_code(
         code,
         lambda: validate_prepared_lesson(prepared, route(), []),
+    )
+
+
+def test_must_teach_display_evidence_cannot_replace_authored_content_with_generic_text():
+    trajectory_value = trajectory_payload()
+    script_value = script_payload()
+    trajectory_value["episodes"][0]["must_teach"][0][
+        "student_display_evidence"
+    ] = "解释当前这一步为什么成立"
+    script_value["clauses"][0]["display_text"] = "解释当前这一步为什么成立"
+
+    assert_code(
+        "must_teach_content_anchor_missing",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(script_value),
+            ReasoningTrajectory.model_validate(trajectory_value),
+        ),
+    )
+
+
+def test_must_teach_content_anchor_allows_surrounding_natural_explanation():
+    trajectory_value = trajectory_payload()
+    script_value = script_payload()
+    item = trajectory_value["episodes"][0]["must_teach"][0]
+    item["content"] = "方程的根代入后等式仍成立"
+    item["student_display_evidence"] = (
+        "先记住：方程的根，代入后等式仍成立；这就是下一步的依据"
+    )
+    script_value["clauses"][0]["display_text"] = (
+        "先记住：方程的根，代入后等式仍成立；这就是下一步的依据"
+    )
+
+    validate_current_script(
+        TeachingScript.model_validate(script_value),
+        ReasoningTrajectory.model_validate(trajectory_value),
     )
 
 

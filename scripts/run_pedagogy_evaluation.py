@@ -26,6 +26,10 @@ from app.generation_diagnostics import InternalGenerationDiagnostic
 from app.generation_integrity import validate_lesson_generation_pair
 from app.llm_client import OpenAICompatibleClient
 from app.math_engine import MathEngine
+from app.math_content import (
+    normalize_answer_leak_text,
+    normalize_cross_artifact_math_identity,
+)
 from app.math_speech import MathSpeechError, validate_display_spoken_alignment
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.preparation_models import GenerationRecord
@@ -65,6 +69,7 @@ _CASE_KEYS = {
 }
 _STRUCTURED_EXPECTATION_KEYS = {
     "required_step_labels",
+    "required_must_teach_anchors",
     "required_spoken_forms",
     "required_error_codes",
 }
@@ -745,6 +750,7 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
             )
         if _STRUCTURED_EXPECTATION_KEYS <= set(case):
             labels = case["required_step_labels"]
+            must_teach_anchors = case["required_must_teach_anchors"]
             spoken_forms = case["required_spoken_forms"]
             error_codes = case["required_error_codes"]
             if (
@@ -769,6 +775,30 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
                     )
                     for item in spoken_forms
                 )
+                or type(must_teach_anchors) is not list
+                or len(must_teach_anchors) != 5
+                or any(
+                    type(item) is not dict
+                    or set(item) != {
+                        "content",
+                        "display_anchor",
+                        "spoken_anchor",
+                    }
+                    or any(
+                        type(value) is not str
+                        or value.strip() != value
+                        or not value
+                        or len(value) > 160
+                        for value in item.values()
+                    )
+                    for item in must_teach_anchors
+                )
+                or len(
+                    {item["content"] for item in must_teach_anchors}
+                ) != len(must_teach_anchors)
+                or {
+                    item["content"] for item in must_teach_anchors
+                } != set(case["required_must_teach"])
                 or type(error_codes) is not list
                 or len(error_codes) != 4
                 or len(error_codes) != len(set(error_codes))
@@ -836,12 +866,31 @@ def _validate_structured_case_evidence(
                     )
                 if action.type == "complete_step":
                     completed_steps.add(action.teaching_step_id)
-    for content in case["required_must_teach"]:
-        item = must_teach.get(content)
+
+    def contains_fixture_anchor(container: str, anchor: str) -> bool:
+        normalized_anchor = normalize_answer_leak_text(anchor)
+        return (
+            bool(normalized_anchor)
+            and normalized_anchor in normalize_answer_leak_text(container)
+        ) or (
+            normalize_cross_artifact_math_identity(anchor)
+            in normalize_cross_artifact_math_identity(container)
+        )
+
+    for expected in case["required_must_teach_anchors"]:
+        item = must_teach.get(expected["content"])
         if (
             item is None
             or not item.student_display_evidence
             or not item.student_spoken_evidence
+            or not contains_fixture_anchor(
+                item.student_display_evidence,
+                expected["display_anchor"],
+            )
+            or not contains_fixture_anchor(
+                item.student_spoken_evidence,
+                expected["spoken_anchor"],
+            )
         ):
             raise GoldenEvidenceError(
                 "required must-teach structured evidence is missing"
@@ -849,11 +898,17 @@ def _validate_structured_case_evidence(
         evidence_clauses = [
             clause for clause in clauses
             if item.must_teach_id in clause.must_teach_refs
-            and item.student_display_evidence in (clause.display_text or "")
-            and item.student_spoken_evidence in clause.spoken_text
+            and contains_fixture_anchor(
+                clause.display_text or "", expected["display_anchor"]
+            )
+            and contains_fixture_anchor(
+                clause.spoken_text, expected["spoken_anchor"]
+            )
         ]
         if not evidence_clauses or not any(
-            item.student_display_evidence in action_content
+            contains_fixture_anchor(
+                action_content, expected["display_anchor"]
+            )
             for clause in evidence_clauses
             for action_content in actions_by_clause.get(clause.clause_id, [])
         ):

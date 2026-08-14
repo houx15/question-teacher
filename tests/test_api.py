@@ -3050,11 +3050,20 @@ def _parameter_root_preparation_client():
         "学生能在平方错误后借助中间步骤修正并继续。",
     ]
     trajectory = trajectory_payload()
-    for episode, clause_id in zip(
+    must_teach_contents = (
+        "方程的根代入后等式仍成立",
+        "将x=2n代入原方程",
+        "(2n)^2=4n^2",
+        "n≠0，可以约去n",
+        "m-n",
+    )
+    for episode, clause_id, content in zip(
         trajectory["episodes"],
         ("clause-open", "clause-2", "clause-3", "clause-4", "clause-close"),
+        must_teach_contents,
     ):
         evidence = episode["must_teach"][0]
+        evidence["content"] = content
         evidence["student_display_evidence"] = clause_by_id[clause_id][
             "display_text"
         ]
