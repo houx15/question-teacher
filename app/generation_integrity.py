@@ -46,16 +46,37 @@ def _model_payload(value: object) -> object:
     return model_dump(mode="python")
 
 
+def _is_historical_legacy(
+    record: GenerationRecord,
+    *,
+    allow_legacy: bool,
+) -> bool:
+    prepared = record.prepared_lesson
+    initial = prepared.artifact_history[: len(_LEGACY_ARTIFACT_ORDER)]
+    return (
+        allow_legacy
+        and prepared.rubric_version
+        == _LEGACY_PRE_PROGRESSION_RUBRIC_VERSION
+        and prepared.teaching_progression is None
+        and tuple(item.artifact_type for item in initial)
+        == _LEGACY_ARTIFACT_ORDER
+        and all(
+            item.version == 1
+            and item.responsible_role
+            == _LEGACY_ARTIFACT_ROLES[item.artifact_type]
+            for item in initial
+        )
+    )
+
+
 def _latest_artifact_versions(
     record: GenerationRecord,
     *,
     allow_legacy: bool = False,
 ) -> Dict[str, int]:
-    historical_legacy = (
-        allow_legacy
-        and record.prepared_lesson.rubric_version
-        == _LEGACY_PRE_PROGRESSION_RUBRIC_VERSION
-        and record.prepared_lesson.teaching_progression is None
+    historical_legacy = _is_historical_legacy(
+        record,
+        allow_legacy=allow_legacy,
     )
     artifact_order = (
         _LEGACY_ARTIFACT_ORDER
@@ -134,20 +155,11 @@ def validate_lesson_generation_pair(
         and prepared.rubric_version != PEDAGOGY_RUBRIC_VERSION
     ):
         raise ValueError("generation record prepared rubric version invalid")
-    if (
-        prepared.rubric_version == PEDAGOGY_RUBRIC_VERSION
-        and prepared.teaching_progression is None
-        and (
-            require_current_rubric
-            or tuple(
-                item.artifact_type
-                for item in prepared.artifact_history[
-                    : len(_LEGACY_ARTIFACT_ORDER)
-                ]
-            )
-            != _LEGACY_ARTIFACT_ORDER
-        )
-    ):
+    historical_legacy = _is_historical_legacy(
+        validated_record,
+        allow_legacy=not require_current_rubric,
+    )
+    if prepared.teaching_progression is None and not historical_legacy:
         raise ValueError("generation record teaching progression missing")
     for field in (
         "teaching_route_fingerprint",

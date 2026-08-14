@@ -1267,6 +1267,36 @@ def test_empty_retained_artifacts_are_valid_for_every_authoring_builder():
         assert _parse_envelope(prompt)[1]["repair_request"] == repair
 
 
+def test_student_simulation_prompt_adds_repair_only_when_supplied():
+    initial = _parse_envelope(
+        student_simulation_prompt(
+            reasoning_trajectory(),
+            teaching_script(),
+            interaction_plan(),
+            performance_score(),
+        )
+    )[1]
+    assert "repair_request" not in initial
+
+    repair = repair_request({"simulation_report": simulation_report()})
+    repaired = _parse_envelope(
+        student_simulation_prompt(
+            reasoning_trajectory(),
+            teaching_script(),
+            interaction_plan(),
+            performance_score(),
+            repair=repair,
+        )
+    )[1]
+
+    assert repaired["repair_request"] == {
+        **repair,
+        "retained_artifacts": {
+            "simulation_report": simulation_report().model_dump(mode="json")
+        },
+    }
+
+
 def test_designer_rejects_raw_reference_mapping_in_retained_artifacts():
     repair = repair_request(
         {

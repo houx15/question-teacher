@@ -900,15 +900,24 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
         "interaction_plan",
         "teaching_script",
         "performance_score",
+        "simulation_report",
     ]
-    if responsible_role != "student_simulator":
-        repair = prompt_payload(repair_calls[0])["repair_request"]
-        assert set(repair["retained_artifacts"]) == set(
-            artifact_order[
-                : artifact_order.index(finding["artifact_type"]) + 1
-            ]
+    repair_call = repair_calls[0]
+    repair = prompt_payload(repair_call)["repair_request"]
+    assert set(repair["retained_artifacts"]) == set(
+        artifact_order[
+            : artifact_order.index(finding["artifact_type"]) + 1
+        ]
+    )
+    assert repair["finding_ids"] == [finding["finding_id"]]
+    assert repair["evidence"] == [finding["evidence"]]
+    assert repair["requested_changes"] == [finding["requested_change"]]
+    assert repair["current_artifact_version"] == 1
+    if responsible_role == "student_simulator":
+        assert RAW_REFERENCE_MARKER not in repair_call.user
+        assert repair["retained_artifacts"]["simulation_report"] == (
+            downstream_simulation_payload()
         )
-        assert repair["finding_ids"] == [finding["finding_id"]]
     repaired_revision = next(
         revision
         for revision in reversed(run.audit.history)

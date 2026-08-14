@@ -1007,6 +1007,7 @@ class LessonPreparationPipeline:
     async def _simulate_student(
         self,
         state: PreparationState,
+        repair: Optional[Dict[str, object]] = None,
         finding_ids: Optional[List[str]] = None,
     ) -> SimulationReport:
         self._require_active_state(state)
@@ -1030,6 +1031,7 @@ class LessonPreparationPipeline:
                 state.teaching_script,
                 state.interaction_plan,
                 state.performance_score,
+                repair,
             ),
             SimulationReport,
         )
@@ -1255,7 +1257,11 @@ class LessonPreparationPipeline:
                 finding_ids,
             )
         elif artifact_type == "simulation_report":
-            await self._simulate_student(state, finding_ids=finding_ids)
+            await self._simulate_student(
+                state,
+                repair=repair,
+                finding_ids=finding_ids,
+            )
 
     @staticmethod
     def _deactivate_artifacts(

@@ -110,9 +110,47 @@ def test_historical_rubric_0_1_six_artifact_record_is_readable_only_privately():
 def test_unknown_historical_rubric_cannot_select_legacy_six_artifact_shape():
     lesson, record = legacy_six_artifact_pair("unknown-rubric")
 
-    with pytest.raises(ValueError, match="artifact history invalid"):
+    with pytest.raises(ValueError, match="teaching progression missing"):
         validate_lesson_generation_pair(
             lesson, record, require_current_rubric=False
+        )
+
+
+def test_unknown_rubric_seven_artifact_record_without_progression_is_rejected():
+    lesson, record = current_pair()
+    payload = record.model_dump(mode="python")
+    payload["prepared_lesson"]["rubric_version"] = "unknown-rubric"
+    payload["prepared_lesson"]["teaching_progression"] = None
+    report = dict(lesson.validation_report)
+    report["pedagogy_rubric_version"] = "unknown-rubric"
+
+    with pytest.raises(ValueError, match="teaching progression missing"):
+        validate_lesson_generation_pair(
+            lesson.model_copy(update={"validation_report": report}),
+            GenerationRecord.model_validate(payload),
+            require_current_rubric=False,
+        )
+
+
+def test_unknown_rubric_with_progression_is_private_read_only():
+    lesson, record = current_pair()
+    payload = record.model_dump(mode="python")
+    payload["prepared_lesson"]["rubric_version"] = "unknown-rubric"
+    report = dict(lesson.validation_report)
+    report["pedagogy_rubric_version"] = "unknown-rubric"
+    lesson = lesson.model_copy(update={"validation_report": report})
+    record = GenerationRecord.model_validate(payload)
+
+    validate_lesson_generation_pair(
+        lesson,
+        record,
+        require_current_rubric=False,
+    )
+    with pytest.raises(ValueError, match="prepared rubric version invalid"):
+        validate_lesson_generation_pair(
+            lesson,
+            record,
+            require_current_rubric=True,
         )
 
 

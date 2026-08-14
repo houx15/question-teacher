@@ -225,6 +225,10 @@ _PREPARED_ARTIFACT_TYPES = {
     "teaching_script": TeachingScript,
     "performance_score": PerformanceScore,
 }
+_REPAIR_ARTIFACT_TYPES = {
+    **_PREPARED_ARTIFACT_TYPES,
+    "simulation_report": SimulationReport,
+}
 
 
 def _json_data(value: object) -> _JsonValue:
@@ -400,13 +404,13 @@ def _retained_artifacts_projection(
         raise TypeError(
             "repair_request.retained_artifacts keys must be strings"
         )
-    unknown = set(raw) - set(_PREPARED_ARTIFACT_TYPES)
+    unknown = set(raw) - set(_REPAIR_ARTIFACT_TYPES)
     if unknown:
         raise ValueError("repair_request.retained_artifacts has unknown keys")
     return {
         key: _artifact_payload(
             value,
-            _PREPARED_ARTIFACT_TYPES[key],
+            _REPAIR_ARTIFACT_TYPES[key],
             "repair_request.retained_artifacts.%s" % key,
         )
         for key, value in raw.items()
@@ -642,26 +646,28 @@ def student_simulation_prompt(
     teaching_script: TeachingScript,
     interaction_plan: InteractionPlan,
     performance_score: PerformanceScore,
+    repair: Optional[_InputDict] = None,
 ) -> str:
+    payload = {
+        "reasoning_trajectory": _artifact_payload(
+            reasoning_trajectory,
+            ReasoningTrajectory,
+            "reasoning_trajectory",
+        ),
+        "teaching_script": _artifact_payload(
+            teaching_script, TeachingScript, "teaching_script"
+        ),
+        "interaction_plan": _artifact_payload(
+            interaction_plan, InteractionPlan, "interaction_plan"
+        ),
+        "performance_score": _artifact_payload(
+            performance_score, PerformanceScore, "performance_score"
+        ),
+        "pedagogy_rubric": rubric_payload(),
+    }
     return _prompt_envelope(
         "按版本化教学标准模拟初学者的逐段理解，生成 SimulationReport。",
-        {
-            "reasoning_trajectory": _artifact_payload(
-                reasoning_trajectory,
-                ReasoningTrajectory,
-                "reasoning_trajectory",
-            ),
-            "teaching_script": _artifact_payload(
-                teaching_script, TeachingScript, "teaching_script"
-            ),
-            "interaction_plan": _artifact_payload(
-                interaction_plan, InteractionPlan, "interaction_plan"
-            ),
-            "performance_score": _artifact_payload(
-                performance_score, PerformanceScore, "performance_score"
-            ),
-            "pedagogy_rubric": rubric_payload(),
-        },
+        _with_repair(payload, repair),
     )
 
 
