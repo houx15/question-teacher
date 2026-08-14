@@ -1,3 +1,10 @@
+import {
+  applyStructuredBoardAction,
+  cloneStructuredBoard,
+  emptyStructuredBoard,
+} from "./structured-board.mjs";
+
+
 const MIN_FALLBACK_MS = 2200;
 const MAX_FALLBACK_MS = 9000;
 const SAFE_VISUAL_TARGET = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -46,7 +53,11 @@ export function emptyVisualState(problemTargetIds = []) {
       }
     }
   }
-  return { board: new Map(), problem };
+  return {
+    board: new Map(),
+    problem,
+    structuredBoard: emptyStructuredBoard(),
+  };
 }
 
 
@@ -56,6 +67,7 @@ function cloneVisualState(state) {
   return {
     board: cloneBoard(board),
     problem: cloneProblem(problem),
+    structuredBoard: cloneStructuredBoard(state?.structuredBoard),
   };
 }
 
@@ -167,6 +179,13 @@ export function applySyncVisualAction(currentState, action) {
   }
 
   if (action.surface !== "board") return state;
+  if (typeof action.teaching_step_id === "string") {
+    state.structuredBoard = applyStructuredBoardAction(
+      state.structuredBoard,
+      action,
+    );
+    return state;
+  }
   if (action.type === "write") {
     if (typeof action.content !== "string") return state;
     state.board = applyBoardAction(state.board, action);

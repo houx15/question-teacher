@@ -64,6 +64,63 @@ test("problem emphasis reducer exports the synchronized visual contract", () => 
 });
 
 
+test("visual state includes an isolated structured board", () => {
+  const first = emptyVisualState();
+  const second = emptyVisualState();
+
+  assert.ok(first.structuredBoard.steps instanceof Map);
+  assert.equal(first.structuredBoard.steps.size, 0);
+  assert.notEqual(first.structuredBoard, second.structuredBoard);
+  assert.notEqual(first.structuredBoard.steps, second.structuredBoard.steps);
+});
+
+
+test("step-aware board actions route only to the structured reducer", () => {
+  const initial = emptyVisualState();
+  const revealed = applySyncVisualAction(initial, {
+    surface: "board",
+    type: "reveal_step_header",
+    target: "teaching-step-001",
+    teaching_step_id: "teaching-step-001",
+    step_label: "第一步：理解方程的根",
+  });
+  const written = applySyncVisualAction(revealed, {
+    surface: "board",
+    type: "write",
+    target: "board-root-meaning",
+    teaching_step_id: "teaching-step-001",
+    board_role: "knowledge_anchor",
+    content: "根代入后等式成立",
+  });
+
+  assert.equal(written.board.size, 0);
+  assert.equal(written.problem.size, 0);
+  assert.equal(
+    written.structuredBoard.steps.get("teaching-step-001").lines[0].content,
+    "根代入后等式成立",
+  );
+  assert.equal(initial.structuredBoard.steps.size, 0);
+  assert.notEqual(written.structuredBoard, revealed.structuredBoard);
+});
+
+
+test("legacy board actions preserve the existing reducer result", () => {
+  const initial = emptyVisualState();
+  const legacyAction = {
+    surface: "board",
+    type: "write",
+    target: "legacy-equation",
+    content: "x²-5x+6=0",
+  };
+  const reduced = applySyncVisualAction(initial, legacyAction);
+  const expectedBoard = applyBoardAction(initial.board, legacyAction);
+
+  assert.deepEqual(reduced.board, expectedBoard);
+  assert.equal(reduced.structuredBoard.steps.size, 0);
+  assert.equal(initial.board.size, 0);
+});
+
+
 test("problem emphasis stores active trace metadata only for known targets", () => {
   const initial = emptyVisualState(["problem-math-001"]);
   const result = applySyncVisualAction(initial, {
