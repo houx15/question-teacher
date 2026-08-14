@@ -1230,7 +1230,7 @@ def test_incorrect_response_accepts_reason_and_correction_in_distinct_units():
     )
 
 
-def test_incorrect_response_clusters_containing_wrapper_around_fused_evidence():
+def test_incorrect_response_rejects_containing_wrapper_with_only_fused_evidence():
     _, trajectory, _, *_ = models()
     script, plan = response_anchor_case(
         "目标关系",
@@ -1268,6 +1268,47 @@ def test_incorrect_response_keeps_noncontaining_natural_prefix_suffix_units():
         trajectory,
         TeachingProgression.model_validate(progression_payload()),
         InteractionPlan.model_validate(plan),
+    )
+
+
+def test_incorrect_response_accepts_independent_occurrence_inside_wrapper_unit():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "目标关系",
+        "关系错误",
+        "这个选择出现目标关系错误，再单独说明关系错误。",
+    )
+    script["response_scripts"][1]["clauses"][0][
+        "display_text"
+    ] = "目标关系错误"
+
+    validate_teaching_script(
+        TeachingScript.model_validate(script),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan),
+    )
+
+
+def test_incorrect_response_rejects_two_distinct_wrappers_with_only_fused_evidence():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "目标关系",
+        "关系错误",
+        "这里出现目标关系错误请重试。",
+    )
+    script["response_scripts"][1]["clauses"][0][
+        "display_text"
+    ] = "判断目标关系错误"
+
+    assert_code(
+        "response_semantic_anchor_missing",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(script),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan),
+        ),
     )
 
 

@@ -602,19 +602,36 @@ def _all_occurrence_intervals(
     return intervals
 
 
-def _has_non_overlapping_anchor_evidence(
-    unit: str,
-    first_anchor: str,
-    second_anchor: str,
+def _has_non_overlapping_interval_pair(
+    first: Sequence[Tuple[int, int]],
+    second: Sequence[Tuple[int, int]],
 ) -> bool:
-    first = _all_occurrence_intervals(unit, first_anchor)
-    second = _all_occurrence_intervals(unit, second_anchor)
     if not first or not second:
         return False
     return (
         first[0][1] <= second[-1][0]
         or second[0][1] <= first[-1][0]
     )
+
+
+def _has_locally_independent_occurrence(
+    own: Sequence[Tuple[int, int]],
+    other: Sequence[Tuple[int, int]],
+) -> bool:
+    if not own:
+        return False
+    if not other:
+        return True
+    other_index = 0
+    for start, end in own:
+        while (
+            other_index < len(other)
+            and other[other_index][1] <= start
+        ):
+            other_index += 1
+        if other_index == len(other) or other[other_index][0] >= end:
+            return True
+    return False
 
 
 def _response_evidence_units(response: object) -> List[str]:
@@ -629,50 +646,21 @@ def _response_evidence_units(response: object) -> List[str]:
     return units
 
 
-def _semantic_unit_cores(units: Sequence[str]) -> List[str]:
-    parents = list(range(len(units)))
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    for left in range(len(units)):
-        for right in range(left + 1, len(units)):
-            if units[left] in units[right] or units[right] in units[left]:
-                left_root = find(left)
-                right_root = find(right)
-                if left_root != right_root:
-                    parents[right_root] = left_root
-
-    cores = {}
-    for index, unit in enumerate(units):
-        root = find(index)
-        current = cores.get(root)
-        if current is None or len(unit) < len(current):
-            cores[root] = unit
-    return list(cores.values())
-
-
 def _has_distinct_response_anchor_evidence(
     units: Sequence[str],
     first_anchor: str,
     second_anchor: str,
 ) -> bool:
-    units = _semantic_unit_cores(units)
     first_units = set()
     second_units = set()
     for index, unit in enumerate(units):
-        if _has_non_overlapping_anchor_evidence(
-            unit,
-            first_anchor,
-            second_anchor,
-        ):
+        first = _all_occurrence_intervals(unit, first_anchor)
+        second = _all_occurrence_intervals(unit, second_anchor)
+        if _has_non_overlapping_interval_pair(first, second):
             return True
-        if first_anchor in unit:
+        if _has_locally_independent_occurrence(first, second):
             first_units.add(index)
-        if second_anchor in unit:
+        if _has_locally_independent_occurrence(second, first):
             second_units.add(index)
     return bool(
         first_units
