@@ -18,6 +18,7 @@ from app.pedagogy_rubric import ReviewCriterionId
 from app.schemas import (
     CueSpokenText,
     GeneratedId,
+    GeneratedLabelText,
     GeneratedMathAnswer,
     GeneratedTransferItem,
     MethodIntroduction,
@@ -41,7 +42,8 @@ ReasoningMode = Literal["understand", "plan", "explore", "execute", "monitor", "
 TrajectoryType = Literal["planned", "exploratory", "hybrid"]
 PedagogicalFunction = Literal["focus", "question", "explain", "decide", "execute", "observe", "correct", "transition", "review", "summarize"]
 DiagnosticKind = Literal["conception", "execution"]
-ArtifactType = Literal["solution_trace", "reasoning_trajectory", "teaching_script", "interaction_plan", "performance_score", "simulation_report"]
+TeachingPhase = Literal["construct", "explore", "execute", "check"]
+ArtifactType = Literal["solution_trace", "reasoning_trajectory", "teaching_progression", "interaction_plan", "teaching_script", "performance_score", "simulation_report"]
 ResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director"]
 RoleName = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator", "lesson_reviewer"]
 ArtifactResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator"]
@@ -215,6 +217,57 @@ class ReasoningTrajectory(SchemaModel):
         _require_unique([item.episode_id for item in self.episodes], "episode ids")
         if [item.sequence_index for item in self.episodes] != list(range(len(self.episodes))):
             raise ValueError("episode sequence indexes must be contiguous starting at zero")
+        return self
+
+
+class ProgressionCheckpoint(SchemaModel):
+    diagnostic_goal: NonEmptyString
+    misconception_ids: List[GeneratedId] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
+
+
+class TeachingProgressionStep(SchemaModel):
+    step_id: GeneratedId
+    sequence_index: int = Field(ge=0)
+    episode_ids: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+    phase: TeachingPhase
+    student_problem: NonEmptyString
+    why_now: NonEmptyString
+    evidence_target_ids: List[GeneratedId] = Field(
+        default_factory=list, max_length=MAX_DETAIL_ITEMS
+    )
+    guiding_questions: List[NonEmptyString] = Field(
+        min_length=1, max_length=MAX_DETAIL_ITEMS
+    )
+    knowledge_anchor: NonEmptyString
+    checkpoint: Optional[ProgressionCheckpoint] = None
+    reveal: NonEmptyString
+    math_action: NonEmptyString
+    directory_question: NonEmptyString
+    directory_label: GeneratedLabelText
+    board_summary: List[NarrativeBoardContent] = Field(min_length=1, max_length=8)
+    error_tip: NonEmptyString
+    transition_question: NonEmptyString
+    must_teach_refs: List[GeneratedId] = Field(
+        min_length=1, max_length=MAX_DETAIL_ITEMS
+    )
+
+
+class TeachingProgression(SchemaModel):
+    steps: List[TeachingProgressionStep] = Field(
+        min_length=1, max_length=MAX_PREPARATION_ITEMS
+    )
+
+    @model_validator(mode="after")
+    def validate_steps(self) -> "TeachingProgression":
+        _require_unique([item.step_id for item in self.steps], "teaching step ids")
+        if [item.sequence_index for item in self.steps] != list(range(len(self.steps))):
+            raise ValueError(
+                "teaching step indexes must be contiguous starting at zero"
+            )
         return self
 
 
@@ -488,6 +541,7 @@ class PreparedLesson(SchemaModel):
     rubric_version: NonEmptyString
     solution_trace: SolutionTrace
     reasoning_trajectory: ReasoningTrajectory
+    teaching_progression: Optional[TeachingProgression] = None
     teaching_script: TeachingScript
     interaction_plan: InteractionPlan
     performance_score: PerformanceScore

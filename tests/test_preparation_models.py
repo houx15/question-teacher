@@ -89,6 +89,33 @@ def teaching_script():
     }
 
 
+def teaching_progression_payload():
+    return {
+        "steps": [
+            {
+                "step_id": "teaching-step-001",
+                "sequence_index": 0,
+                "episode_ids": ["episode-001"],
+                "phase": "construct",
+                "student_problem": "方程的根代表什么？",
+                "why_now": "先把题目的关键事实变成可执行条件。",
+                "evidence_target_ids": ["problem-focus-001"],
+                "guiding_questions": ["把一个数代入方程后会发生什么？"],
+                "knowledge_anchor": "方程的根代入后等式成立",
+                "checkpoint": None,
+                "reveal": "令x=2n",
+                "math_action": "把根代入关于x的方程",
+                "directory_question": "根代表什么？",
+                "directory_label": "第一步：理解方程的根",
+                "board_summary": ["方程的根 → 代入后等式成立"],
+                "error_tip": "不要把根代给m或n",
+                "transition_question": "这个方程是关于谁的？",
+                "must_teach_refs": ["must-teach-root"],
+            }
+        ]
+    }
+
+
 def prepared_lesson():
     return {
         "rubric_version": "v1", "solution_trace": {"task_target": "x", "reference_conclusion": "x=2", "source_steps": [trace_step()]},
@@ -213,6 +240,107 @@ def test_reasoning_trajectory_rejects_duplicate_episode_ids():
     payload["episodes"] = [episode("episode-1", 0), episode("episode-1", 1, "plan")]
     with pytest.raises(ValidationError, match="episode ids"):
         ReasoningTrajectory.model_validate(payload)
+
+
+def test_teaching_progression_accepts_ordered_steps_with_stable_ids_and_valid_phases():
+    payload = teaching_progression_payload()
+    first_step = payload["steps"][0]
+    payload["steps"] = [
+        dict(
+            first_step,
+            step_id="teaching-step-%03d" % (index + 1),
+            sequence_index=index,
+            phase=phase,
+        )
+        for index, phase in enumerate(["construct", "explore", "execute", "check"])
+    ]
+
+    progression = preparation_models.TeachingProgression.model_validate(payload)
+
+    assert [item.step_id for item in progression.steps] == [
+        "teaching-step-001",
+        "teaching-step-002",
+        "teaching-step-003",
+        "teaching-step-004",
+    ]
+    assert [item.sequence_index for item in progression.steps] == [0, 1, 2, 3]
+    assert [item.phase for item in progression.steps] == [
+        "construct",
+        "explore",
+        "execute",
+        "check",
+    ]
+
+
+def test_teaching_progression_requires_contiguous_indexes_starting_at_zero():
+    payload = teaching_progression_payload()
+    payload["steps"][0]["sequence_index"] = 1
+
+    with pytest.raises(
+        ValidationError,
+        match="teaching step indexes must be contiguous starting at zero",
+    ):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+
+def test_teaching_progression_requires_guidance_and_closed_phase_vocabulary():
+    payload = teaching_progression_payload()
+    payload["steps"][0]["guiding_questions"] = []
+    with pytest.raises(ValidationError):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+    payload = teaching_progression_payload()
+    payload["steps"][0]["phase"] = "lecture"
+    with pytest.raises(ValidationError):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+
+def test_teaching_progression_rejects_duplicate_and_invalid_step_ids():
+    payload = teaching_progression_payload()
+    duplicate = copy.deepcopy(payload["steps"][0])
+    duplicate["sequence_index"] = 1
+    payload["steps"].append(duplicate)
+    with pytest.raises(ValidationError, match="teaching step ids"):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+    payload = teaching_progression_payload()
+    payload["steps"][0]["step_id"] = "bad id"
+    with pytest.raises(ValidationError):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+
+def test_teaching_progression_board_summary_has_explicit_bounds():
+    payload = teaching_progression_payload()
+    payload["steps"][0]["board_summary"] = [
+        "板书%d" % index for index in range(8)
+    ]
+    assert len(
+        preparation_models.TeachingProgression.model_validate(payload)
+        .steps[0]
+        .board_summary
+    ) == 8
+
+    payload["steps"][0]["board_summary"].append("板书超限")
+    with pytest.raises(ValidationError, match="at most 8"):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+    payload = teaching_progression_payload()
+    payload["steps"][0]["board_summary"] = []
+    with pytest.raises(ValidationError):
+        preparation_models.TeachingProgression.model_validate(payload)
+
+
+def test_prepared_lesson_contains_first_class_teaching_progression():
+    payload = prepared_lesson()
+    payload["teaching_progression"] = teaching_progression_payload()
+
+    dumped = PreparedLesson.model_validate(payload).model_dump()
+    reparsed = PreparedLesson.model_validate(dumped)
+
+    assert (
+        reparsed.teaching_progression.steps[0].directory_label
+        == "第一步：理解方程的根"
+    )
 
 
 def test_reasoning_trajectory_episode_count_is_bounded_at_validation_edge():
