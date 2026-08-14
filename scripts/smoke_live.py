@@ -180,7 +180,7 @@ def assert_model_call_contract(
     )
     _require_contract(
         all(
-            count <= LessonPreparationPipeline.MAX_STRUCTURE_ATTEMPTS
+            count <= LessonGenerationService.MAX_GROUNDING_ATTEMPTS
             for _stage, count in runs[: len(prefix)]
         ),
         "smoke 的路线审计阶段重试超限。",

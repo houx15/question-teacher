@@ -787,31 +787,48 @@ class LessonPreparationPipeline:
                 "reasoning trajectory must exist before progression design"
             )
         await self._emit(on_stage, "设计教学推进")
-        progression = await self._complete_model(
+        base_prompt = self._build_prompt(
+            state,
             "teaching_designer",
-            TEACHING_PROGRESSION_SYSTEM,
-            self._build_prompt(
-                state,
-                "teaching_designer",
-                teaching_progression_prompt,
-                state.reasoning_trajectory,
-                problem_focus_targets,
-                repair,
-            ),
-            TeachingProgression,
+            teaching_progression_prompt,
+            state.reasoning_trajectory,
+            problem_focus_targets,
+            repair,
         )
-        try:
-            validate_teaching_progression(
-                progression,
-                state.reasoning_trajectory,
-                problem_focus_targets,
-            )
-        except TeachingProgressionValidationError:
-            self._mark_last_call_failed(
-                state,
+        validation_error: Optional[TeachingProgressionValidationError] = None
+        for semantic_attempt in range(2):
+            attempt_prompt = base_prompt
+            if semantic_attempt and validation_error is not None:
+                attempt_prompt += (
+                    "\n上一次教学推进未通过确定性校验。"
+                    "请完整重写 TeachingProgression，不要局部补丁。"
+                    "稳定错误码："
+                    + validation_error.code
+                    + "；对象："
+                    + validation_error.artifact_id
+                    + "。"
+                )
+            progression = await self._complete_model(
                 "teaching_designer",
-                "teaching_progression_failed",
+                TEACHING_PROGRESSION_SYSTEM,
+                attempt_prompt,
+                TeachingProgression,
             )
+            try:
+                validate_teaching_progression(
+                    progression,
+                    state.reasoning_trajectory,
+                    problem_focus_targets,
+                )
+                break
+            except TeachingProgressionValidationError as error:
+                validation_error = error
+                self._mark_last_call_failed(
+                    state,
+                    "teaching_designer",
+                    "teaching_progression_failed",
+                )
+        else:
             raise PreparationFailure(
                 category="teaching_progression_failed",
                 role="teaching_designer",

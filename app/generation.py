@@ -268,6 +268,8 @@ class _VerifiedMathRoute:
 
 
 class LessonGenerationService:
+    MAX_GROUNDING_ATTEMPTS = 3
+
     def __init__(
         self,
         client: Any,
@@ -529,7 +531,7 @@ class LessonGenerationService:
         await self._emit(on_stage, "正在整理参考教学路线")
         grounding_prompt = reference_grounding_prompt(problem)
         validation_guidance = ""
-        for attempt in range(2):
+        for attempt in range(self.MAX_GROUNDING_ATTEMPTS):
             attempt_prompt = grounding_prompt
             if attempt:
                 attempt_prompt += (
@@ -549,7 +551,7 @@ class LessonGenerationService:
                 )
                 break
             except ValidationError as error:
-                if attempt == 1:
+                if attempt + 1 == self.MAX_GROUNDING_ATTEMPTS:
                     raise LessonQualityError(
                         "参考教学路线结构无效。"
                     ) from None

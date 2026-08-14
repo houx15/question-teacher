@@ -550,11 +550,12 @@ def test_grounder_retry_names_only_safe_invalid_field_paths():
     assert "这是私密解释" not in client.user_prompts[1]
 
 
-def test_grounder_schema_retry_is_bounded_to_one_extra_attempt():
+def test_grounder_schema_retry_is_bounded_to_two_extra_attempts():
     client = FakeClient(
         [
             {"private": "first invalid response"},
             {"private": "second invalid response"},
+            {"private": "third invalid response"},
         ]
     )
     service = LessonGenerationService(client, MathEngine())
@@ -568,6 +569,7 @@ def test_grounder_schema_retry_is_bounded_to_one_extra_attempt():
         )
 
     assert client.system_prompts == [
+        REFERENCE_GROUNDING_SYSTEM,
         REFERENCE_GROUNDING_SYSTEM,
         REFERENCE_GROUNDING_SYSTEM,
     ]
@@ -701,7 +703,7 @@ def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream(
 def test_grounder_reference_only_literal_is_rejected_before_preparation():
     payload = grounding_payload()
     payload["method_name"] = RAW_REFERENCE_MARKER
-    client = _approved_preparation_client([payload, payload])
+    client = _approved_preparation_client([payload, payload, payload])
     source = grounded_source_problem(
         reference_solution_text=RAW_REFERENCE_MARKER
     )
@@ -715,6 +717,7 @@ def test_grounder_reference_only_literal_is_rejected_before_preparation():
 
     assert RAW_REFERENCE_MARKER not in str(captured.value)
     assert [call.role for call in client.calls] == [
+        "reference_grounder",
         "reference_grounder",
         "reference_grounder",
     ]

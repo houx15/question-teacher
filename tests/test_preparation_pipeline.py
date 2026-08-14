@@ -2827,6 +2827,7 @@ def test_deterministic_progression_failure_is_audited_after_model_call():
     invalid = teaching_progression_payload()
     invalid["steps"][0]["why_now"] = "然后计算"
     fake = client(progression=invalid)
+    fake.responses_by_role["teaching_designer"].append(invalid)
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
@@ -2839,6 +2840,7 @@ def test_deterministic_progression_failure_is_audited_after_model_call():
     assert captured.value.role == "teaching_designer"
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
+        "teaching_designer",
         "teaching_designer",
         "teaching_designer",
     ]
@@ -2856,6 +2858,41 @@ def test_deterministic_progression_failure_is_audited_after_model_call():
     assert captured.value.audit.role_calls[-1].output_artifact_version is None
 
 
+def test_progression_semantic_failure_gets_one_content_free_rewrite():
+    invalid = teaching_progression_payload()
+    invalid["steps"][0]["why_now"] = "然后计算"
+    fake = client(progression=invalid)
+    fake.responses_by_role["teaching_designer"].append(
+        teaching_progression_payload()
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    assert result.prepared_lesson.teaching_progression is not None
+    progression_calls = [
+        call for call in fake.calls if call.role == "teaching_designer"
+    ][1:]
+    assert len(progression_calls) == 2
+    assert "progression_why_not_explanatory" in progression_calls[1].user
+    assert "；对象：" in progression_calls[1].user
+    assert "然后计算" not in progression_calls[1].user
+    audited_progression_calls = [
+        call
+        for call in result.audit.role_calls
+        if call.role == "teaching_designer"
+    ][1:]
+    assert audited_progression_calls[0].output_artifact_version is None
+    assert audited_progression_calls[0].failure_category == (
+        "teaching_progression_failed"
+    )
+    assert audited_progression_calls[1].output_artifact_version == 1
+    assert audited_progression_calls[1].failure_category is None
+
+
 def test_progression_repair_semantic_failure_retains_trace_and_trajectory_only():
     invalid_repair = teaching_progression_payload()
     invalid_repair["steps"][0]["why_now"] = "然后计算"
@@ -2865,6 +2902,7 @@ def test_progression_repair_semantic_failure_retains_trace_and_trajectory_only()
             "teaching_designer": [
                 trajectory_payload(),
                 teaching_progression_payload(),
+                invalid_repair,
                 invalid_repair,
             ],
             "interaction_designer": [downstream_interaction_payload()],
