@@ -28,6 +28,7 @@ from app.schemas import (
     NarrativeSyncCue,
     ProblemInput,
     RESERVED_RUNTIME_CUE_IDS,
+    SupportSyncCue,
     TransferItem,
     TransferOption,
 )
@@ -293,7 +294,15 @@ def _narrative_cue_part(
     )
 
 
-def _runtime_interaction(planned: PlannedInteraction) -> Interaction:
+def _runtime_interaction(
+    planned: PlannedInteraction,
+    script: TeachingScript,
+) -> Interaction:
+    responses = {
+        response.option_id: response
+        for response in script.response_scripts
+        if response.interaction_id == planned.interaction_id
+    }
     return Interaction(
         interaction_id=planned.interaction_id,
         kind="choice",
@@ -303,18 +312,20 @@ def _runtime_interaction(planned: PlannedInteraction) -> Interaction:
             InteractionOption(
                 option_id=option.option_id,
                 label=option.display_text,
-                feedback=(
-                    planned.correct_feedback
-                    if option.option_id == planned.correct_option_id
-                    else planned.incorrect_feedback_by_option[
-                        option.option_id
-                    ]
-                ),
+                support_cues=[
+                    SupportSyncCue(
+                        cue_id=clause.clause_id,
+                        display_text=clause.display_text,
+                        spoken_text=clause.spoken_text,
+                    )
+                    for clause in responses[option.option_id].clauses
+                ],
             )
             for option in planned.options
         ],
-        hints=[planned.hint],
-        explanation_after_correct=planned.correct_feedback,
+        hints=[planned.hint] if planned.hint is not None else [],
+        explanation_after_correct="",
+        advance_after_response=True,
     )
 
 
@@ -342,10 +353,27 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
     summary_ids = set(script.closing_summary_clause_ids)
     layer_by_clause = _layer_by_clause(prepared)
     section_cues = {"opening": [], "method": [], "body": [], "summary": []}
-    interactions_after_clause = {
-        item.after_clause_id: _runtime_interaction(item)
-        for item in prepared.interaction_plan.interactions
-    }
+    interactions_after_clause = {}
+    for item in prepared.interaction_plan.interactions:
+        boundary_clause_id = None
+        if item.teaching_step_id is not None:
+            matching_clause_ids = [
+                clause.clause_id
+                for clause in script.clauses
+                if clause.lesson_step_id == item.teaching_step_id
+            ]
+            if matching_clause_ids:
+                boundary_clause_id = matching_clause_ids[-1]
+        else:
+            boundary_clause_id = item.after_clause_id
+        if boundary_clause_id is None:
+            raise PreparedLessonAdaptationError(
+                "current interaction has no authored teaching-step boundary"
+            )
+        interactions_after_clause[boundary_clause_id] = _runtime_interaction(
+            item,
+            script,
+        )
     interaction_episode_ids = {
         item.episode_id for item in prepared.interaction_plan.interactions
     }

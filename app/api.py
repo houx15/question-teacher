@@ -197,9 +197,13 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
             interaction.pop("expected_answer", None)
             interaction.pop("explanation_after_correct", None)
             interaction.pop("correct_audio_url", None)
+            if interaction.get("advance_after_response") is False:
+                interaction.pop("advance_after_response", None)
             for option in interaction.get("options", []):
                 option.pop("feedback", None)
                 option.pop("feedback_audio_url", None)
+                if not option.get("support_cues"):
+                    option.pop("support_cues", None)
     return payload
 
 

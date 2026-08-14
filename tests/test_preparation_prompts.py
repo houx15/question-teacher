@@ -601,10 +601,12 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
             (
                 "诊断概念或执行",
                 "恰好一个正确选项",
-                "所有学生可见文本必须使用简体中文",
-                "零个互动",
-                "不得放入 concealed_targets",
-            ),
+                    "所有学生可见文本必须使用简体中文",
+                    "零个互动",
+                    "只输出结构化诊断意图",
+                    "resume_policy 必须是 continue",
+                    "remediation_depth",
+                ),
         ),
         (
             CLASSROOM_DIRECTOR_SYSTEM,

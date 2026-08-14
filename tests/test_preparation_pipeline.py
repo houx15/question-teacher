@@ -259,7 +259,14 @@ def teaching_progression_payload(evidence_target_ids=None):
                 ),
                 "guiding_questions": [episode["thinking_question"]],
                 "knowledge_anchor": episode["decision_reason"],
-                "checkpoint": None,
+                "checkpoint": (
+                    {
+                        "diagnostic_goal": "检查学生是否知道要继续整理",
+                        "misconception_ids": [],
+                    }
+                    if index == 1
+                    else None
+                ),
                 "reveal": episode["decision"],
                 "math_action": episode["mathematical_action"],
                 "directory_question": episode["thinking_question"],
@@ -288,8 +295,10 @@ def downstream_response_scripts(interactions):
                     "interaction_id": interaction["interaction_id"],
                     "option_id": option["option_id"],
                     "classification": "correct" if correct else "incorrect",
-                    "error_code": None if correct else "choice-error",
-                    "depth": "brief" if correct else "conceptual",
+                    "error_code": None if correct else option["error_code"],
+                    "depth": (
+                        "brief" if correct else option["remediation_depth"]
+                    ),
                     "clauses": [
                         {
                             "clause_id": "response-clause-%s-%s"
@@ -403,14 +412,16 @@ def downstream_planned_interaction(interaction_id="interaction-1"):
     return {
         "interaction_id": interaction_id,
         "episode_id": "episode-2",
+        "teaching_step_id": "teaching-step-2",
         "after_clause_id": "clause-2",
+        "why_pause": "此处停下是为了检查学生是否知道要继续整理。",
         "diagnostic_target": "是否知道要继续整理",
         "diagnostic_kind": "execution",
         "prompt": "下一步应该怎样做？",
         "options": [
             {"option_id": "option-a", "display_text": "继续整理", "canonical_answer": "simplify"},
-            {"option_id": "option-b", "display_text": "停在原式", "canonical_answer": "stop", "misconception": "没有推进"},
-            {"option_id": "option-c", "display_text": "猜测结论", "canonical_answer": "guess", "misconception": "跳步"},
+            {"option_id": "option-b", "display_text": "停在原式", "canonical_answer": "stop", "misconception": "没有推进", "error_code": "no-progress", "remediation_depth": "conceptual"},
+            {"option_id": "option-c", "display_text": "猜测结论", "canonical_answer": "guess", "misconception": "跳步", "error_code": "skip-step", "remediation_depth": "conceptual"},
         ],
         "correct_option_id": "option-a",
         "correct_feedback": "对，继续整理才能推进。",
@@ -420,6 +431,8 @@ def downstream_planned_interaction(interaction_id="interaction-1"):
         },
         "hint": "看看当前等式。",
         "resume_clause_id": "clause-2-resume",
+        "resume_step_id": "teaching-step-2",
+        "resume_policy": "continue",
         "concealed_targets": [],
     }
 
@@ -1951,7 +1964,7 @@ def test_multiple_interactions_in_one_episode_fail_before_performance_stage():
     assert "classroom_director" not in [call.role for call in fake.calls]
 
 
-def test_script_cross_validation_failure_preserves_issued_interaction_audit():
+def test_interaction_intent_failure_is_not_accepted_into_artifact_history():
     interaction = downstream_planned_interaction()
     duplicate = downstream_planned_interaction("interaction-2")
     fake = client(
@@ -1969,23 +1982,18 @@ def test_script_cross_validation_failure_preserves_issued_interaction_audit():
         )
 
     audit = captured.value.audit
-    assert audit.versions["interaction_plan"] == 1
+    assert "interaction_plan" not in audit.versions
     assert "interaction_plan" not in audit.active_versions
-    assert any(
-        item.artifact_type == "interaction_plan" and item.version == 1
-        for item in audit.history
-    )
+    assert all(item.artifact_type != "interaction_plan" for item in audit.history)
     interaction_call = next(
         call
         for call in audit.role_calls
-        if call.output_artifact_type == "interaction_plan"
+        if call.role == "interaction_designer"
     )
-    assert interaction_call.output_artifact_version == 1
+    assert interaction_call.output_artifact_type is None
+    assert interaction_call.output_artifact_version is None
     assert interaction_call.failure_category == "interaction_plan_failed"
-    script_call = next(
-        call for call in audit.role_calls if call.role == "script_teacher"
-    )
-    assert script_call.input_artifact_versions["interaction_plan"] == 1
+    assert all(call.role != "script_teacher" for call in audit.role_calls)
     issued = {
         (item.artifact_type, item.version) for item in audit.history
     }
@@ -1996,7 +2004,7 @@ def test_script_cross_validation_failure_preserves_issued_interaction_audit():
     )
 
 
-def test_pipeline_removes_resume_clause_from_concealed_control_metadata():
+def test_pipeline_does_not_use_legacy_concealed_targets_for_current_intent():
     interaction = downstream_planned_interaction()
     interaction["concealed_targets"] = [
         interaction["resume_clause_id"],
@@ -2016,11 +2024,11 @@ def test_pipeline_removes_resume_clause_from_concealed_control_metadata():
     )
 
     accepted = run.prepared_lesson.interaction_plan.interactions[0]
-    assert accepted.concealed_targets == ["must-2"]
+    assert accepted.concealed_targets == ["clause-2-resume", "must-2"]
     assert [call.role for call in fake.calls].count("interaction_designer") == 1
 
 
-def test_pipeline_removes_already_visible_concealed_control_metadata():
+def test_pipeline_preserves_legacy_concealed_metadata_without_script_dependency():
     interaction = downstream_planned_interaction()
     interaction["concealed_targets"] = ["must-2"]
     interaction["prompt"] = "当前决定与依据是什么？"
@@ -2037,7 +2045,7 @@ def test_pipeline_removes_already_visible_concealed_control_metadata():
     )
 
     accepted = run.prepared_lesson.interaction_plan.interactions[0]
-    assert accepted.concealed_targets == []
+    assert accepted.concealed_targets == ["must-2"]
 
 
 def test_pipeline_normalizes_section_only_script_episode_metadata():

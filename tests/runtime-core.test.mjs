@@ -17,6 +17,7 @@ const {
   isCurrentInteractionSubmission,
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
+  runSupportCueSequence,
   scheduleBoardActions,
 } = runtimeCore;
 
@@ -821,6 +822,34 @@ test("incorrect answers reveal progressive hints and require retry", () => {
 });
 
 
+test("adaptive wrong answers unlock only interactions that advance after response", () => {
+  const adaptiveBeat = {
+    ...beats[2],
+    interaction: {
+      ...beats[2].interaction,
+      advance_after_response: true,
+    },
+  };
+  const adaptive = new LessonRuntime([adaptiveBeat]);
+  const legacy = new LessonRuntime([beats[2]]);
+
+  assert.deepEqual(
+    adaptive.recordAnswer({ classification: "incorrect", hints: ["提示"] }),
+    {
+      classification: "incorrect",
+      canContinue: true,
+      hint: null,
+      hintIndex: null,
+    },
+  );
+  assert.deepEqual(adaptive.answers.get(adaptiveBeat.interaction.interaction_id), {
+    classification: "incorrect",
+    canContinue: true,
+  });
+  assert.equal(legacy.recordAnswer({ classification: "incorrect" }).canContinue, false);
+});
+
+
 test("correct and needs-review answers unlock the interaction", () => {
   const runtime = new LessonRuntime([beats[2]]);
 
@@ -937,6 +966,109 @@ test("wrong diagnostic option presents its own feedback and audio", () => {
     audioUrl: "/audio/option-b.mp3",
     advanceMode: "retry",
   });
+});
+
+
+test("wrong adaptive option presents authored support and advances automatically", () => {
+  const supportCues = [
+    {
+      cue_id: "support-1",
+      display_text: "先回到根条件。",
+      spoken_text: "先回到根条件。",
+      lead_actions: [],
+      start_actions: [],
+      end_actions: [],
+      audio_url: null,
+    },
+  ];
+  const presentation = resolveInteractionPresentation({
+    result: { classification: "incorrect" },
+    interaction: { advance_after_response: true },
+    selectedOption: { option_id: "option-b", support_cues: supportCues },
+    outcome: { classification: "incorrect", canContinue: true },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "先回到根条件。",
+    audioUrl: null,
+    supportCues,
+    advanceMode: "automatic",
+  });
+});
+
+
+test("wrong legacy option still retries even if support-shaped data is present", () => {
+  const presentation = resolveInteractionPresentation({
+    result: { classification: "incorrect" },
+    interaction: {
+      advance_after_response: false,
+      hints: ["返回原条件。"],
+    },
+    selectedOption: {
+      option_id: "legacy-option",
+      support_cues: [
+        { cue_id: "ignored-support", spoken_text: "不应自动推进。" },
+      ],
+    },
+    outcome: {
+      classification: "incorrect",
+      canContinue: false,
+      hint: "返回原条件。",
+      hintIndex: 0,
+    },
+  });
+
+  assert.deepEqual(presentation, {
+    message: "提示：返回原条件。",
+    audioUrl: null,
+    advanceMode: "retry",
+  });
+});
+
+
+test("support cue sequence applies phases in order and completes once", async () => {
+  const events = [];
+  await runSupportCueSequence(
+    [
+      {
+        cue_id: "support-1",
+        spoken_text: "先解释原因。",
+        lead_actions: [{ type: "focus", target: "condition" }],
+        start_actions: [{ type: "write", target: "reason" }],
+        end_actions: [{ type: "clear_focus", target: "condition" }],
+        audio_url: "/audio/support-1.mp3",
+      },
+      {
+        cue_id: "support-2",
+        spoken_text: "再给出修正。",
+        lead_actions: [],
+        start_actions: [],
+        end_actions: [],
+        audio_url: null,
+      },
+    ],
+    {
+      applyActions: (phase, actions) => events.push(`${phase}:${actions.length}`),
+      presentCue: (cue) => events.push(`present:${cue.cue_id}`),
+      playAudio: async (url, spokenText) => events.push(`audio:${url}:${spokenText}`),
+      complete: () => events.push("complete"),
+    },
+  );
+
+  assert.deepEqual(events, [
+    "lead:1",
+    "present:support-1",
+    "start:1",
+    "audio:/audio/support-1.mp3:先解释原因。",
+    "end:1",
+    "lead:0",
+    "present:support-2",
+    "start:0",
+    "audio:null:再给出修正。",
+    "end:0",
+    "complete",
+  ]);
+  assert.equal(events.filter((event) => event === "complete").length, 1);
 });
 
 

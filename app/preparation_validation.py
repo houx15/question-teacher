@@ -730,11 +730,18 @@ def _validate_response_scripts(
                         response.response_id,
                         "Correct responses cannot carry an error code.",
                     )
-            elif response.depth == "brief":
+            elif response.depth != option.remediation_depth:
                 _fail(
                     "response_depth_invalid",
                     response.response_id,
-                    "Incorrect responses require conceptual or worked remediation.",
+                    "Incorrect response depth must match its bound option intent.",
+                )
+
+            if not is_correct and response.error_code != option.error_code:
+                _fail(
+                    "response_error_code_invalid",
+                    response.response_id,
+                    "Incorrect response error code must match its bound option intent.",
                 )
 
             if not is_correct and option.misconception is None:
@@ -784,25 +791,43 @@ def _validate_response_scripts(
                     option.misconception or ""
                 )
                 correction_anchor = normalize_answer_leak_text(
-                    interaction.incorrect_feedback_by_option[option.option_id]
+                    interaction.incorrect_feedback_by_option.get(
+                        option.option_id, ""
+                    )
                 )
-                if not misconception_anchor or not correction_anchor:
+                if not misconception_anchor:
                     _fail(
                         "response_semantic_anchor_missing",
                         response.response_id,
-                        "Incorrect response must directly express its misconception and correction anchors.",
+                        "Incorrect response must directly express its misconception anchor.",
                     )
-                if misconception_anchor == correction_anchor:
+                if correction_anchor and misconception_anchor == correction_anchor:
                     _fail(
                         "response_remediation_insufficient",
                         response.response_id,
                         "Incorrect response requires distinct reason and correction units.",
                     )
-                if not _has_distinct_response_anchor_evidence(
-                    _response_evidence_units(response),
-                    misconception_anchor,
-                    correction_anchor,
-                ):
+                evidence_units = _response_evidence_units(response)
+                has_anchors = (
+                    _has_distinct_response_anchor_evidence(
+                        evidence_units,
+                        misconception_anchor,
+                        correction_anchor,
+                    )
+                    if correction_anchor
+                    else any(
+                        contains_bounded_answer_token(unit, misconception_anchor)
+                        for unit in evidence_units
+                    )
+                    and any(
+                        unit != misconception_anchor
+                        and not contains_bounded_answer_token(
+                            misconception_anchor, unit
+                        )
+                        for unit in evidence_units
+                    )
+                )
+                if not has_anchors:
                     _fail(
                         "response_semantic_anchor_missing",
                         response.response_id,
@@ -833,7 +858,7 @@ def _leaks_correct_answer(interaction: object) -> bool:
         for item in interaction.options
         if item.option_id == interaction.correct_option_id
     )
-    visible_text = "|".join((interaction.prompt, interaction.hint))
+    visible_text = "|".join((interaction.prompt, interaction.hint or ""))
     if contains_explicit_choice_answer_leak(
         visible_text,
         correct.option_id,
@@ -885,7 +910,7 @@ def _leaks_concealed_content(
     interaction: object,
     concealed_registry: dict,
 ) -> bool:
-    visible_parts = [interaction.prompt, interaction.hint]
+    visible_parts = [interaction.prompt, interaction.hint or ""]
     visible_parts.extend(
         item.display_text
         for item in interaction.options
@@ -918,7 +943,7 @@ def normalize_interaction_control_metadata(
         registry = _concealed_registry(
             interaction.episode_id, trajectory, script
         )
-        visible_parts = [interaction.prompt, interaction.hint]
+        visible_parts = [interaction.prompt, interaction.hint or ""]
         visible_parts.extend(
             option.display_text
             for option in interaction.options
@@ -1139,6 +1164,169 @@ def normalize_performance_control_metadata(
 
 def validate_interaction_plan(
     plan: InteractionPlan,
+    progression: Union[TeachingProgression, ReasoningTrajectory],
+    legacy_script: Optional[TeachingScript] = None,
+) -> None:
+    """Validate the current pre-script diagnostic intent contract."""
+    if legacy_script is not None:
+        validate_legacy_interaction_plan(plan, progression, legacy_script)
+        return
+    _require_exact(plan, InteractionPlan, "plan")
+    _require_exact(progression, TeachingProgression, "progression")
+    steps = {item.step_id: item for item in progression.steps}
+    episode_ids = []
+    teaching_step_ids = []
+    for interaction in plan.interactions:
+        if any(
+            value is None
+            for value in (
+                interaction.episode_id,
+                interaction.teaching_step_id,
+                interaction.why_pause,
+                interaction.resume_step_id,
+            )
+        ):
+            _fail(
+                "interaction_intent_missing",
+                interaction.interaction_id,
+                "Current interactions require episode, teaching step, pause reason, and resume step intent.",
+            )
+        if interaction.resume_policy != "continue":
+            _fail(
+                "interaction_resume_policy_invalid",
+                interaction.interaction_id,
+                "Current interactions continue after their authored response support.",
+            )
+        step = steps.get(interaction.teaching_step_id)
+        if (
+            step is None
+            or interaction.resume_step_id != interaction.teaching_step_id
+            or interaction.episode_id not in step.episode_ids
+        ):
+            _fail(
+                "interaction_step_invalid",
+                interaction.interaction_id,
+                "Interaction and resume intent must bind to the same owning teaching step.",
+            )
+        if step.checkpoint is None:
+            _fail(
+                "interaction_checkpoint_missing",
+                interaction.interaction_id,
+                "Current interactions require a declared teaching-step checkpoint.",
+            )
+        if normalize_answer_leak_text(step.checkpoint.diagnostic_goal) not in (
+            normalize_answer_leak_text(interaction.why_pause or "")
+        ):
+            _fail(
+                "interaction_why_pause_invalid",
+                interaction.interaction_id,
+                "Pause reason must explain the exact checkpoint diagnostic goal.",
+            )
+
+        correct = next(
+            item
+            for item in interaction.options
+            if item.option_id == interaction.correct_option_id
+        )
+        if any(
+            value is not None
+            for value in (
+                correct.misconception,
+                correct.error_code,
+                correct.remediation_depth,
+            )
+        ):
+            _fail(
+                "interaction_option_diagnosis_invalid",
+                correct.option_id,
+                "Correct options cannot carry private error diagnosis metadata.",
+            )
+        wrong_options = [
+            item
+            for item in interaction.options
+            if item.option_id != interaction.correct_option_id
+        ]
+        if any(
+            item.misconception is None
+            or item.error_code is None
+            or item.remediation_depth not in {"conceptual", "worked"}
+            for item in wrong_options
+        ):
+            _fail(
+                "interaction_option_diagnosis_invalid",
+                interaction.interaction_id,
+                "Every incorrect option requires misconception, error code, and remediation depth.",
+            )
+        error_codes = [item.error_code for item in wrong_options]
+        if len(error_codes) != len(set(error_codes)):
+            _fail(
+                "interaction_error_code_duplicate",
+                interaction.interaction_id,
+                "Incorrect option error codes must be unique within an interaction.",
+            )
+        _validate_interaction_choice_safety(interaction)
+        episode_ids.append(interaction.episode_id)
+        teaching_step_ids.append(interaction.teaching_step_id)
+
+    if len(episode_ids) != len(set(episode_ids)):
+        _fail(
+            "interaction_episode_duplicate",
+            "interaction_plan",
+            "An episode may contain at most one runtime interaction.",
+        )
+    if len(teaching_step_ids) != len(set(teaching_step_ids)):
+        _fail(
+            "interaction_step_duplicate",
+            "interaction_plan",
+            "A teaching step may contain at most one runtime interaction.",
+        )
+    _validate_transfer_choice_safety(plan)
+
+
+def _validate_interaction_choice_safety(interaction: object) -> None:
+    if not _labels_are_unique(
+        [item.display_text for item in interaction.options]
+    ):
+        _fail(
+            "choice_formula_duplicate",
+            interaction.interaction_id,
+            "Interaction option labels are display-equivalent.",
+        )
+    if any(
+        not is_valid_generated_display_content(item.display_text)
+        for item in interaction.options
+    ):
+        _fail(
+            "choice_formula_invalid",
+            interaction.interaction_id,
+            "Interaction option contains invalid display markup.",
+        )
+    if _leaks_correct_answer(interaction):
+        _fail(
+            "interaction_answer_leakage",
+            interaction.interaction_id,
+            "Interaction exposes its private correct answer binding.",
+        )
+
+
+def _validate_transfer_choice_safety(plan: InteractionPlan) -> None:
+    transfer_labels = [item.label for item in plan.transfer_item.options]
+    if not _labels_are_unique(transfer_labels):
+        _fail(
+            "choice_formula_duplicate",
+            "transfer_item",
+            "Transfer option labels are display-equivalent.",
+        )
+    if any(not is_valid_generated_display_content(item) for item in transfer_labels):
+        _fail(
+            "choice_formula_invalid",
+            "transfer_item",
+            "Transfer option contains invalid display markup.",
+        )
+
+
+def validate_legacy_interaction_plan(
+    plan: InteractionPlan,
     trajectory: ReasoningTrajectory,
     script: TeachingScript,
 ) -> None:
@@ -1176,23 +1364,7 @@ def validate_interaction_plan(
                 interaction.interaction_id,
                 "Interaction clause boundary is inconsistent with its episode.",
             )
-        if not _labels_are_unique(
-            [item.display_text for item in interaction.options]
-        ):
-            _fail(
-                "choice_formula_duplicate",
-                interaction.interaction_id,
-                "Interaction option labels are display-equivalent.",
-            )
-        if any(
-            not is_valid_generated_display_content(item.display_text)
-            for item in interaction.options
-        ):
-            _fail(
-                "choice_formula_invalid",
-                interaction.interaction_id,
-                "Interaction option contains invalid display markup.",
-            )
+        _validate_interaction_choice_safety(interaction)
         concealed_registry = _concealed_registry(
             interaction.episode_id,
             trajectory,
@@ -1205,7 +1377,6 @@ def validate_interaction_plan(
                 item not in concealed_registry
                 for item in interaction.concealed_targets
             )
-            or _leaks_correct_answer(interaction)
             or _leaks_concealed_content(
                 interaction,
                 concealed_registry,
@@ -1217,19 +1388,7 @@ def validate_interaction_plan(
                 "Interaction exposes or misbinds a concealed answer target.",
             )
 
-    transfer_labels = [item.label for item in plan.transfer_item.options]
-    if not _labels_are_unique(transfer_labels):
-        _fail(
-            "choice_formula_duplicate",
-            "transfer_item",
-            "Transfer option labels are display-equivalent.",
-        )
-    if any(not is_valid_generated_display_content(item) for item in transfer_labels):
-        _fail(
-            "choice_formula_invalid",
-            "transfer_item",
-            "Transfer option contains invalid display markup.",
-        )
+    _validate_transfer_choice_safety(plan)
 
 
 def _visual_error(code: str, detail: str) -> None:
@@ -2041,8 +2200,7 @@ def validate_prepared_lesson(
     )
     validate_interaction_plan(
         prepared.interaction_plan,
-        prepared.reasoning_trajectory,
-        prepared.teaching_script,
+        prepared.teaching_progression,
     )
     validate_performance_score(
         prepared.performance_score,

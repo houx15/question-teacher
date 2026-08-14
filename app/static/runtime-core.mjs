@@ -504,6 +504,19 @@ export function resolveInteractionPresentation({
     };
   }
 
+  const supportCues = Array.isArray(selectedOption?.support_cues)
+    ? selectedOption.support_cues
+    : [];
+  if (supportCues.length > 0 && outcome?.canContinue === true) {
+    const firstCue = supportCues[0];
+    return {
+      message: firstCue?.display_text || firstCue?.spoken_text || "继续看这一步。",
+      audioUrl: null,
+      supportCues,
+      advanceMode: "automatic",
+    };
+  }
+
   if (result?.feedback) {
     return {
       message: result.feedback,
@@ -532,6 +545,36 @@ export function resolveInteractionPresentation({
     audioUrl: interaction?.correct_audio_url || null,
     advanceMode: "automatic",
   };
+}
+
+
+export async function runSupportCueSequence(
+  supportCues = [],
+  {
+    applyActions = () => {},
+    presentCue = () => {},
+    playAudio = async () => {},
+    complete = () => {},
+  } = {},
+) {
+  const cues = Array.isArray(supportCues) ? supportCues : [];
+  for (const cue of cues) {
+    const leadActions = Array.isArray(cue?.lead_actions)
+      ? cue.lead_actions
+      : [];
+    const startActions = Array.isArray(cue?.start_actions)
+      ? cue.start_actions
+      : [];
+    const endActions = Array.isArray(cue?.end_actions)
+      ? cue.end_actions
+      : [];
+    applyActions("lead", leadActions);
+    presentCue(cue);
+    applyActions("start", startActions);
+    await playAudio(cue?.audio_url || null, cue?.spoken_text || "");
+    applyActions("end", endActions);
+  }
+  complete();
 }
 
 
@@ -615,7 +658,9 @@ export class LessonRuntime {
     const key = beat?.interaction?.interaction_id || beat?.beat_id || "unknown";
     const classification = result.classification || "incorrect";
     const canContinue = (
-      classification === "correct" || classification === "needs_review"
+      classification === "correct"
+      || classification === "needs_review"
+      || beat?.interaction?.advance_after_response === true
     );
     if (canContinue) {
       this.answers.set(key, { classification, canContinue: true });

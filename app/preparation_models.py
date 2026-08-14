@@ -371,21 +371,29 @@ class PlannedInteractionOption(SchemaModel):
     display_text: NonEmptyString
     canonical_answer: NonEmptyString
     misconception: Optional[NonEmptyString] = None
+    error_code: Optional[GeneratedId] = None
+    remediation_depth: Optional[Literal["conceptual", "worked"]] = None
 
 
 class PlannedInteraction(SchemaModel):
     interaction_id: GeneratedId
-    episode_id: GeneratedId
-    after_clause_id: GeneratedId
+    episode_id: Optional[GeneratedId] = None
+    teaching_step_id: Optional[GeneratedId] = None
+    after_clause_id: Optional[GeneratedId] = None
+    why_pause: Optional[NonEmptyString] = None
     diagnostic_target: NonEmptyString
     diagnostic_kind: DiagnosticKind
     prompt: NonEmptyString
     options: List[PlannedInteractionOption] = Field(min_length=3, max_length=4)
     correct_option_id: GeneratedId
-    correct_feedback: NonEmptyString
-    incorrect_feedback_by_option: Dict[GeneratedId, NonEmptyString]
-    hint: NonEmptyString
-    resume_clause_id: GeneratedId
+    correct_feedback: Optional[NonEmptyString] = None
+    incorrect_feedback_by_option: Dict[GeneratedId, NonEmptyString] = Field(
+        default_factory=dict
+    )
+    hint: Optional[NonEmptyString] = None
+    resume_clause_id: Optional[GeneratedId] = None
+    resume_step_id: Optional[GeneratedId] = None
+    resume_policy: Literal["continue", "retry"] = "retry"
     concealed_targets: List[GeneratedId] = Field(
         default_factory=list,
         max_length=MAX_DETAIL_ITEMS,
@@ -402,7 +410,10 @@ class PlannedInteraction(SchemaModel):
         if self.correct_option_id not in option_ids:
             raise ValueError("correct_option_id must match an interaction option_id")
         incorrect_ids = set(option_ids) - {self.correct_option_id}
-        if set(self.incorrect_feedback_by_option) != incorrect_ids:
+        if (
+            self.incorrect_feedback_by_option
+            and set(self.incorrect_feedback_by_option) != incorrect_ids
+        ):
             raise ValueError("incorrect feedback must cover exactly all incorrect option ids")
         return self
 

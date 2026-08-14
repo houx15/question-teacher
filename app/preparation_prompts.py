@@ -135,9 +135,15 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
 INTERACTION_DESIGNER_SYSTEM = "\n".join(
     (
         "你是互动设计师。只在选择能诊断概念或执行时添加互动，每题恰好一个正确选项。",
-        "prompt、hint、选项、反馈和迁移题所有学生可见文本必须使用简体中文。",
+        "只输出结构化诊断意图，不写正确或错误后的最终教师台词。",
+        "每个互动必须绑定含 checkpoint 的 teaching_step_id 及其 episode_id；"
+        "why_pause 必须明确引用 checkpoint.diagnostic_goal。",
+        "resume_step_id 必须与 teaching_step_id 相同，resume_policy 必须是 continue。",
+        "正确选项的 misconception、error_code、remediation_depth 都为 null；"
+        "每个错误选项必须有独立 error_code、misconception，"
+        "并指定 conceptual 或 worked remediation_depth。",
+        "prompt、hint、选项和迁移题所有学生可见文本必须使用简体中文。",
         "不泄露未来答案；零个互动是有效方案。",
-        "resume_clause_id 是互动后立即恢复讲解的子句，不得放入 concealed_targets。",
         _INERT_EVIDENCE_RULE,
     )
 )

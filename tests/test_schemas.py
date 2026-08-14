@@ -20,6 +20,7 @@ from app.schemas import (
     ReviewDecision,
     RuntimeBeat,
     RuntimeLesson,
+    SupportSyncCue,
     SyncVisualAction,
     TransferItem,
     TransferOption,
@@ -512,6 +513,64 @@ def test_interaction_option_keeps_legacy_defaults_and_accepts_diagnostic_feedbac
     assert legacy_option.feedback_audio_url is None
     assert diagnostic_option.feedback == "先观察这个式子能否直接分解。"
     assert diagnostic_option.feedback_audio_url == "https://audio.example/diagnostic.mp3"
+
+
+def test_support_sync_cue_is_bounded_and_rejects_markup_in_spoken_text():
+    action = SyncVisualAction(surface="board", type="focus", target="equation")
+    cue = SupportSyncCue(
+        cue_id="support-1",
+        display_text=r"因为 \(x=2\)，回到已知根。",
+        spoken_text="因为x等于二，回到已知根。",
+        lead_actions=[action] * 6,
+        start_actions=[action] * 8,
+        end_actions=[action] * 6,
+        audio_url="/audio/support-1.mp3",
+    )
+
+    assert cue.display_text.startswith("因为")
+    assert cue.spoken_text == "因为x等于二，回到已知根。"
+    assert cue.audio_url == "/audio/support-1.mp3"
+    with pytest.raises(ValidationError, match="spoken_text"):
+        SupportSyncCue(
+            cue_id="support-markup",
+            spoken_text=r"因为 \(x=2\)。",
+        )
+    with pytest.raises(ValidationError, match="at most 6"):
+        SupportSyncCue(
+            cue_id="support-overflow",
+            spoken_text="返回已知条件。",
+            lead_actions=[action] * 7,
+        )
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        SupportSyncCue(
+            cue_id="support-private",
+            spoken_text="只保留学生可见支持。",
+            error_code="private-error",
+        )
+
+
+def test_interaction_option_support_cues_and_advance_flag_keep_legacy_defaults():
+    option = InteractionOption(
+        option_id="factor",
+        label="因式分解",
+        support_cues=[
+            SupportSyncCue(
+                cue_id="factor-support",
+                spoken_text="先检查乘积与和。",
+            )
+        ],
+    )
+    legacy = Interaction(
+        interaction_id="legacy-choice",
+        kind="choice",
+        prompt="选哪一项？",
+        expected_answer="factor",
+        options=[option],
+    )
+
+    assert option.support_cues[0].cue_id == "factor-support"
+    assert legacy.advance_after_response is False
+    assert InteractionOption(option_id="plain", label="普通").support_cues == []
 
 
 def test_transfer_item_accepts_three_diagnostic_options():

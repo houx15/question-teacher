@@ -64,7 +64,6 @@ from app.preparation_prompts import (
 from app.preparation_validation import (
     PreparationValidationError,
     blocking_signature,
-    normalize_interaction_control_metadata,
     normalize_performance_control_metadata,
     validate_interaction_plan,
     validate_performance_score,
@@ -878,30 +877,6 @@ class LessonPreparationPipeline:
                 role="script_teacher",
                 detail="讲稿未通过确定性校验。",
             ) from None
-        normalized_plan = normalize_interaction_control_metadata(
-            state.interaction_plan,
-            state.reasoning_trajectory,
-            script,
-        )
-        try:
-            validate_interaction_plan(
-                normalized_plan,
-                state.reasoning_trajectory,
-                script,
-            )
-        except PreparationValidationError:
-            self._deactivate_invalidated_artifact(
-                state,
-                "interaction_plan",
-                "interaction_designer",
-                "interaction_plan_failed",
-            )
-            raise PreparationFailure(
-                category="interaction_plan_failed",
-                role="interaction_designer",
-                detail="互动方案未通过确定性校验。",
-            ) from None
-        state.interaction_plan = normalized_plan
         self._accept_artifact(
             state,
             artifact_type="teaching_script",
@@ -937,6 +912,19 @@ class LessonPreparationPipeline:
             prompt,
             InteractionPlan,
         )
+        try:
+            validate_interaction_plan(plan, state.teaching_progression)
+        except PreparationValidationError:
+            self._mark_last_call_failed(
+                state,
+                "interaction_designer",
+                "interaction_plan_failed",
+            )
+            raise PreparationFailure(
+                category="interaction_plan_failed",
+                role="interaction_designer",
+                detail="互动意图未通过确定性校验。",
+            ) from None
         self._accept_artifact(
             state,
             artifact_type="interaction_plan",

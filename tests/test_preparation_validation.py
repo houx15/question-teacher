@@ -244,7 +244,14 @@ def progression_payload():
                 "evidence_target_ids": [],
                 "guiding_questions": [episode["thinking_question"]],
                 "knowledge_anchor": episode["decision_reason"],
-                "checkpoint": None,
+                "checkpoint": (
+                    {
+                        "diagnostic_goal": "检查学生是否知道先代入已知根",
+                        "misconception_ids": [],
+                    }
+                    if index == 1
+                    else None
+                ),
                 "reveal": episode["decision"],
                 "math_action": episode["mathematical_action"],
                 "directory_question": episode["thinking_question"],
@@ -376,20 +383,24 @@ def interaction_plan_payload():
             {
                 "interaction_id": "interaction-1",
                 "episode_id": "episode-2",
+                "teaching_step_id": "teaching-step-2",
                 "after_clause_id": "clause-2",
+                "why_pause": "在这里停下是为了检查学生是否知道先代入已知根。",
                 "diagnostic_target": "是否知道代入已知根",
                 "diagnostic_kind": "conception",
                 "prompt": "下一步应处理哪个已知条件？",
                 "options": [
                     {"option_id": "option-a", "display_text": "代入已知根", "canonical_answer": "substitute-root"},
-                    {"option_id": "option-b", "display_text": "分别求m和n", "canonical_answer": "solve-separately", "misconception": "偏离目标"},
-                    {"option_id": "option-c", "display_text": "忽略根条件", "canonical_answer": "ignore-root", "misconception": "未用已知"},
+                    {"option_id": "option-b", "display_text": "分别求m和n", "canonical_answer": "solve-separately", "misconception": "偏离目标", "error_code": "option-b-error", "remediation_depth": "conceptual"},
+                    {"option_id": "option-c", "display_text": "忽略根条件", "canonical_answer": "ignore-root", "misconception": "未用已知", "error_code": "option-c-error", "remediation_depth": "conceptual"},
                 ],
                 "correct_option_id": "option-a",
                 "correct_feedback": "对，根一定满足原方程。",
                 "incorrect_feedback_by_option": {"option-b": "目标只是关系。", "option-c": "先用根条件。"},
                 "hint": "想想根的定义。",
                 "resume_clause_id": "clause-2-resume",
+                "resume_step_id": "teaching-step-2",
+                "resume_policy": "continue",
                 "concealed_targets": [],
             }
         ],
@@ -1057,6 +1068,8 @@ def test_response_scripts_enforce_classification_depth_and_correct_error_contrac
         (0, "error_code", "invented-error", "response_error_code_invalid"),
         (1, "classification", "correct", "response_classification_invalid"),
         (1, "depth", "brief", "response_depth_invalid"),
+        (1, "depth", "worked", "response_depth_invalid"),
+        (1, "error_code", "other-error", "response_error_code_invalid"),
     )
     for index, field, value, code in cases:
         payload = script.model_dump()
@@ -1662,6 +1675,86 @@ def test_interaction_plan_rejects_clause_binding_and_answer_leakage():
     payload["interactions"][0]["concealed_targets"] = ["option-a"]
     invalid = InteractionPlan.model_validate(payload)
     assert_code("interaction_answer_leakage", lambda: validate_interaction_plan(invalid, trajectory, script))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    (
+        (lambda item: item.update(episode_id=None), "interaction_intent_missing"),
+        (lambda item: item.update(teaching_step_id=None), "interaction_intent_missing"),
+        (lambda item: item.update(why_pause=None), "interaction_intent_missing"),
+        (lambda item: item.update(resume_step_id=None), "interaction_intent_missing"),
+        (lambda item: item.update(resume_policy="retry"), "interaction_resume_policy_invalid"),
+        (lambda item: item.update(teaching_step_id="missing-step"), "interaction_step_invalid"),
+        (lambda item: item.update(resume_step_id="teaching-step-3"), "interaction_step_invalid"),
+        (lambda item: item.update(episode_id="episode-3"), "interaction_step_invalid"),
+        (lambda item: item.update(why_pause="这里停一下检查。"), "interaction_why_pause_invalid"),
+    ),
+)
+def test_current_interaction_plan_requires_checkpoint_bound_same_step_intent(
+    mutation,
+    code,
+):
+    payload = interaction_plan_payload()
+    mutation(payload["interactions"][0])
+    assert_code(
+        code,
+        lambda: validate_interaction_plan(
+            InteractionPlan.model_validate(payload),
+            TeachingProgression.model_validate(progression_payload()),
+        ),
+    )
+
+
+def test_current_interaction_plan_requires_a_declared_checkpoint():
+    progression = progression_payload()
+    progression["steps"][1]["checkpoint"] = None
+    assert_code(
+        "interaction_checkpoint_missing",
+        lambda: validate_interaction_plan(
+            InteractionPlan.model_validate(interaction_plan_payload()),
+            TeachingProgression.model_validate(progression),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("option_index", "field", "value"),
+    (
+        (0, "error_code", "correct-error"),
+        (0, "remediation_depth", "conceptual"),
+        (0, "misconception", "正确项不应有误区"),
+        (1, "error_code", None),
+        (1, "remediation_depth", None),
+        (1, "misconception", None),
+    ),
+)
+def test_current_interaction_plan_requires_private_diagnosis_per_option(
+    option_index,
+    field,
+    value,
+):
+    payload = interaction_plan_payload()
+    payload["interactions"][0]["options"][option_index][field] = value
+    assert_code(
+        "interaction_option_diagnosis_invalid",
+        lambda: validate_interaction_plan(
+            InteractionPlan.model_validate(payload),
+            TeachingProgression.model_validate(progression_payload()),
+        ),
+    )
+
+
+def test_current_interaction_plan_requires_unique_wrong_error_codes():
+    payload = interaction_plan_payload()
+    payload["interactions"][0]["options"][2]["error_code"] = "option-b-error"
+    assert_code(
+        "interaction_error_code_duplicate",
+        lambda: validate_interaction_plan(
+            InteractionPlan.model_validate(payload),
+            TeachingProgression.model_validate(progression_payload()),
+        ),
+    )
 
 
 @pytest.mark.parametrize("field", ("prompt", "hint"))

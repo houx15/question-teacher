@@ -11,6 +11,7 @@ import {
   isCurrentInteractionSubmission,
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
+  runSupportCueSequence,
   scheduleBoardActions,
 } from "./runtime-core.mjs?v=20260807-3";
 import { CuePlayer } from "./cue-player.mjs?v=20260807-3";
@@ -1075,6 +1076,33 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
       selectedOption,
       outcome,
     });
+    if (Array.isArray(presentation.supportCues)) {
+      renderMathText(ui.hint, "");
+      clearPointSelection();
+      await runSupportCueSequence(presentation.supportCues, {
+        applyActions: (_phase, actions) => applyCueActions(actions),
+        presentCue: (cue) => {
+          renderMathText(
+            ui.feedback,
+            cue.display_text || cue.spoken_text,
+          );
+          renderMathText(dom.narration, cue.spoken_text);
+        },
+        playAudio: (audioUrl) => playFeedbackAudio(audioUrl),
+      });
+      if (!isCurrentSubmission()) return;
+      const answeredBeatToken = beatToken;
+      window.setTimeout(() => {
+        if (
+          answeredBeatToken === beatToken
+          && interactionVisible
+          && runtime.interactionComplete()
+        ) {
+          advanceBeat();
+        }
+      }, 520);
+      return;
+    }
     if (!outcome.canContinue) {
       ui.feedback.classList.add("is-wrong");
       if (result?.feedback) {

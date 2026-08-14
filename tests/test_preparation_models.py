@@ -70,15 +70,17 @@ def transfer_item():
 
 def interaction(interaction_id="interaction-1"):
     return {
-        "interaction_id": interaction_id, "episode_id": "episode-1", "after_clause_id": "open-1",
+        "interaction_id": interaction_id, "episode_id": "episode-1", "teaching_step_id": "teaching-step-1", "after_clause_id": "open-1",
+        "why_pause": "停下检查学生是否会用等式两边同步变形的检查点。",
         "diagnostic_target": "等式性质", "diagnostic_kind": "conception", "prompt": "下一步怎么做？",
         "options": [
             {"option_id": "option-a", "display_text": "两边同减一", "canonical_answer": "两边同减一"},
-            {"option_id": "option-b", "display_text": "只在左边减一", "canonical_answer": "左边减一", "misconception": "单边变形"},
-            {"option_id": "option-c", "display_text": "两边同加一", "canonical_answer": "两边加一", "misconception": "方向错误"},
+            {"option_id": "option-b", "display_text": "只在左边减一", "canonical_answer": "左边减一", "misconception": "单边变形", "error_code": "single-side", "remediation_depth": "conceptual"},
+            {"option_id": "option-c", "display_text": "两边同加一", "canonical_answer": "两边加一", "misconception": "方向错误", "error_code": "wrong-direction", "remediation_depth": "worked"},
         ], "correct_option_id": "option-a", "correct_feedback": "对。",
         "incorrect_feedback_by_option": {"option-b": "等式两边要同步。", "option-c": "注意消去加一。"},
         "hint": "想想怎样保持等式。", "resume_clause_id": "method-1",
+        "resume_step_id": "teaching-step-1", "resume_policy": "continue",
     }
 
 
@@ -573,6 +575,34 @@ def test_explanation_depth_alias_exposes_exact_supported_vocabulary():
 def test_interaction_plan_allows_zero_interactions():
     plan = InteractionPlan.model_validate({"interactions": [], "transfer_item": transfer_item()})
     assert plan.interactions == []
+
+
+def test_planned_interaction_preserves_legacy_defaults_for_historical_loading():
+    payload = interaction()
+    for field in (
+        "episode_id",
+        "teaching_step_id",
+        "after_clause_id",
+        "why_pause",
+        "correct_feedback",
+        "incorrect_feedback_by_option",
+        "hint",
+        "resume_clause_id",
+        "resume_step_id",
+        "resume_policy",
+    ):
+        payload.pop(field, None)
+    for option in payload["options"]:
+        option.pop("error_code", None)
+        option.pop("remediation_depth", None)
+
+    legacy = PlannedInteraction.model_validate(payload)
+
+    assert legacy.episode_id is None
+    assert legacy.teaching_step_id is None
+    assert legacy.incorrect_feedback_by_option == {}
+    assert legacy.resume_policy == "retry"
+    assert all(option.error_code is None for option in legacy.options)
 
 
 def test_interaction_options_require_one_existing_correct_id_and_feedback_for_all_incorrect_options():

@@ -1,9 +1,11 @@
 import importlib.util
+import json
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 import app.prepared_lesson_adapter as prepared_adapter
+from app.api import public_lesson_payload
 from app.compiler import LessonCompiler
 from app.preparation_models import PreparedLesson
 from app.prepared_lesson_adapter import (
@@ -82,9 +84,16 @@ def body_interaction_payload(with_overlay=False):
     interaction = payload["interaction_plan"]["interactions"][0]
     interaction.update(
         episode_id="episode-3",
+        teaching_step_id="teaching-step-3",
         after_clause_id="clause-3",
+        why_pause="停下检查学生是否知道如何处理当前学习检查点。",
         resume_clause_id="clause-3-resume",
+        resume_step_id="teaching-step-3",
     )
+    payload["teaching_progression"]["steps"][2]["checkpoint"] = {
+        "diagnostic_goal": "检查学生是否知道如何处理当前学习检查点",
+        "misconception_ids": [],
+    }
     for response in payload["teaching_script"]["response_scripts"]:
         if response["interaction_id"] == interaction["interaction_id"]:
             for clause in response["clauses"]:
@@ -346,23 +355,48 @@ def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
 
     draft = prepared_lesson_to_draft(source_problem(), prepared, route())
 
-    assert all(moment.interaction is None for moment in draft.moments)
-    assert len(draft.fixed_section_interactions_after_cue) == 1
-    runtime = next(iter(draft.fixed_section_interactions_after_cue.values()))
+    runtimes = [
+        *draft.fixed_section_interactions_after_cue.values(),
+        *(
+            moment.interaction
+            for moment in draft.moments
+            if moment.interaction is not None
+        ),
+    ]
+    assert len(runtimes) == 1
+    runtime = runtimes[0]
     plan = prepared.interaction_plan.interactions[0]
     assert runtime.prompt == plan.prompt
     assert runtime.expected_answer == plan.correct_option_id
     assert runtime.hints == [plan.hint]
-    assert runtime.explanation_after_correct == plan.correct_feedback
+    assert runtime.explanation_after_correct == ""
+    assert runtime.advance_after_response is True
     assert [option.label for option in runtime.options] == [
         option.display_text for option in plan.options
     ]
-    assert [option.feedback for option in runtime.options] == [
-        plan.correct_feedback
-        if option.option_id == plan.correct_option_id
-        else plan.incorrect_feedback_by_option[option.option_id]
-        for option in plan.options
-    ]
+    assert all(option.feedback is None for option in runtime.options)
+    response_by_option = {
+        response.option_id: response
+        for response in prepared.teaching_script.response_scripts
+    }
+    for option in runtime.options:
+        response = response_by_option[option.option_id]
+        assert [cue.cue_id for cue in option.support_cues] == [
+            clause.clause_id for clause in response.clauses
+        ]
+        assert [cue.display_text for cue in option.support_cues] == [
+            clause.display_text for clause in response.clauses
+        ]
+        assert [cue.spoken_text for cue in option.support_cues] == [
+            clause.spoken_text for clause in response.clauses
+        ]
+        assert all(cue.audio_url is None for cue in option.support_cues)
+        assert all(
+            cue.lead_actions == []
+            and cue.start_actions == []
+            and cue.end_actions == []
+            for cue in option.support_cues
+        )
     assert all(
         "canonical_answer" not in option.model_dump()
         and "correct" not in option.model_dump()
@@ -370,7 +404,7 @@ def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
     )
 
 
-def test_runtime_interaction_occurs_after_boundary_and_before_resume_clause():
+def test_runtime_interaction_occurs_after_current_teaching_step():
     prepared = approved_prepared()
     lesson = LessonCompiler(lesson_id_factory=lambda: "boundary-order").compile(
         source_problem(),
@@ -387,9 +421,84 @@ def test_runtime_interaction_occurs_after_boundary_and_before_resume_clause():
     after = events.index("cue-clause-2")
     interaction = events.index("interaction:interaction-1")
     resume = events.index("cue-clause-2-resume")
-    assert after < interaction < resume
-    assert interaction == after + 1
-    assert resume == interaction + 1
+    assert after < resume < interaction
+    assert resume == interaction - 1
+
+
+def test_structured_interaction_derives_boundary_without_legacy_clause_ids():
+    payload = prepared_payload()
+    interaction = payload["interaction_plan"]["interactions"][0]
+    interaction.pop("after_clause_id")
+    interaction.pop("resume_clause_id")
+    prepared = PreparedLesson.model_validate(payload)
+
+    lesson = LessonCompiler(lesson_id_factory=lambda: "structured-boundary").compile(
+        source_problem(),
+        prepared_lesson_to_draft(source_problem(), prepared, route()),
+        {"review_status": "approved"},
+    )
+
+    runtime = next(
+        beat.interaction
+        for beat in lesson.beats
+        if beat.interaction is not None
+        and beat.interaction.interaction_id == "interaction-1"
+    )
+    assert runtime.advance_after_response is True
+    assert all(option.support_cues for option in runtime.options)
+
+
+def test_structured_interaction_ignores_stale_legacy_clause_boundary():
+    payload = prepared_payload()
+    payload["interaction_plan"]["interactions"][0][
+        "after_clause_id"
+    ] = "clause-1"
+    prepared = PreparedLesson.model_validate(payload)
+
+    lesson = LessonCompiler(lesson_id_factory=lambda: "structured-step").compile(
+        source_problem(),
+        prepared_lesson_to_draft(source_problem(), prepared, route()),
+        {"review_status": "approved"},
+    )
+    events = []
+    for beat in lesson.beats:
+        events.extend(cue.cue_id for cue in beat.sync_cues)
+        if beat.interaction is not None:
+            events.append("interaction:%s" % beat.interaction.interaction_id)
+
+    assert events.index("cue-clause-2-resume") < events.index(
+        "interaction:interaction-1"
+    )
+
+
+def test_structured_runtime_public_payload_contains_support_without_private_binding():
+    prepared = approved_prepared()
+    lesson = LessonCompiler(lesson_id_factory=lambda: "public-support").compile(
+        source_problem(),
+        prepared_lesson_to_draft(source_problem(), prepared, route()),
+        {"review_status": "approved"},
+    )
+
+    payload = public_lesson_payload(lesson)
+    serialized = json.dumps(payload, ensure_ascii=False)
+    interaction = next(
+        beat["interaction"]
+        for beat in payload["beats"]
+        if (beat.get("interaction") or {}).get("interaction_id")
+        == "interaction-1"
+    )
+
+    assert interaction["advance_after_response"] is True
+    assert all(option["support_cues"] for option in interaction["options"])
+    for private_field in (
+        "expected_answer",
+        "canonical_answer",
+        "correct_option_id",
+        "error_code",
+        "remediation_depth",
+        "misconception",
+    ):
+        assert private_field not in serialized
 
 
 def test_body_interaction_episode_is_not_merged_with_preceding_free_episode():
@@ -404,17 +513,18 @@ def test_body_interaction_episode_is_not_merged_with_preceding_free_episode():
     )
     interaction_moment = draft.moments[interaction_index]
     assert [cue.cue_id for cue in interaction_moment.sync_cues] == [
-        "cue-clause-3"
+        "cue-clause-3",
+        "cue-clause-3-resume",
     ]
     assert draft.moments[interaction_index - 1].sync_cues[-1].cue_id == (
         "cue-clause-2-resume"
     )
     assert draft.moments[interaction_index + 1].sync_cues[0].cue_id == (
-        "cue-clause-3-resume"
+        "cue-clause-4"
     )
 
 
-def test_overlay_interaction_preserves_authored_comparison_layer():
+def test_step_end_interaction_uses_the_authored_boundary_layer():
     prepared = PreparedLesson.model_validate(
         body_interaction_payload(with_overlay=True)
     )
@@ -424,9 +534,9 @@ def test_overlay_interaction_preserves_authored_comparison_layer():
     interaction_moment = next(
         moment for moment in draft.moments if moment.interaction is not None
     )
-    assert interaction_moment.layer == "comparison"
+    assert interaction_moment.layer == "base"
     assert [cue.cue_id for cue in interaction_moment.sync_cues] == [
-        "cue-clause-3"
+        "cue-clause-3-resume",
     ]
 
 
@@ -604,15 +714,12 @@ def test_compiled_prepared_lesson_adds_only_fixed_runtime_navigation_speech():
     )
     planned = prepared.interaction_plan.interactions[0]
     assert runtime_interaction.prompt == planned.prompt
-    assert (
-        runtime_interaction.explanation_after_correct
-        == planned.correct_feedback
+    assert runtime_interaction.explanation_after_correct == ""
+    assert runtime_interaction.advance_after_response is True
+    assert all(
+        item.feedback is None and item.support_cues
+        for item in runtime_interaction.options
     )
-    assert [item.feedback for item in runtime_interaction.options] == [
-        planned.correct_feedback,
-        planned.incorrect_feedback_by_option["option-b"],
-        planned.incorrect_feedback_by_option["option-c"],
-    ]
     transfer = lesson.beats[-1].interaction
     transfer_plan = prepared.interaction_plan.transfer_item
     correct = next(

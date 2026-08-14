@@ -9,6 +9,7 @@ from pydantic import (
     ValidationError,
     ValidationInfo,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -652,11 +653,52 @@ class NarrativeSyncCue(SchemaModel):
         return value
 
 
+class SupportSyncCue(SchemaModel):
+    cue_id: GeneratedId
+    display_text: Optional[NarrativeBoardContent] = None
+    spoken_text: CueSpokenText
+    lead_actions: List[SyncVisualAction] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+    start_actions: List[SyncVisualAction] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    end_actions: List[SyncVisualAction] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+    audio_url: Optional[NonEmptyString] = None
+
+    @field_validator("spoken_text")
+    @classmethod
+    def reject_math_markup_in_spoken_text(cls, value: str) -> str:
+        if _contains_math_markup(value) or contains_internal_control_syntax(
+            value
+        ):
+            raise ValueError(
+                "spoken_text must be natural speech without math markup"
+            )
+        return value
+
+
 class InteractionOption(SchemaModel):
     option_id: NonEmptyString
     label: NonEmptyString
     feedback: Optional[NonEmptyString] = None
     feedback_audio_url: Optional[NonEmptyString] = None
+    support_cues: List[SupportSyncCue] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+
+    @model_serializer(mode="wrap")
+    def omit_empty_support_cues(self, handler):
+        payload = handler(self)
+        if not self.support_cues:
+            payload.pop("support_cues", None)
+        return payload
 
 
 class Interaction(SchemaModel):
@@ -675,6 +717,14 @@ class Interaction(SchemaModel):
     explanation_after_correct: str = ""
     hint_audio_urls: List[NonEmptyString] = Field(default_factory=list)
     correct_audio_url: Optional[NonEmptyString] = None
+    advance_after_response: bool = False
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_advance_default(self, handler):
+        payload = handler(self)
+        if not self.advance_after_response:
+            payload.pop("advance_after_response", None)
+        return payload
 
     @field_validator("explanation_after_correct")
     @classmethod
