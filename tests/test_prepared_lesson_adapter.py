@@ -707,16 +707,25 @@ def test_legacy_public_marker_in_private_plan_never_reaches_current_runtime():
     payload = prepared_payload()
     marker = "PRIVATE-PLAN-PUBLIC-DRAFT-MARKER"
     interaction = payload["interaction_plan"]["interactions"][0]
-    interaction["prompt"] = marker
-    interaction["hint"] = marker
-    interaction["options"][1]["display_text"] = marker
+    interaction["prompt"] = "Correct answer: option-a %s" % marker
+    interaction["hint"] = "正确答案是代入已知根 %s" % marker
+    interaction["options"][1]["display_text"] = (
+        "内部草稿提及正确答案：代入已知根 %s" % marker
+    )
     payload["interaction_plan"]["transfer_item"]["problem_text"] = marker
 
     draft = prepared_lesson_to_draft(
         source_problem(), PreparedLesson.model_validate(payload), route()
     )
+    lesson = LessonCompiler(lesson_id_factory=lambda: "private-intent").compile(
+        source_problem(),
+        draft,
+        {"review_status": "approved"},
+    )
+    public_payload = public_lesson_payload(lesson)
 
     assert marker not in draft.model_dump_json()
+    assert marker not in json.dumps(public_payload, ensure_ascii=False)
 
 
 def test_adapter_requires_symbolic_steps_only_for_symbolic_route():

@@ -2141,6 +2141,42 @@ def test_current_interaction_plan_requires_unique_wrong_error_codes():
     )
 
 
+def test_current_private_interaction_draft_may_name_correct_answer_but_script_is_safe():
+    payload = prepared_payload()
+    marker = "PRIVATE-INTERACTION-INTENT-CORRECT-OPTION-A"
+    private = payload["interaction_plan"]["interactions"][0]
+    private["prompt"] = "Correct answer: option-a %s" % marker
+    private["hint"] = "内部诊断意图：正确答案是代入已知根 %s" % marker
+    private["options"][1]["display_text"] = (
+        "内部草稿提及正确答案：代入已知根 %s" % marker
+    )
+
+    plan = InteractionPlan.model_validate(payload["interaction_plan"])
+    progression = TeachingProgression.model_validate(
+        payload["teaching_progression"]
+    )
+    trajectory = ReasoningTrajectory.model_validate(
+        payload["reasoning_trajectory"]
+    )
+    script = TeachingScript.model_validate(payload["teaching_script"])
+
+    validate_interaction_plan(plan, progression)
+    validate_teaching_script(script, trajectory, progression, plan)
+
+
+def test_current_authored_public_interaction_still_rejects_correct_answer_leak():
+    payload = prepared_payload()
+    payload["teaching_script"]["interaction_scripts"][0]["prompt"] = (
+        "正确答案是代入已知根。"
+    )
+    prepared = PreparedLesson.model_validate(payload)
+
+    assert_code(
+        "interaction_answer_leakage",
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )
+
+
 @pytest.mark.parametrize("field", ("prompt", "hint"))
 def test_interaction_plan_rejects_correct_answer_leakage_in_student_visible_text(field):
     _, trajectory, script, plan, *_ = models()

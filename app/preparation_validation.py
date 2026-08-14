@@ -1558,7 +1558,9 @@ def validate_interaction_plan(
                 interaction.interaction_id,
                 "Incorrect option error codes must be unique within an interaction.",
             )
-        _validate_interaction_choice_safety(interaction)
+        # The current plan owns private diagnostic intent only. Its historical
+        # prompt, hint, and display-text drafts are never runtime sources, so
+        # student-visible choice safety is enforced on TeachingScript instead.
         episode_ids.append(interaction.episode_id)
         teaching_step_ids.append(interaction.teaching_step_id)
 
