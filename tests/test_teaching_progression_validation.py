@@ -254,6 +254,32 @@ def test_evidence_targets_cannot_repeat_within_a_step():
     assert_code("progression_evidence_target_duplicate", payload)
 
 
+def test_evidence_targets_cannot_omit_all_authoritative_targets():
+    payload = progression_payload()
+    for step in payload["steps"]:
+        step["evidence_target_ids"] = []
+    assert_code("progression_evidence_target_coverage_invalid", payload)
+
+
+def test_evidence_targets_cannot_partially_cover_authoritative_targets():
+    payload = progression_payload()
+    payload["steps"][1]["evidence_target_ids"] = []
+    assert_code("progression_evidence_target_coverage_invalid", payload)
+
+
+def test_evidence_targets_exactly_cover_authoritative_set_across_steps():
+    trajectory, progression = models()
+    validate_teaching_progression(progression, trajectory, targets())
+
+
+def test_empty_authoritative_target_set_requires_empty_progression_evidence():
+    payload = progression_payload()
+    for step in payload["steps"]:
+        step["evidence_target_ids"] = []
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, [])
+
+
 def test_directory_labels_are_unique():
     payload = progression_payload()
     payload["steps"][1]["directory_label"] = payload["steps"][0]["directory_label"]
@@ -270,6 +296,11 @@ def test_directory_labels_are_unique():
         "接着进行计算",
         "继续进行计算",
         "开始进行运算",
+        "下一步整理",
+        "再来化简一下",
+        "之后继续处理",
+        "接下来进行运算",
+        "然后算一下",
     ),
 )
 def test_generic_why_now_is_rejected(generic_why_now):
@@ -285,14 +316,23 @@ def test_mutated_empty_why_now_is_rejected_total_safely():
     with pytest.raises(TeachingProgressionValidationError) as captured:
         validate_teaching_progression(progression, trajectory, targets())
 
-    assert captured.value.code == "progression_why_not_explanatory"
-    assert captured.value.artifact_id == "progression-1"
+    assert captured.value.code == "progression_structure_invalid"
+    assert captured.value.artifact_id == "teaching_progression"
 
 
 def test_causal_why_now_remains_explanatory():
     payload = progression_payload()
     payload["steps"][0]["why_now"] = (
         "因为根必须使原方程成立，此时代入才能建立m与n的关系。"
+    )
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
+
+
+def test_goal_driven_why_now_remains_explanatory():
+    payload = progression_payload()
+    payload["steps"][0]["why_now"] = (
+        "为了把含n的式子变成目标关系，下一步整理等式。"
     )
     trajectory, progression = models(progression_value=payload)
     validate_teaching_progression(progression, trajectory, targets())
@@ -317,6 +357,51 @@ def test_board_summary_punctuation_and_duplicates_cannot_bypass_result_repeat(
 ):
     payload = progression_payload()
     payload["steps"][0]["board_summary"] = summaries
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "结果：4n^2-4mn+2n=0。",
+        "得到: 4n^2-4mn+2n=0!",
+        "当前推理得到：4n^2-4mn+2n=0",
+        "（1）4n^2-4mn+2n=0",
+        "(1) 结论：4n^2-4mn+2n=0",
+    ),
+)
+def test_board_summary_decorative_wrappers_cannot_bypass_result_repeat(summary):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = [summary]
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
+def test_board_summary_rejects_punctuation_only_content():
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = ["【……》“”"]
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
+def test_multi_episode_board_summaries_cannot_only_repeat_episode_results():
+    payload = progression_payload()
+    payload["steps"] = [payload["steps"][0]]
+    payload["steps"][0]["episode_ids"] = [
+        "episode-with-a-provider-controlled-long-id-1",
+        "episode-2",
+    ]
+    payload["steps"][0]["must_teach_refs"] = ["must-1", "must-2", "must-3"]
+    payload["steps"][0]["evidence_target_ids"] = [
+        "target-root",
+        "target-nonzero",
+    ]
+    payload["steps"][0]["checkpoint"]["misconception_ids"] = [
+        "misconception-001-001",
+        "misconception-002-001",
+    ]
+    payload["steps"][0]["board_summary"] = [
+        "结果：4n^2-4mn+2n=0",
+        "（2）2n-2m+1=0。",
+    ]
     assert_code("progression_board_summary_not_explanatory", payload)
 
 
@@ -371,6 +456,31 @@ def test_validator_requires_exact_models_and_bounded_target_container():
         validate_teaching_progression(progression, object(), targets())
     with pytest.raises(TypeError, match="problem_targets"):
         validate_teaching_progression(progression, trajectory, object())
+
+
+@pytest.mark.parametrize(
+    ("field", "mutated_value"),
+    (
+        ("board_summary", None),
+        ("evidence_target_ids", [[]]),
+        ("must_teach_refs", [[]]),
+    ),
+)
+def test_mutated_progression_structure_fails_with_stable_validation_error(
+    field,
+    mutated_value,
+):
+    trajectory, progression = models()
+    object.__setattr__(progression.steps[0], field, mutated_value)
+
+    with pytest.raises(TeachingProgressionValidationError) as captured:
+        validate_teaching_progression(progression, trajectory, targets())
+
+    assert captured.value.code == "progression_structure_invalid"
+    assert captured.value.artifact_id == "teaching_progression"
+    assert str(captured.value) == (
+        "progression_structure_invalid:teaching_progression"
+    )
 
 
 def test_error_message_is_stable_and_does_not_echo_generated_detail():

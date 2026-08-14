@@ -233,8 +233,13 @@ def trajectory_payload(
     }
 
 
-def teaching_progression_payload():
+def teaching_progression_payload(evidence_target_ids=None):
     trajectory = trajectory_payload()
+    required_target_ids = (
+        ["problem-root", "problem-equation"]
+        if evidence_target_ids is None
+        else list(evidence_target_ids)
+    )
     return {
         "steps": [
             {
@@ -248,7 +253,10 @@ def teaching_progression_payload():
                 ),
                 "student_problem": episode["thinking_question"],
                 "why_now": episode["transition_reason"],
-                "evidence_target_ids": [],
+                "evidence_target_ids": (
+                    required_target_ids
+                    if index == 0 else []
+                ),
                 "guiding_questions": [episode["thinking_question"]],
                 "knowledge_anchor": episode["decision_reason"],
                 "checkpoint": None,
@@ -256,7 +264,7 @@ def teaching_progression_payload():
                 "math_action": episode["mathematical_action"],
                 "directory_question": episode["thinking_question"],
                 "directory_label": "第%d步：推进当前问题" % (index + 1),
-                "board_summary": ["当前推理得到：%s" % episode["result"]],
+                "board_summary": ["由当前条件可推出：%s" % episode["result"]],
                 "error_tip": "注意当前条件的使用范围",
                 "transition_question": episode["transition_reason"],
                 "must_teach_refs": [
@@ -480,13 +488,17 @@ def client(
     performances=None,
     simulations=None,
     reviews=None,
+    progression_target_ids=None,
 ):
     trajectory_responses = list(
         trajectories or [trajectory or trajectory_payload()]
     )
     progression_responses = list(
         progressions
-        or [progression or teaching_progression_payload()]
+        or [
+            progression
+            or teaching_progression_payload(progression_target_ids)
+        ]
     )
     teaching_designer_responses = []
     for index, trajectory_response in enumerate(trajectory_responses):

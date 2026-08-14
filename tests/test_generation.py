@@ -314,10 +314,23 @@ def grounded_trajectory_payload():
     return payload
 
 
+def generation_progression_payload(*, grounded):
+    return teaching_progression_payload(
+        [
+            "problem-math-001",
+            "problem-math-002",
+            "problem-math-003",
+        ]
+        if grounded
+        else []
+    )
+
+
 def _approved_preparation_client(
     route_responses=None,
     performance=None,
     warning_step_ids=(),
+    progression_target_ids=None,
 ):
     grounded = route_responses is not None
     preparation_client = PreparationFakeClient(
@@ -331,7 +344,11 @@ def _approved_preparation_client(
                 grounded_trajectory_payload()
                 if grounded
                 else trajectory_payload(),
-                teaching_progression_payload(),
+                (
+                    generation_progression_payload(grounded=grounded)
+                    if progression_target_ids is None
+                    else teaching_progression_payload(progression_target_ids)
+                ),
             ],
             "script_teacher": [downstream_script_payload()],
             "interaction_designer": [downstream_interaction_payload()],
@@ -592,7 +609,7 @@ def test_grounded_reference_anchor_marker_is_absent_from_all_downstream_outputs(
             "reference_analyst": [trace],
             "teaching_designer": [
                 grounded_trajectory_payload(),
-                teaching_progression_payload(),
+                generation_progression_payload(grounded=True),
             ],
             "interaction_designer": [downstream_interaction_payload()],
             "script_teacher": [downstream_script_payload()],
@@ -637,7 +654,7 @@ def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream(
             "reference_analyst": [trace],
             "teaching_designer": [
                 grounded_trajectory_payload(),
-                teaching_progression_payload(),
+                generation_progression_payload(grounded=True),
             ],
             "interaction_designer": [downstream_interaction_payload()],
             "script_teacher": [downstream_script_payload()],
@@ -797,7 +814,13 @@ def test_reference_audit_provider_failure_retries_before_preparation():
 
 def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_out_of_runtime():
     events = []
-    client = _approved_preparation_client()
+    client = _approved_preparation_client(
+        progression_target_ids=[
+            "problem-math-001",
+            "problem-math-002",
+            "problem-math-003",
+        ]
+    )
     pipeline = _RecordingPreparationPipeline(client, events)
     service = LessonGenerationService(
         client,
@@ -937,7 +960,10 @@ def test_generation_record_accepts_eight_full_solution_trace_repairs():
     fake = preparation_client(
         traces=[trace_payload() for _ in range(9)],
         trajectories=[trajectory_payload() for _ in range(9)],
-        progressions=[teaching_progression_payload() for _ in range(9)],
+        progressions=[
+            generation_progression_payload(grounded=False)
+            for _ in range(9)
+        ],
         interactions=[downstream_interaction_payload() for _ in range(9)],
         scripts=[downstream_script_payload() for _ in range(9)],
         performances=[downstream_score_payload() for _ in range(9)],
@@ -968,7 +994,7 @@ def test_model_authored_review_summary_remains_private():
             "reference_analyst": [trace_payload()],
             "teaching_designer": [
                 trajectory_payload(),
-                teaching_progression_payload(),
+                generation_progression_payload(grounded=False),
             ],
             "interaction_designer": [downstream_interaction_payload()],
             "script_teacher": [downstream_script_payload()],

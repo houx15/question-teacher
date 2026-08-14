@@ -247,7 +247,7 @@ def progression_payload():
                 "math_action": episode["mathematical_action"],
                 "directory_question": episode["thinking_question"],
                 "directory_label": "第%d步：处理当前问题" % (index + 1),
-                "board_summary": ["当前推理得到：%s" % episode["result"]],
+                "board_summary": ["由当前条件可推出：%s" % episode["result"]],
                 "error_tip": "注意条件使用范围",
                 "transition_question": episode["transition_reason"],
                 "must_teach_refs": [
@@ -581,8 +581,18 @@ def assert_code(code, call):
 
 
 def test_parameter_root_full_traceability_matrix_validates():
-    prepared = PreparedLesson.model_validate(prepared_payload())
-    targets = [ProblemFocusTarget(target_id="problem-root", math_text="2n", ordinal=1)]
+    payload = prepared_payload()
+    payload["teaching_progression"]["steps"][0]["evidence_target_ids"] = [
+        "problem-root"
+    ]
+    prepared = PreparedLesson.model_validate(payload)
+    targets = [
+        ProblemFocusTarget(
+            target_id="problem-root",
+            math_text="2n",
+            ordinal=1,
+        )
+    ]
     validate_prepared_lesson(prepared, route(), targets)
 
 

@@ -495,7 +495,9 @@ def _generation_service_with_pipeline(preparation_fake):
 def test_real_preparation_pipeline_reports_each_public_stage_through_save():
     store = RecordingStore()
     job = store.create_job()
-    generator = _generation_service_with_pipeline(preparation_client())
+    generator = _generation_service_with_pipeline(
+        preparation_client(progression_target_ids=[])
+    )
 
     asyncio.run(
         run_generation(
@@ -513,6 +515,7 @@ def test_real_preparation_pipeline_reports_each_public_stage_through_save():
 def test_real_review_repair_does_not_repeat_or_regress_public_progress():
     finding = review_finding("classroom_director")
     fake = preparation_client(
+        progression_target_ids=[],
         performances=[downstream_score_payload(), downstream_score_payload()],
         simulations=[
             downstream_simulation_payload(),
@@ -1803,11 +1806,12 @@ def test_concurrent_generation_jobs_keep_independent_progress_state():
     first_job = store.create_job()
     second_job = store.create_job()
     first_generator = _generation_service_with_pipeline(
-        preparation_client()
+        preparation_client(progression_target_ids=[])
     )
     finding = review_finding("classroom_director")
     second_generator = _generation_service_with_pipeline(
         preparation_client(
+            progression_target_ids=[],
             performances=[
                 downstream_score_payload(),
                 downstream_score_payload(),
@@ -1970,7 +1974,9 @@ def test_compiler_failure_never_reaches_audio_service():
             del args, kwargs
             raise LessonCompileError("private compiler output")
 
-    generator = _generation_service_with_pipeline(preparation_client())
+    generator = _generation_service_with_pipeline(
+        preparation_client(progression_target_ids=[])
+    )
     generator.compiler = FailingCompiler()
     audio_service = FakeAudioService()
     store = RecordingStore()
