@@ -1,6 +1,19 @@
 from app.schemas import RuntimeLesson
 
 
+def validated_audio_asset_id(asset_id: str) -> str:
+    if (
+        not isinstance(asset_id, str)
+        or not asset_id
+        or asset_id in {".", ".."}
+        or "/" in asset_id
+        or "\\" in asset_id
+        or "\x00" in asset_id
+    ):
+        raise ValueError("invalid audio asset identifier")
+    return asset_id
+
+
 def audio_asset_filename(asset_id: str) -> str:
     return f"{asset_id}.mp3"
 
@@ -23,6 +36,18 @@ def option_feedback_asset_id(beat_id: str, index: int) -> str:
 
 def correct_feedback_asset_id(beat_id: str) -> str:
     return f"{beat_id}-correct"
+
+
+def support_cue_asset_id(
+    beat_id: str,
+    interaction_id: str,
+    option_id: str,
+    cue_id: str,
+) -> str:
+    return validated_audio_asset_id(
+        "support-%s-%s-%s-%s"
+        % (beat_id, interaction_id, option_id, cue_id)
+    )
 
 
 def validate_lesson_audio_manifest(lesson: RuntimeLesson) -> None:
@@ -67,6 +92,20 @@ def validate_lesson_audio_manifest(lesson: RuntimeLesson) -> None:
             )
             if option.feedback_audio_url != expected_option:
                 raise ValueError("option feedback audio manifest mismatch")
+            for support_cue in option.support_cues:
+                expected_support = audio_asset_url(
+                    lesson_id,
+                    support_cue_asset_id(
+                        beat.beat_id,
+                        interaction.interaction_id,
+                        option.option_id,
+                        support_cue.cue_id,
+                    ),
+                )
+                if support_cue.audio_url != expected_support:
+                    raise ValueError(
+                        "support cue audio manifest mismatch"
+                    )
         expected_correct = (
             audio_asset_url(
                 lesson_id,

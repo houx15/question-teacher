@@ -13,9 +13,10 @@ from app.audio_manifest import (
     cue_asset_id,
     hint_asset_id,
     option_feedback_asset_id,
+    support_cue_asset_id,
 )
 from app.lesson_ids import is_valid_lesson_id
-from app.schemas import RuntimeLesson, RuntimeSyncCue
+from app.schemas import RuntimeLesson, RuntimeSyncCue, SupportSyncCue
 from app.tts_client import SpeechGenerationError
 
 
@@ -72,6 +73,25 @@ class LessonAudioService:
                 "Invalid audio asset destination"
             )
         return lesson_dir, destination
+
+    @staticmethod
+    def _support_asset_id(
+        beat_id: str,
+        interaction_id: str,
+        option_id: str,
+        cue_id: str,
+    ) -> str:
+        try:
+            return support_cue_asset_id(
+                beat_id,
+                interaction_id,
+                option_id,
+                cue_id,
+            )
+        except ValueError:
+            raise SpeechGenerationError(
+                "Invalid audio asset identifier"
+            ) from None
 
     async def _write(
         self,
@@ -161,6 +181,15 @@ class LessonAudioService:
                     plan_asset(
                         option_feedback_asset_id(beat.beat_id, index),
                     )
+                for support_cue in option.support_cues:
+                    plan_asset(
+                        self._support_asset_id(
+                            beat.beat_id,
+                            interaction.interaction_id,
+                            option.option_id,
+                            support_cue.cue_id,
+                        )
+                    )
             if interaction.explanation_after_correct:
                 plan_asset(
                     correct_feedback_asset_id(beat.beat_id),
@@ -179,7 +208,10 @@ class LessonAudioService:
     async def _voice_sync_cues(
         self,
         lesson: RuntimeLesson,
-    ) -> Dict[int, List[RuntimeSyncCue]]:
+    ) -> Tuple[
+        Dict[int, List[RuntimeSyncCue]],
+        Dict[Tuple[int, int], List[SupportSyncCue]],
+    ]:
         cue_jobs: List[Tuple[int, str, RuntimeSyncCue]] = [
             (
                 beat_index,
@@ -189,8 +221,24 @@ class LessonAudioService:
             for beat_index, beat in enumerate(lesson.beats)
             for cue in beat.sync_cues
         ]
-        if not cue_jobs:
-            return {}
+        support_jobs = [
+            (
+                beat_index,
+                option_index,
+                beat.beat_id,
+                beat.interaction.interaction_id,
+                option.option_id,
+                cue,
+            )
+            for beat_index, beat in enumerate(lesson.beats)
+            if beat.interaction is not None
+            for option_index, option in enumerate(
+                beat.interaction.options
+            )
+            for cue in option.support_cues
+        ]
+        if not cue_jobs and not support_jobs:
+            return {}, {}
 
         cue_semaphore = asyncio.Semaphore(3)
 
@@ -209,21 +257,65 @@ class LessonAudioService:
                 update={"audio_url": audio_url},
             )
 
+        async def voice_support_cue(
+            beat_id: str,
+            interaction_id: str,
+            option_id: str,
+            cue: SupportSyncCue,
+        ) -> SupportSyncCue:
+            async with cue_semaphore:
+                audio_url = await self._write(
+                    lesson.lesson_id,
+                    self._support_asset_id(
+                        beat_id,
+                        interaction_id,
+                        option_id,
+                        cue.cue_id,
+                    ),
+                    cue.spoken_text,
+                )
+            return cue.model_copy(
+                deep=True,
+                update={"audio_url": audio_url},
+            )
+
         cue_tasks = [
             asyncio.create_task(voice_cue(beat_id, cue))
             for _beat_index, beat_id, cue in cue_jobs
         ]
+        support_tasks = [
+            asyncio.create_task(
+                voice_support_cue(
+                    beat_id,
+                    interaction_id,
+                    option_id,
+                    cue,
+                )
+            )
+            for (
+                _beat_index,
+                _option_index,
+                beat_id,
+                interaction_id,
+                option_id,
+                cue,
+            ) in support_jobs
+        ]
+        all_tasks = [*cue_tasks, *support_tasks]
         try:
-            voiced_cues = await asyncio.gather(*cue_tasks)
+            voiced_assets = await asyncio.gather(*all_tasks)
         except BaseException:
-            for task in cue_tasks:
+            for task in all_tasks:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(
-                *cue_tasks,
+                *all_tasks,
                 return_exceptions=True,
             )
             raise
+
+        voiced_cues = voiced_assets[: len(cue_tasks)]
+        voiced_support_cues = voiced_assets[len(cue_tasks) :]
 
         cues_by_beat: Dict[int, List[RuntimeSyncCue]] = {}
         for (beat_index, _beat_id, _cue), voiced_cue in zip(
@@ -231,7 +323,21 @@ class LessonAudioService:
             voiced_cues,
         ):
             cues_by_beat.setdefault(beat_index, []).append(voiced_cue)
-        return cues_by_beat
+        support_by_option: Dict[
+            Tuple[int, int], List[SupportSyncCue]
+        ] = {}
+        for (
+            beat_index,
+            option_index,
+            _beat_id,
+            _interaction_id,
+            _option_id,
+            _cue,
+        ), voiced_cue in zip(support_jobs, voiced_support_cues):
+            support_by_option.setdefault(
+                (beat_index, option_index), []
+            ).append(voiced_cue)
+        return cues_by_beat, support_by_option
 
     async def attach_audio(
         self,
@@ -246,7 +352,10 @@ class LessonAudioService:
                 if inspect.isawaitable(stage_result):
                     await stage_result
 
-            voiced_cues_by_beat = await self._voice_sync_cues(lesson)
+            (
+                voiced_cues_by_beat,
+                voiced_support_by_option,
+            ) = await self._voice_sync_cues(lesson)
             voiced_beats = []
             for beat_index, beat in enumerate(lesson.beats):
                 if beat.sync_cues:
@@ -299,9 +408,15 @@ class LessonAudioService:
                                     ),
                                     option.feedback,
                                 )
+                        support_cues = voiced_support_by_option.get(
+                            (beat_index, index - 1),
+                            [],
+                        )
                         return option.model_copy(
+                            deep=True,
                             update={
                                 "feedback_audio_url": feedback_audio_url,
+                                "support_cues": support_cues,
                             }
                         )
 

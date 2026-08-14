@@ -18,6 +18,7 @@ from app.audio_manifest import (
     cue_asset_id,
     hint_asset_id,
     option_feedback_asset_id,
+    support_cue_asset_id,
 )
 from app.compiler import LessonCompileError, LessonCompiler
 from app.config import Settings
@@ -196,6 +197,16 @@ class FakeAudioService:
                     if option.feedback
                     else None
                 )
+                for support_cue in option.support_cues:
+                    support_cue.audio_url = audio_asset_url(
+                        lesson.lesson_id,
+                        support_cue_asset_id(
+                            beat.beat_id,
+                            interaction.interaction_id,
+                            option.option_id,
+                            support_cue.cue_id,
+                        ),
+                    )
             interaction.correct_audio_url = (
                 audio_asset_url(
                     lesson.lesson_id,
@@ -1355,6 +1366,13 @@ def test_all_interaction_audio_url_fields_are_allowed_audio_changes():
                         option_id="option-a",
                         label="A",
                         feedback="正确。",
+                        support_cues=[
+                            SupportSyncCue(
+                                cue_id="support-a",
+                                display_text=r"\(m-n\)",
+                                spoken_text="我们要求的是 m 减 n。",
+                            )
+                        ],
                     )
                 ],
             )
@@ -1381,6 +1399,65 @@ def test_all_interaction_audio_url_fields_are_allowed_audio_changes():
     )
 
     assert store.get_job(job.job_id).status == "completed"
+
+
+def test_support_audio_cannot_change_support_cue_semantics():
+    class InteractiveBundleGenerator(BundleGenerator):
+        async def generate_bundle(self, problem, on_stage=None):
+            bundle = await super().generate_bundle(
+                problem,
+                on_stage=on_stage,
+            )
+            interaction = Interaction(
+                interaction_id="near-transfer",
+                kind="choice",
+                prompt="请选择。",
+                expected_answer="option-a",
+                options=[
+                    InteractionOption(
+                        option_id="option-a",
+                        label="A",
+                        support_cues=[
+                            SupportSyncCue(
+                                cue_id="support-a",
+                                display_text=r"\(m-n\)",
+                                spoken_text="我们要求的是 m 减 n。",
+                            )
+                        ],
+                    )
+                ],
+            )
+            beat = bundle.lesson.beats[0].model_copy(
+                update={"interaction": interaction}
+            )
+            bundle.lesson = bundle.lesson.model_copy(update={"beats": [beat]})
+            return bundle
+
+    class MutatingSupportAudio(FakeAudioService):
+        async def attach_audio(self, lesson, on_stage=None):
+            voiced = await super().attach_audio(
+                lesson,
+                on_stage=on_stage,
+            )
+            voiced.beats[0].interaction.options[0].support_cues[
+                0
+            ].spoken_text = "伪造的支持讲解。"
+            return voiced
+
+    store = MemoryStore()
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            problem_input(),
+            store,
+            InteractiveBundleGenerator(),
+            MutatingSupportAudio(),
+        )
+    )
+
+    assert store.get_job(job.job_id).status == "failed"
+    assert store.get_lesson("lesson-bundle") is None
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,10 @@ import json
 import httpx
 import pytest
 
+from app.audio_manifest import (
+    support_cue_asset_id,
+    validate_lesson_audio_manifest,
+)
 from app.audio_service import LessonAudioService
 from app.config import Settings
 from app.schemas import (
@@ -13,6 +17,7 @@ from app.schemas import (
     RuntimeBeat,
     RuntimeLesson,
     RuntimeSyncCue,
+    SupportSyncCue,
     SyncVisualAction,
     TransferItem,
     TransferOption,
@@ -164,6 +169,48 @@ def cue_runtime_lesson():
             start=1,
         )
     ]
+    return lesson.model_copy(update={"beats": beats})
+
+
+def support_cue_runtime_lesson():
+    lesson = cue_runtime_lesson()
+    options = [
+        InteractionOption(
+            option_id="correct-option",
+            label="正确",
+            feedback="代入正确。",
+            support_cues=[
+                SupportSyncCue(
+                    cue_id="correct-support-1",
+                    display_text=r"\(m-n\)",
+                    spoken_text="我们要求的是 m 减 n。",
+                )
+            ],
+        ),
+        InteractionOption(
+            option_id="wrong-option",
+            label="平方算错",
+            feedback="先检查平方。",
+            support_cues=[
+                SupportSyncCue(
+                    cue_id="wrong-support-1",
+                    display_text=r"\((2n)^2=4n^2\)",
+                    spoken_text="二 n 整体的平方等于四 n 的平方。",
+                )
+            ],
+        ),
+    ]
+    interaction = lesson.beats[1].interaction.model_copy(
+        update={
+            "kind": "choice",
+            "expected_answer": "correct-option",
+            "options": options,
+        }
+    )
+    beats = list(lesson.beats)
+    beats[1] = beats[1].model_copy(
+        update={"interaction": interaction}
+    )
     return lesson.model_copy(update={"beats": beats})
 
 
@@ -686,6 +733,165 @@ def test_cue_audio_uses_spoken_text_and_preserves_source_order(tmp_path):
             voiced_beat.sync_cues,
         ):
             assert voiced_cue is not original_cue
+
+
+def test_audio_service_voices_support_cues_from_spoken_text(tmp_path):
+    lesson = support_cue_runtime_lesson()
+    original_dump = lesson.model_dump(mode="python")
+    client = FakeSpeechClient()
+
+    voiced = run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    interaction = voiced.beats[1].interaction
+    assert interaction is not None
+    support_cues = [
+        cue for option in interaction.options for cue in option.support_cues
+    ]
+    assert [cue.spoken_text for cue in support_cues] == [
+        "我们要求的是 m 减 n。",
+        "二 n 整体的平方等于四 n 的平方。",
+    ]
+    assert all(cue.audio_url for cue in support_cues)
+    assert set(client.texts) >= {
+        "我们要求的是 m 减 n。",
+        "二 n 整体的平方等于四 n 的平方。",
+    }
+    assert r"\(m-n\)" not in client.texts
+    assert r"\((2n)^2=4n^2\)" not in client.texts
+    for option in interaction.options:
+        for cue in option.support_cues:
+            expected_id = support_cue_asset_id(
+                voiced.beats[1].beat_id,
+                interaction.interaction_id,
+                option.option_id,
+                cue.cue_id,
+            )
+            assert cue.audio_url == (
+                f"/audio/{lesson.lesson_id}/{expected_id}.mp3"
+            )
+            assert (
+                tmp_path / lesson.lesson_id / f"{expected_id}.mp3"
+            ).read_bytes() == f"audio:{cue.spoken_text}".encode()
+    assert lesson.model_dump(mode="python") == original_dump
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "external", "cross_lesson", "swapped", "cross_option"],
+)
+def test_audio_manifest_requires_exact_support_cue_asset(tmp_path, mutation):
+    lesson = support_cue_runtime_lesson()
+    voiced = run(
+        LessonAudioService(FakeSpeechClient(), tmp_path).attach_audio(lesson)
+    )
+    payload = voiced.model_dump(mode="python")
+    options = payload["beats"][1]["interaction"]["options"]
+    first = options[0]["support_cues"][0]
+    second = options[1]["support_cues"][0]
+    if mutation == "missing":
+        first["audio_url"] = None
+    elif mutation == "external":
+        first["audio_url"] = "https://example.com/support.mp3"
+    elif mutation == "cross_lesson":
+        first["audio_url"] = first["audio_url"].replace(
+            "/lesson-001/", "/another-lesson/"
+        )
+    elif mutation == "swapped":
+        first["audio_url"], second["audio_url"] = (
+            second["audio_url"],
+            first["audio_url"],
+        )
+    else:
+        first["audio_url"] = second["audio_url"]
+
+    with pytest.raises(
+        ValueError,
+        match="support cue audio manifest mismatch",
+    ):
+        validate_lesson_audio_manifest(RuntimeLesson.model_validate(payload))
+
+
+def test_support_asset_collision_preflights_before_writes(tmp_path):
+    lesson = support_cue_runtime_lesson()
+    interaction = lesson.beats[1].interaction
+    support_cue = interaction.options[0].support_cues[0]
+    collision_id = support_cue_asset_id(
+        lesson.beats[1].beat_id,
+        interaction.interaction_id,
+        interaction.options[0].option_id,
+        support_cue.cue_id,
+    )
+    first_beat = lesson.beats[0].model_copy(
+        update={
+            "beat_id": "support",
+            "sync_cues": [
+                RuntimeSyncCue(
+                    cue_id=collision_id.removeprefix("support-"),
+                    spoken_text="碰撞时不应开始生成。",
+                )
+            ],
+        }
+    )
+    lesson = lesson.model_copy(
+        update={"beats": [first_beat, lesson.beats[1]]}
+    )
+    client = FakeSpeechClient()
+
+    with pytest.raises(
+        SpeechGenerationError,
+        match="^Duplicate audio asset identifier$",
+    ):
+        run(LessonAudioService(client, tmp_path).attach_audio(lesson))
+
+    assert client.texts == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_support_failure_cancels_main_and_support_group_and_cleans(tmp_path):
+    lesson = support_cue_runtime_lesson()
+    first_beat = lesson.beats[0].model_copy(
+        update={"sync_cues": lesson.beats[0].sync_cues[:1]}
+    )
+    second_beat = lesson.beats[1].model_copy(update={"sync_cues": []})
+    lesson = lesson.model_copy(update={"beats": [first_beat, second_beat]})
+    main_text = first_beat.sync_cues[0].spoken_text
+    support_texts = [
+        cue.spoken_text
+        for option in second_beat.interaction.options
+        for cue in option.support_cues
+    ]
+    all_group_texts = [main_text, *support_texts]
+
+    async def scenario():
+        client = FailingCueSpeechClient(
+            all_group_texts,
+            support_texts[0],
+        )
+        task = asyncio.create_task(
+            LessonAudioService(client, tmp_path).attach_audio(lesson)
+        )
+        await asyncio.wait_for(
+            client.wait_for_active_cue_calls(3),
+            timeout=0.5,
+        )
+        client.failure_release.set()
+        with pytest.raises(SpeechGenerationError) as error:
+            await task
+        return error.value, client
+
+    error, client = run(scenario())
+
+    expected_id = support_cue_asset_id(
+        second_beat.beat_id,
+        second_beat.interaction.interaction_id,
+        second_beat.interaction.options[0].option_id,
+        second_beat.interaction.options[0].support_cues[0].cue_id,
+    )
+    assert str(error) == f"Audio generation failed for {expected_id}"
+    assert client.texts.count(support_texts[0]) == 2
+    assert set(client.cancelled_cues) == {main_text, support_texts[1]}
+    assert client.active_cue_calls == 0
+    assert not (tmp_path / lesson.lesson_id).exists()
 
 
 def test_cue_audio_deeply_isolates_nested_visual_actions(tmp_path):
