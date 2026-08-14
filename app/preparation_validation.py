@@ -103,6 +103,20 @@ def _fail(code: str, artifact_id: str, detail: str) -> None:
     raise PreparationValidationError(code, artifact_id, detail)
 
 
+def _defensively_revalidate(
+    value: object,
+    expected: type,
+    label: str,
+    code: str,
+    detail: str,
+) -> object:
+    try:
+        _require_exact(value, expected, label)
+        return expected.model_validate(value.model_dump(mode="python"))
+    except (ValidationError, TypeError):
+        _fail(code, label, detail)
+
+
 def _contains_exact_id_token(notes: Sequence[str], item_id: str) -> bool:
     pattern = re.compile(
         r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])" % re.escape(item_id)
@@ -309,20 +323,34 @@ def validate_teaching_script(
     progression: TeachingProgression,
     interaction_plan: InteractionPlan,
 ) -> None:
-    try:
-        _require_exact(script, TeachingScript, "script")
-        script = TeachingScript.model_validate(
-            script.model_dump(mode="python")
-        )
-    except (ValidationError, TypeError):
-        _fail(
-            "teaching_script_content_invalid",
-            "teaching_script",
-            "Teaching script content failed defensive model validation.",
-        )
-    _require_exact(trajectory, ReasoningTrajectory, "trajectory")
-    _require_exact(progression, TeachingProgression, "progression")
-    _require_exact(interaction_plan, InteractionPlan, "interaction_plan")
+    script = _defensively_revalidate(
+        script,
+        TeachingScript,
+        "teaching_script",
+        "teaching_script_content_invalid",
+        "Teaching script content failed defensive model validation.",
+    )
+    trajectory = _defensively_revalidate(
+        trajectory,
+        ReasoningTrajectory,
+        "reasoning_trajectory",
+        "reasoning_trajectory_content_invalid",
+        "Reasoning trajectory content failed defensive model validation.",
+    )
+    progression = _defensively_revalidate(
+        progression,
+        TeachingProgression,
+        "teaching_progression",
+        "teaching_progression_content_invalid",
+        "Teaching progression content failed defensive model validation.",
+    )
+    interaction_plan = _defensively_revalidate(
+        interaction_plan,
+        InteractionPlan,
+        "interaction_plan",
+        "interaction_plan_content_invalid",
+        "Interaction plan content failed defensive model validation.",
+    )
     episode_positions = {
         episode.episode_id: index
         for index, episode in enumerate(trajectory.episodes)
@@ -485,20 +513,6 @@ def _validate_authored_clause_language(clause: object) -> None:
         )
 
 
-def _response_information(response: object) -> Tuple[int, int]:
-    effective_characters = sum(
-        len(
-            re.sub(
-                r"[^0-9A-Za-z\u4e00-\u9fff]",
-                "",
-                "%s%s" % (clause.display_text or "", clause.spoken_text),
-            )
-        )
-        for clause in response.clauses
-    )
-    return len(response.clauses), effective_characters
-
-
 def _contains_private_canonical_answer(
     visible: str,
     canonical_answer: str,
@@ -554,9 +568,6 @@ def _validate_response_scripts(
         )
 
     for interaction in interaction_plan.interactions:
-        correct = response_by_binding[
-            (interaction.interaction_id, interaction.correct_option_id)
-        ]
         for option in interaction.options:
             response = response_by_binding[
                 (interaction.interaction_id, option.option_id)
@@ -650,6 +661,12 @@ def _validate_response_scripts(
                         response.response_id,
                         "Incorrect response must directly express its misconception and correction anchors.",
                     )
+                if misconception_anchor == correction_anchor:
+                    _fail(
+                        "response_remediation_insufficient",
+                        response.response_id,
+                        "Incorrect response requires distinct reason and correction units.",
+                    )
                 if any(
                     _contains_private_canonical_answer(
                         visible,
@@ -661,21 +678,6 @@ def _validate_response_scripts(
                         "response_private_answer_leakage",
                         response.response_id,
                         "Incorrect response exposes private canonical answer data.",
-                    )
-                response_count, response_information = _response_information(
-                    response
-                )
-                correct_count, correct_information = _response_information(
-                    correct
-                )
-                if not (
-                    response_count > correct_count
-                    or response_information > correct_information
-                ):
-                    _fail(
-                        "response_remediation_insufficient",
-                        response.response_id,
-                        "Incorrect response must add strictly more remediation than correct feedback.",
                     )
 
 

@@ -363,6 +363,7 @@ def test_script_teacher_requires_natural_adaptive_screen_and_spoken_language():
         "incorrect_feedback_by_option",
         "直接讲清",
         "不能只是更长",
+        "深度由错误原因和纠正动作构成",
     ):
         assert phrase in system
 

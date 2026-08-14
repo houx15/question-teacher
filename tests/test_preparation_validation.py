@@ -1056,7 +1056,7 @@ def test_response_scripts_enforce_classification_depth_and_correct_error_contrac
         )
 
 
-def test_incorrect_response_must_carry_strictly_more_remediation_than_correct():
+def test_incorrect_response_depth_depends_on_distinct_semantic_units_not_length():
     _, trajectory, script, *_ = models()
     payload = script.model_dump()
     correct_clause = payload["response_scripts"][0]["clauses"][0]
@@ -1065,11 +1065,44 @@ def test_incorrect_response_must_carry_strictly_more_remediation_than_correct():
     wrong_clause = payload["response_scripts"][1]["clauses"][0]
     wrong_clause["display_text"] = "偏离目标；目标只是关系"
     wrong_clause["spoken_text"] = "偏离目标，目标只是关系。"
+
+    validate_current_script(
+        TeachingScript.model_validate(payload), trajectory
+    )
+
+
+def test_incorrect_response_rejects_identical_semantic_units_despite_filler():
+    _, trajectory, _, *_ = models()
+    payload = semantically_anchored_script_payload()
+    plan_payload = interaction_plan_payload()
+    plan_payload["interactions"][0]["options"][1]["misconception"] = "回到目标"
+    plan_payload["interactions"][0]["incorrect_feedback_by_option"][
+        "option-b"
+    ] = "回到目标"
+    response = payload["response_scripts"][1]
+    response["clauses"][0]["display_text"] = "回到目标"
+    response["clauses"][0]["spoken_text"] = "回到目标" + "啊" * 60
+
     assert_code(
         "response_remediation_insufficient",
-        lambda: validate_current_script(
-            TeachingScript.model_validate(payload), trajectory
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(payload),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan_payload),
         ),
+    )
+
+
+def test_incorrect_response_accepts_distinct_semantic_units_with_filler():
+    _, trajectory, _, *_ = models()
+    payload = semantically_anchored_script_payload()
+    payload["response_scripts"][1]["clauses"][0]["spoken_text"] += (
+        "啊" * 40
+    )
+
+    validate_current_script(
+        TeachingScript.model_validate(payload), trajectory
     )
 
 
@@ -1250,6 +1283,51 @@ def test_teaching_script_entry_maps_wrong_type_to_content_free_error():
             InteractionPlan.model_validate(interaction_plan_payload()),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("artifact", "code", "artifact_id", "detail"),
+    (
+        (
+            "trajectory",
+            "reasoning_trajectory_content_invalid",
+            "reasoning_trajectory",
+            "Reasoning trajectory content failed defensive model validation.",
+        ),
+        (
+            "progression",
+            "teaching_progression_content_invalid",
+            "teaching_progression",
+            "Teaching progression content failed defensive model validation.",
+        ),
+        (
+            "interaction_plan",
+            "interaction_plan_content_invalid",
+            "interaction_plan",
+            "Interaction plan content failed defensive model validation.",
+        ),
+    ),
+)
+def test_teaching_script_entry_defensively_revalidates_upstream_models(
+    artifact,
+    code,
+    artifact_id,
+    detail,
+):
+    _, trajectory, script, plan, *_ = models()
+    progression = TeachingProgression.model_validate(progression_payload())
+    if artifact == "trajectory":
+        object.__setattr__(trajectory.episodes[0], "sequence_index", None)
+    elif artifact == "progression":
+        object.__setattr__(progression.steps[0], "sequence_index", None)
+    else:
+        object.__setattr__(plan.interactions[0].options[0], "display_text", None)
+
+    with pytest.raises(PreparationValidationError) as captured:
+        validate_teaching_script(script, trajectory, progression, plan)
+    assert captured.value.code == code
+    assert captured.value.artifact_id == artifact_id
+    assert captured.value.detail == detail
 
 
 def test_interaction_plan_rejects_clause_binding_and_answer_leakage():
