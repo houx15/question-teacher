@@ -301,6 +301,10 @@ def test_directory_labels_are_unique():
         "之后继续处理",
         "接下来进行运算",
         "然后算一下",
+        "然后：计算",
+        "继续计算下一步",
+        "然后（继续）计算",
+        "接下来、进行化简一下",
     ),
 )
 def test_generic_why_now_is_rejected(generic_why_now):
@@ -376,9 +380,31 @@ def test_board_summary_decorative_wrappers_cannot_bypass_result_repeat(summary):
     assert_code("progression_board_summary_not_explanatory", payload)
 
 
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "①答案：4n^2-4mn+2n=0。",
+        "⑩ 最终结果: 4n^2-4mn+2n=0",
+        "【答案：4n^2-4mn+2n=0。】",
+        "“结果：４ｎ＾２－４ｍｎ＋２ｎ＝０”",
+    ),
+)
+def test_board_summary_unicode_wrappers_cannot_bypass_result_repeat(summary):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = [summary]
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
 def test_board_summary_rejects_punctuation_only_content():
     payload = progression_payload()
     payload["steps"][0]["board_summary"] = ["【……》“”"]
+    assert_code("progression_board_summary_not_explanatory", payload)
+
+
+@pytest.mark.parametrize("summary", ("→", "=", "≠", "→ / ="))
+def test_board_summary_requires_a_letter_digit_or_han_character(summary):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = [summary]
     assert_code("progression_board_summary_not_explanatory", payload)
 
 
@@ -399,8 +425,8 @@ def test_multi_episode_board_summaries_cannot_only_repeat_episode_results():
         "misconception-002-001",
     ]
     payload["steps"][0]["board_summary"] = [
-        "结果：4n^2-4mn+2n=0",
-        "（2）2n-2m+1=0。",
+        "①答案：4n^2-4mn+2n=0",
+        "②最终结果：2n-2m+1=0。",
     ]
     assert_code("progression_board_summary_not_explanatory", payload)
 
@@ -413,6 +439,21 @@ def test_multi_episode_board_summaries_cannot_only_repeat_episode_results():
     ),
 )
 def test_board_summary_with_an_explanatory_relation_remains_valid(summary):
+    payload = progression_payload()
+    payload["steps"][0]["board_summary"] = [summary]
+    trajectory, progression = models(progression_value=payload)
+    validate_teaching_progression(progression, trajectory, targets())
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "-4是负数，因此符号必须保留",
+        "4n^2-4mn+2n=0 → 提取公因式2n",
+        "因为n!=0，所以可以约分",
+    ),
+)
+def test_board_summary_keeps_meaningful_math_and_explanation(summary):
     payload = progression_payload()
     payload["steps"][0]["board_summary"] = [summary]
     trajectory, progression = models(progression_value=payload)
@@ -480,6 +521,43 @@ def test_mutated_progression_structure_fails_with_stable_validation_error(
     assert captured.value.artifact_id == "teaching_progression"
     assert str(captured.value) == (
         "progression_structure_invalid:teaching_progression"
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("result", "must_teach", "likely_misconceptions"),
+)
+def test_mutated_trajectory_structure_fails_with_stable_validation_error(field):
+    trajectory, progression = models()
+    object.__setattr__(trajectory.episodes[0], field, None)
+
+    with pytest.raises(TeachingProgressionValidationError) as captured:
+        validate_teaching_progression(progression, trajectory, targets())
+
+    assert captured.value.code == "trajectory_structure_invalid"
+    assert captured.value.artifact_id == "reasoning_trajectory"
+    assert str(captured.value) == (
+        "trajectory_structure_invalid:reasoning_trajectory"
+    )
+
+
+def test_mutated_problem_target_structure_fails_with_stable_validation_error():
+    trajectory, progression = models()
+    problem_targets = targets()
+    object.__setattr__(problem_targets[0], "target_id", [])
+
+    with pytest.raises(TeachingProgressionValidationError) as captured:
+        validate_teaching_progression(
+            progression,
+            trajectory,
+            problem_targets,
+        )
+
+    assert captured.value.code == "problem_target_structure_invalid"
+    assert captured.value.artifact_id == "problem_targets"
+    assert str(captured.value) == (
+        "problem_target_structure_invalid:problem_targets"
     )
 
 

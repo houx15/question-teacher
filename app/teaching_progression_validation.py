@@ -16,14 +16,30 @@ from app.schemas import ProblemFocusTarget
 
 
 ProblemTargets = Union[List[ProblemFocusTarget], Tuple[ProblemFocusTarget, ...]]
-_GENERIC_WHY_NOW_PATTERN = re.compile(
-    r"^(?:然后|接下来|之后|再|接着|开始|下一步|再来)?"
-    r"(?:继续)?(?:进行)?(?:算|计算|运算|整理|化简|处理)(?:一下)?$"
+_GENERIC_WHY_NOW_TOKENS = (
+    "接下来",
+    "下一步",
+    "然后",
+    "之后",
+    "继续",
+    "接着",
+    "开始",
+    "再来",
+    "进行",
+    "计算",
+    "运算",
+    "整理",
+    "化简",
+    "处理",
+    "一下",
+    "再",
+    "算",
 )
-_MEANINGLESS_TRAILING_PUNCTUATION = re.compile(r"[，。；;,.!?！？]+$")
-_BOARD_DECORATION_PREFIX = re.compile(
-    r"^\s*(?:(?:[（(]\s*\d{1,3}\s*[）)]|\d{1,3}[.、])\s*)?"
-    r"(?:(?:结果|得到|当前推理得到|结论)\s*[:：]\s*)?"
+_BOARD_NUMBER_PREFIX = re.compile(
+    r"^\s*(?:(?:\(\s*\d{1,3}\s*\)|\d{1,3}[.、]))\s*"
+)
+_BOARD_LABEL_PREFIX = re.compile(
+    r"^(?:当前推理得到|最终结果|结果|答案|得到|结论)\s*:\s*"
 )
 
 
@@ -80,31 +96,83 @@ def derive_misconception_vocabulary(
 def _why_now_is_explanatory(value: str) -> bool:
     if type(value) is not str:
         return False
-    normalized = re.sub(r"[\s，。；;,.!?！？]", "", value).lower()
-    return bool(normalized) and (
-        _GENERIC_WHY_NOW_PATTERN.fullmatch(normalized) is None
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKC", value).lower()
+        if not character.isspace()
+        and not unicodedata.category(character).startswith("P")
     )
+    if not normalized:
+        return False
+
+    reachable = [False] * (len(normalized) + 1)
+    reachable[0] = True
+    for index in range(len(normalized)):
+        if not reachable[index]:
+            continue
+        for token in _GENERIC_WHY_NOW_TOKENS:
+            if normalized.startswith(token, index):
+                reachable[index + len(token)] = True
+    return not reachable[-1]
+
+
+def _is_unicode_numbering(character: str) -> bool:
+    name = unicodedata.name(character, "")
+    return (
+        "CIRCLED" in name or "PARENTHESIZED" in name
+    ) and ("DIGIT" in name or "NUMBER" in name)
+
+
+def _strip_raw_unicode_numbering(value: str) -> str:
+    index = 0
+    while index < len(value) and (
+        value[index].isspace()
+        or (
+            value[index] != "-"
+            and unicodedata.category(value[index]).startswith("P")
+        )
+    ):
+        index += 1
+    if index < len(value) and _is_unicode_numbering(value[index]):
+        return value[:index] + value[index + 1 :].lstrip()
+    return value
+
+
+def _strip_endpoint_punctuation(value: str) -> str:
+    start = 0
+    end = len(value)
+    while start < end and (
+        value[start].isspace()
+        or (
+            value[start] != "-"
+            and unicodedata.category(value[start]).startswith("P")
+        )
+    ):
+        start += 1
+    while end > start and (
+        value[end - 1].isspace()
+        or unicodedata.category(value[end - 1]).startswith("P")
+    ):
+        end -= 1
+    return value[start:end]
 
 
 def _normalize_board_identity(value: str) -> str:
-    without_trailing_punctuation = _MEANINGLESS_TRAILING_PUNCTUATION.sub(
+    without_unicode_numbering = _strip_raw_unicode_numbering(value.strip())
+    normalized = unicodedata.normalize("NFKC", without_unicode_numbering)
+    without_numbering = _BOARD_NUMBER_PREFIX.sub("", normalized, count=1)
+    without_endpoint_punctuation = _strip_endpoint_punctuation(without_numbering)
+    without_label = _BOARD_LABEL_PREFIX.sub(
         "",
-        value.rstrip(),
-    ).rstrip()
-    without_decoration = _BOARD_DECORATION_PREFIX.sub(
-        "",
-        without_trailing_punctuation,
+        without_endpoint_punctuation,
         count=1,
     )
+    without_decoration = _strip_endpoint_punctuation(without_label)
     return normalize_cross_artifact_math_identity(without_decoration)
 
 
-def _board_summary_is_punctuation_only(value: str) -> bool:
-    return bool(value) and all(
-        character.isspace()
-        or unicodedata.category(character).startswith("P")
-        for character in value
-    )
+def _board_summary_has_semantic_character(value: str) -> bool:
+    return any(character.isalnum() for character in value)
 
 
 def validate_teaching_progression(
@@ -116,6 +184,21 @@ def validate_teaching_progression(
     _require_exact(progression, TeachingProgression, "progression")
     _require_exact(trajectory, ReasoningTrajectory, "trajectory")
     _validate_problem_targets(problem_targets)
+    try:
+        trajectory = ReasoningTrajectory.model_validate(
+            trajectory.model_dump(mode="python", warnings="none")
+        )
+    except (ValidationError, TypeError):
+        _fail("trajectory_structure_invalid", "reasoning_trajectory")
+    try:
+        problem_targets = type(problem_targets)(
+            ProblemFocusTarget.model_validate(
+                item.model_dump(mode="python", warnings="none")
+            )
+            for item in problem_targets
+        )
+    except (ValidationError, TypeError):
+        _fail("problem_target_structure_invalid", "problem_targets")
     try:
         progression = TeachingProgression.model_validate(
             progression.model_dump(mode="python", warnings="none")
@@ -194,9 +277,9 @@ def validate_teaching_progression(
             _normalize_board_identity(item) for item in step.board_summary
         }
         if any(
-            _board_summary_is_punctuation_only(item)
-            for item in step.board_summary
-        ) or "" in normalized_summaries:
+            not _board_summary_has_semantic_character(item)
+            for item in normalized_summaries
+        ):
             _fail(
                 "progression_board_summary_not_explanatory",
                 step.step_id,
