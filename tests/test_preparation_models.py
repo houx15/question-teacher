@@ -127,7 +127,7 @@ def prepared_lesson():
         "reasoning_trajectory": {"trajectory_type": "planned", "lesson_purpose": "理解等式性质", "episodes": [episode()], "method_summary": "同减", "error_summary": "避免单边变形"},
         "teaching_script": teaching_script(), "interaction_plan": {"interactions": [], "transfer_item": transfer_item()},
         "performance_score": {"cues": [{"cue_id": "cue-1", "clause_ids": ["open-1"]}]},
-        "simulation_report": {"episode_results": [{"episode_id": "episode-1", "learner_profile": "基础学习者", "can_identify_attention_target": True, "can_explain_decision": True, "can_execute_action": True, "can_use_result_to_continue": True, "evidence": ["能说明等式两边同步"]}], "end_of_lesson_recall": "能说出等式性质"},
+        "simulation_report": {"episode_results": [{"episode_id": "episode-1", "learner_profile": "基础学习者", "can_identify_attention_target": True, "can_explain_decision": True, "can_execute_action": True, "can_use_result_to_continue": True, "can_align_display_and_spoken_math": True, "can_recover_with_adaptive_support": True, "can_locate_current_step": True, "evidence": ["能说明等式两边同步"]}], "end_of_lesson_recall": "能说出等式性质"},
         "review": {"status": "approved", "findings": [{"finding_id": "finding-1", "severity": "polish", "artifact_type": "teaching_script", "artifact_id": "script-1", "criterion": "learner_follows_why", "evidence": "一个句子可更短", "responsible_role": "script_teacher", "requested_change": "精简句子"}], "approval_summary": "可以使用"},
         "repair_count": 0,
         "artifact_history": [

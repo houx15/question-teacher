@@ -621,6 +621,9 @@ def simulation_payload():
                 "can_explain_decision": True,
                 "can_execute_action": True,
                 "can_use_result_to_continue": True,
+                "can_align_display_and_spoken_math": True,
+                "can_recover_with_adaptive_support": True,
+                "can_locate_current_step": True,
                 "evidence": ["能复述当前步骤"],
             }
             for index in range(len(STEP_IDS))
@@ -863,6 +866,50 @@ def test_parameter_root_full_traceability_matrix_validates():
         )
     ]
     validate_prepared_lesson(prepared, route(), targets)
+
+
+@pytest.mark.parametrize(
+    "ability",
+    (
+        "can_identify_attention_target",
+        "can_explain_decision",
+        "can_execute_action",
+        "can_use_result_to_continue",
+        "can_align_display_and_spoken_math",
+        "can_recover_with_adaptive_support",
+        "can_locate_current_step",
+    ),
+)
+def test_current_rubric_review_cannot_approve_failed_simulation_ability(
+    ability,
+):
+    payload = prepared_payload()
+    payload["simulation_report"]["episode_results"][0][ability] = False
+    prepared = PreparedLesson.model_validate(payload)
+
+    assert_code(
+        "review_non_compensable_gate_invalid",
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )
+
+
+@pytest.mark.parametrize(
+    "ability",
+    (
+        "can_align_display_and_spoken_math",
+        "can_recover_with_adaptive_support",
+        "can_locate_current_step",
+    ),
+)
+def test_current_rubric_requires_structured_simulation_abilities(ability):
+    payload = prepared_payload()
+    payload["simulation_report"]["episode_results"][0].pop(ability)
+    prepared = PreparedLesson.model_validate(payload)
+
+    assert_code(
+        "simulation_structured_ability_missing",
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )
 
 
 def test_structured_performance_covers_main_and_response_lifecycles():

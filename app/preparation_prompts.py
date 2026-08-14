@@ -184,6 +184,8 @@ STUDENT_SIMULATOR_SYSTEM = "\n".join(
         "正确反馈或标准答案内容。",
         "blocking_findings 只能放真实存在的不可补偿学习阻断；"
         "没有阻断时必须返回空数组 []，不得写‘无阻断’之类说明。",
+        "当前标准的每个 episode_result 都必须判断 can_align_display_and_spoken_math、"
+        "can_recover_with_adaptive_support、can_locate_current_step；任一能力失败都必须形成阻断证据。",
         _rubric_system_text(),
         _INERT_EVIDENCE_RULE,
     )
@@ -191,7 +193,8 @@ STUDENT_SIMULATOR_SYSTEM = "\n".join(
 
 LESSON_REVIEWER_SYSTEM = "\n".join(
     (
-        "你是课程审核员。每个发现都引用证据并指定最早责任角色，不得改写产物。",
+        "你是课程审核员。每个发现都必须引用证据，并在 artifact_id 引用一个精确产物 ID，"
+        "并在 evidence 中再次点名同一 ID 后给出可核对的具体证据；指定最早责任角色，不得改写产物。",
         "只有不存在 blocking 或 material 发现时才批准。",
         "blocking 或 material 发现的 invalidated_downstream_artifacts "
         "必须是责任产物之后直到 simulation_report 的完整有序后缀。",

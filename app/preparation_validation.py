@@ -2393,6 +2393,8 @@ def validate_simulation_report(
     report: SimulationReport,
     trajectory: ReasoningTrajectory,
     plan: InteractionPlan,
+    *,
+    require_structured_abilities: bool = False,
 ) -> None:
     _require_exact(report, SimulationReport, "report")
     _require_exact(trajectory, ReasoningTrajectory, "trajectory")
@@ -2405,6 +2407,21 @@ def validate_simulation_report(
             "simulation_report",
             "Simulation must contain exactly one result for every reasoning episode.",
         )
+    if require_structured_abilities:
+        for result in report.episode_results:
+            if any(
+                value is None
+                for value in (
+                    result.can_align_display_and_spoken_math,
+                    result.can_recover_with_adaptive_support,
+                    result.can_locate_current_step,
+                )
+            ):
+                _fail(
+                    "simulation_structured_ability_missing",
+                    result.episode_id,
+                    "Current-rubric simulation must evaluate every structured teaching ability.",
+                )
     private_values = {"correct_option_id", "canonical_answer"}
     private_option_ids = []
     for interaction in plan.interactions:
@@ -2574,11 +2591,17 @@ def validate_review_decision(
     _validate_review_dependency_metadata(decision)
 
     novice_gate_failed = bool(report.blocking_findings) or any(
-        not (
-            result.can_identify_attention_target
-            and result.can_explain_decision
-            and result.can_execute_action
-            and result.can_use_result_to_continue
+        not all(
+            ability is not False
+            for ability in (
+                result.can_identify_attention_target,
+                result.can_explain_decision,
+                result.can_execute_action,
+                result.can_use_result_to_continue,
+                result.can_align_display_and_spoken_math,
+                result.can_recover_with_adaptive_support,
+                result.can_locate_current_step,
+            )
         )
         for result in report.episode_results
     )
@@ -2718,6 +2741,7 @@ def validate_prepared_lesson(
         prepared.simulation_report,
         prepared.reasoning_trajectory,
         prepared.interaction_plan,
+        require_structured_abilities=True,
     )
     _validate_artifact_history(prepared, active_versions)
     validate_review_decision(

@@ -16,6 +16,7 @@ from app.schemas import (
     TransferItem,
 )
 from app.preparation_models import GenerationRecord
+from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.problem_focus import compile_problem_focus_targets
 from app.store import MemoryStore
 from tests.test_preparation_models import (
@@ -91,7 +92,7 @@ def runtime_lesson(*, include_interaction: bool = False) -> RuntimeLesson:
             "math_status": "verified",
             "independent_solutions": ["x=1", "x=5"],
             "teaching_route_fingerprint": "route-persisted-1",
-            "pedagogy_rubric_version": "0.1",
+            "pedagogy_rubric_version": PEDAGOGY_RUBRIC_VERSION,
             "artifact_versions": {
                 "solution_trace": 1,
                 "reasoning_trajectory": 1,
@@ -113,7 +114,7 @@ def private_generation_record(
     generation_id: str = "generation-persisted-1",
 ) -> GenerationRecord:
     prepared = prepared_lesson()
-    prepared["rubric_version"] = "0.1"
+    prepared["rubric_version"] = PEDAGOGY_RUBRIC_VERSION
     prepared["teaching_progression"] = teaching_progression_payload()
     prepared["teaching_script"]["title"] = lesson.title
     prepared["teaching_script"]["learning_goal"] = lesson.learning_goal
@@ -726,7 +727,7 @@ def test_historical_rubric_0_1_record_remains_readable_privately(
             "lesson_id": new_lesson.lesson_id,
         }
     )
-    with pytest.raises(ValueError, match="teaching progression missing"):
+    with pytest.raises(ValueError, match="rubric version invalid"):
         restarted.save_lesson(new_lesson, old_record)
 
 

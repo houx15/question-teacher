@@ -304,7 +304,7 @@ def downstream_response_scripts(interactions):
                             "clause_id": "response-clause-%s-%s"
                             % (interaction["interaction_id"], option["option_id"]),
                             "episode_id": interaction["episode_id"],
-                            "lesson_step_id": "teaching-step-2",
+                            "lesson_step_id": interaction["teaching_step_id"],
                             "pedagogical_function": (
                                 "transition" if correct else "correct"
                             ),
@@ -608,6 +608,9 @@ def downstream_simulation_payload():
                 "can_explain_decision": True,
                 "can_execute_action": True,
                 "can_use_result_to_continue": True,
+                "can_align_display_and_spoken_math": True,
+                "can_recover_with_adaptive_support": True,
+                "can_locate_current_step": True,
                 "evidence": ["能说出当前重点、理由、操作和下一步。"],
             }
             for index in range(5)

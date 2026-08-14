@@ -95,13 +95,29 @@ def test_current_generation_record_accepts_exact_seven_artifact_initial_build():
     ) == ARTIFACT_ORDER
 
 
+@pytest.mark.parametrize("value", (None, False))
+def test_current_generation_record_rejects_failed_or_missing_structured_ability(
+    value,
+):
+    lesson, record = current_pair()
+    prepared = record.prepared_lesson.model_copy(deep=True)
+    result = prepared.simulation_report.episode_results[0]
+    prepared.simulation_report.episode_results[0] = result.model_copy(
+        update={"can_locate_current_step": value}
+    )
+    forged = record.model_copy(update={"prepared_lesson": prepared})
+
+    with pytest.raises(ValueError, match="structured ability"):
+        validate_lesson_generation_pair(lesson, forged)
+
+
 def test_historical_rubric_0_1_six_artifact_record_is_readable_only_privately():
     lesson, record = legacy_six_artifact_pair()
 
     validate_lesson_generation_pair(
         lesson, record, require_current_rubric=False
     )
-    with pytest.raises(ValueError, match="teaching progression missing"):
+    with pytest.raises(ValueError, match="rubric version invalid"):
         validate_lesson_generation_pair(
             lesson, record, require_current_rubric=True
         )

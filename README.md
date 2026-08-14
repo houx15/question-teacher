@@ -136,6 +136,25 @@ Demo 使用 HTTP Chunked 单向流式 V3 接口。先在豆包语音控制台开
 
 ## 从输入到课堂
 
+当前 rubric 为 `0.2`。新课程在服务端依次保存以下私有链路：
+
+```text
+SolutionTrace → ReasoningTrajectory → TeachingProgression
+→ InteractionPlan → TeachingScript → PerformanceScore
+→ SimulationReport → LessonReviewDecision
+→ adapter → compiler → RuntimeLesson → TTS → SQLite 原子保存
+```
+
+前面的路线、推进和互动计划都是中间产物。最终 Teaching Agent 负责把它们组织成
+学生实际听见的自然讲解，并分别给出适合屏幕显示的数学文字与适合语音朗读的口播；
+其他角色不得在编译阶段临时补写学生可见内容。学生答对时使用简短确认，答错时按
+具体错误类型播放更深但有边界的支持讲解，然后只恢复一次当前主线。完整推进、错误
+诊断、模拟结果、审稿发现和正确答案只保存在私有记录中。
+
+数据库仍兼容读取 rubric `0.1` 的旧课程；旧课程沿用原有板书和 Cue 合同。所有新生成、
+新保存和当前完整性校验都要求 rubric `0.2`、完整七类产物历史、连续板书步骤元数据和
+新增模拟能力证据，不能用旧形状写入新记录。
+
 生成链路如下：
 
 ```text
@@ -145,14 +164,13 @@ Demo 使用 HTTP Chunked 单向流式 V3 接口。先在豆包语音控制台开
 → 其他题目：模型把参考材料整理为结构化 grounding brief，局部 Claim Checker 只检查它能安全处理的声明
 → grounding 局部检查用于提升置信度或形成 warning，不承担自动批改和阻断权
 → 审查结果为 consistent 或 warning 时冻结 teaching route
-→ 将已解析的方法族及展示名传给 Lesson Director 和 Materials Agent
-→ Lesson Director 生成教学主线、板书和 1–3 个互动意图
-→ schema 与已冻结路线的教学一致性校验
-→ Materials Agent 为已声明的互动意图生成选择题，并生成近迁移题
-→ 服务端按稳定 moment_id 合成完整讲解并运行全部硬质量门
-→ Reviewer 整篇审稿
-→ 最多两轮“主线修订—互动素材全量重建—合成—复审”
-→ 编译为 RuntimeLesson 与 Teaching Beats
+→ Reference Analyst 把冻结路线写成可追溯 SolutionTrace
+→ Teaching Designer 组织推理轨迹和连续 TeachingProgression
+→ Interaction Designer 只生成检查点、选项诊断和解释深度意图
+→ Teaching Agent 把全部中间产物组织为自然、可朗读的最终 TeachingScript
+→ Classroom Director 只把白名单动作绑定到精确讲稿子句
+→ Student Simulator 逐步检查七类学习能力，Reviewer 引用精确产物审核
+→ adapter 与 compiler 原样保留步骤、显示/口播和响应绑定，生成 RuntimeLesson
 → 以 Cue 级语音承载语义讲解片段，并为每个选择项生成专属诊断反馈语音
 → 进入全屏课堂
 ```
@@ -234,6 +252,17 @@ node --check app/static/runtime-core.mjs
 node --check app/static/math-text.mjs
 ```
 
+这次结构化课堂改动的聚焦检查可以先运行：
+
+```bash
+pytest -q tests/test_preparation_validation.py tests/test_pedagogy_evaluation.py tests/test_api.py
+npm test
+```
+
+其中 API 套件包含一条完全离线、确定性的参数根验收：真实 preparation pipeline、
+adapter、compiler、假语音、SQLite 原子保存、服务重启读取、公开 GET 和互动判定都会
+经过同一条链路，但不会访问文本模型或语音供应商。
+
 ### 教学质量黄金题集与版本比较
 
 `tests/fixtures/pedagogy_golden_cases.json` 保存了 18 道经过人工编写与审阅的
@@ -259,20 +288,22 @@ set -a
 source .env
 set +a
 RUN_INTEGRATION=1 python scripts/run_pedagogy_evaluation.py \
-  --rubric-version 0.1 \
+  --rubric-version 0.2 \
   --runs-per-case 3 \
-  --output-dir /tmp/ai-math-pedagogy-v01
+  --output-dir /tmp/ai-math-pedagogy-v02
 ```
 
-如果只修改 prompt 而 rubric 仍为 `0.1`，为两个候选分别增加不同的稳定标签，例如
+如果只修改 prompt 而 rubric 仍为 `0.2`，为两个候选分别增加不同的稳定标签，例如
 `--candidate-version prompt-a` 与 `--candidate-version prompt-b`。比较器以候选标签区分
 版本，并同时核对两次运行的题集指纹；这样 prompt-only 比较不会被误认为同一个候选。
 
 真实模式只调用课程生成服务，不生成语音，也不启动 Web 服务。`private/records/`
 保存完整的内部生成记录，`public/runtime/` 保存移除参考答案、参考解析、正确选项、
 诊断反馈和内部验证报告后的课堂内容。`manifest.json` 只汇总确定性合同指标：生成
-成功、硬门槛审稿状态、必讲内容覆盖、讲稿与视觉动作绑定、Schema/Runtime 通过、
-时长和调用次数。日志不写模型正文、内部审稿反馈或服务密钥；失败项只记录受限的
+成功、硬门槛审稿状态、步骤覆盖、必讲内容到讲稿/板书的覆盖、显示/口播对齐、
+诊断分支覆盖、步骤生命周期、讲稿与视觉动作绑定、Schema/Runtime 通过、时长和
+调用次数。所有覆盖指标都同时保存 count、total 与精确 ratio；失败运行的覆盖指标
+固定为 `null`。日志不写模型正文、内部审稿反馈或服务密钥；失败项只记录受限的
 失败类别和阶段。每个成功运行在清单中保存公开课堂 JSON 的 SHA-256；比较器会先
 核对哈希，再按固定公开 Schema 重建内容。参考答案、参考解析、正确选项、内部反馈、
 验证报告和候选版本字段无法进入盲评文件。
@@ -332,6 +363,20 @@ source .env
 set +a
 python scripts/smoke_live.py --grounded-parameter-root
 ```
+
+授权的 live 验收只使用下面这组输入，不要替换为别的题目后仍称为同一次验收：
+
+```text
+question: 若$2n$ ($n\ne 0$)是关于 x的方程 $x^2-2mx+2n=0$的根，则m-n的值为
+answer: $\frac{1}{2}$
+explanation: 因为 $2n(n\ne 0)$ 是关于x的方程$x^2-2mx+2n=0$的解
+所以 $4n^2-4mn+2n=0$
+所以$4n-4m+2=0$
+所以$m-n=\frac{1}{2}$
+```
+
+自动化测试不启动 Web 服务。真实模型、火山引擎 TTS 和浏览器验收必须由操作员显式
+启动服务；验收完成后立即停止。未开始这一步时，服务应保持停止状态。
 
 该 smoke 使用上文的 `2n` 参数根题，断言生成过程不被“符号工具不支持”阻断，
 服务端模式为 `model_cross_checked` 或 `reference_grounded`，一致性状态有效且

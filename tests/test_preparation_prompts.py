@@ -453,6 +453,9 @@ def simulation_report():
                     "can_explain_decision": True,
                     "can_execute_action": True,
                     "can_use_result_to_continue": True,
+                    "can_align_display_and_spoken_math": True,
+                    "can_recover_with_adaptive_support": True,
+                    "can_locate_current_step": True,
                     "evidence": ["能说明为什么加9"],
                 }
             ],
@@ -539,10 +542,10 @@ def prompts(repair=None):
 
 
 def test_rubric_is_versioned_exactly_and_returns_fresh_serializable_data():
-    assert PEDAGOGY_RUBRIC_VERSION == "0.1"
+    assert PEDAGOGY_RUBRIC_VERSION == "0.2"
     first = rubric_payload()
     assert first == {
-        "version": "0.1",
+        "version": "0.2",
         "non_compensable_gates": list(NON_COMPENSABLE_GATES),
         "hard_requirements": list(HARD_REQUIREMENTS),
         "criteria": [

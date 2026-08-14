@@ -26,6 +26,7 @@ from app.generation_diagnostics import InternalGenerationDiagnostic
 from app.generation_integrity import validate_lesson_generation_pair
 from app.llm_client import OpenAICompatibleClient
 from app.math_engine import MathEngine
+from app.math_speech import MathSpeechError, validate_display_spoken_alignment
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.preparation_models import GenerationRecord
 from app.schemas import (
@@ -61,6 +62,11 @@ _CASE_KEYS = {
     "required_board_states",
     "acceptable_excerpt_patterns",
     "unacceptable_excerpt_patterns",
+}
+_STRUCTURED_EXPECTATION_KEYS = {
+    "required_step_labels",
+    "required_spoken_forms",
+    "required_error_codes",
 }
 _PROBLEM_KEYS = {
     "problem_text",
@@ -113,6 +119,24 @@ _STAGE_CODES = {
     "正在模拟学生并审核课程": "review",
     "正在编译课堂": "compile",
 }
+_METRIC_COUNT_KEYS = {
+    "must_teach_coverage": "covered",
+    "step_coverage": "covered",
+    "must_teach_to_script_coverage": "covered",
+    "must_teach_to_board_coverage": "covered",
+    "display_speech_alignment": "aligned",
+    "diagnostic_branch_coverage": "covered",
+    "step_lifecycle_coverage": "complete",
+    "clause_action_binding": "valid",
+}
+_METRIC_SCOPE = [
+    "generation_success",
+    "hard_gate_review_pass",
+    *_METRIC_COUNT_KEYS,
+    "schema_runtime_pass",
+    "duration_ms",
+    "call_count",
+]
 _FORBIDDEN_PUBLIC_KEYS = {
     "candidate_version",
     "validation_report",
@@ -130,6 +154,10 @@ _FORBIDDEN_PUBLIC_KEYS = {
 
 class EvaluationConfigurationError(RuntimeError):
     """Safe operator error raised before or independently of provider calls."""
+
+
+class GoldenEvidenceError(ValueError):
+    category = "invalid_structure"
 
 
 class _PublicProblem(SchemaModel):
@@ -654,7 +682,13 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
     case_ids = []
     validated = []
     for case in cases:
-        if type(case) is not dict or set(case) != _CASE_KEYS:
+        if type(case) is not dict or not (
+            set(case) == _CASE_KEYS
+            or (
+                case.get("case_id") == "parameter_root_01"
+                and set(case) == _CASE_KEYS | _STRUCTURED_EXPECTATION_KEYS
+            )
+        ):
             raise EvaluationConfigurationError("golden case contract is invalid")
         case_id = case.get("case_id")
         if type(case_id) is not str or _SAFE_ID.fullmatch(case_id) is None:
@@ -709,6 +743,44 @@ def _validate_cases(cases: object) -> List[Dict[str, object]]:
             raise EvaluationConfigurationError(
                 "golden case reasoning modes are invalid"
             )
+        if _STRUCTURED_EXPECTATION_KEYS <= set(case):
+            labels = case["required_step_labels"]
+            spoken_forms = case["required_spoken_forms"]
+            error_codes = case["required_error_codes"]
+            if (
+                type(labels) is not list
+                or len(labels) != 5
+                or any(
+                    type(item) is not str
+                    or item.strip() != item
+                    or not item
+                    for item in labels
+                )
+                or type(spoken_forms) is not list
+                or len(spoken_forms) != 2
+                or any(
+                    type(item) is not dict
+                    or set(item) != {"display", "spoken_contains"}
+                    or any(
+                        type(value) is not str
+                        or value.strip() != value
+                        or not value
+                        for value in item.values()
+                    )
+                    for item in spoken_forms
+                )
+                or type(error_codes) is not list
+                or len(error_codes) != 4
+                or len(error_codes) != len(set(error_codes))
+                or any(
+                    type(item) is not str
+                    or _SAFE_ID.fullmatch(item) is None
+                    for item in error_codes
+                )
+            ):
+                raise EvaluationConfigurationError(
+                    "golden structured expectations are invalid"
+                )
         case_ids.append(case_id)
         validated.append(case)
     if len(case_ids) != len(set(case_ids)):
@@ -725,6 +797,43 @@ def _case_set_fingerprint(cases: Sequence[Dict[str, object]]) -> str:
         allow_nan=False,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _validate_structured_case_evidence(
+    case: Dict[str, object],
+    record: object,
+) -> None:
+    if not _STRUCTURED_EXPECTATION_KEYS <= set(case):
+        return
+    prepared = record.prepared_lesson
+    progression = prepared.teaching_progression
+    labels = [step.directory_label for step in progression.steps]
+    if labels != case["required_step_labels"]:
+        raise GoldenEvidenceError("required teaching step labels are missing")
+
+    clauses = list(prepared.teaching_script.clauses) + [
+        clause
+        for response in prepared.teaching_script.response_scripts
+        for clause in response.clauses
+    ]
+    for expected in case["required_spoken_forms"]:
+        if not any(
+            expected["display"] in clause.display_text
+            and expected["spoken_contains"] in clause.spoken_text
+            for clause in clauses
+        ):
+            raise GoldenEvidenceError(
+                "required display and spoken form evidence is missing"
+            )
+
+    actual_error_codes = {
+        option.error_code
+        for interaction in prepared.interaction_plan.interactions
+        for option in interaction.options
+        if option.error_code is not None
+    }
+    if not set(case["required_error_codes"]).issubset(actual_error_codes):
+        raise GoldenEvidenceError("required diagnostic error code is missing")
 
 
 def _model_dump(value: object) -> Dict[str, object]:
@@ -955,6 +1064,112 @@ def _contract_metrics(
         ),
     }
 
+    progression = getattr(prepared, "teaching_progression", None)
+    steps = list(getattr(progression, "steps", []) or [])
+    step_ids = {step.step_id for step in steps}
+    covered_step_ids = {
+        getattr(clause, "lesson_step_id", None)
+        for clause in prepared.teaching_script.clauses
+    } & step_ids
+    step_metric = _ratio_metric("covered", len(covered_step_ids), len(step_ids))
+
+    response_scripts = list(
+        getattr(prepared.teaching_script, "response_scripts", []) or []
+    )
+    response_clauses = [
+        clause
+        for response in response_scripts
+        for clause in response.clauses
+    ]
+    all_clauses = list(prepared.teaching_script.clauses) + response_clauses
+    aligned = 0
+    alignment_total = 0
+    for clause in all_clauses:
+        display_text = getattr(clause, "display_text", None)
+        spoken_text = getattr(clause, "spoken_text", None)
+        if not isinstance(display_text, str) or not isinstance(spoken_text, str):
+            continue
+        alignment_total += 1
+        try:
+            validate_display_spoken_alignment(display_text, spoken_text)
+        except MathSpeechError:
+            continue
+        aligned += 1
+    display_speech_metric = _ratio_metric(
+        "aligned", aligned, alignment_total
+    )
+
+    board_clause_ids = set()
+    step_lifecycle = {step_id: set() for step_id in step_ids}
+    for cue in prepared.performance_score.cues:
+        for field in ("lead_actions", "start_actions", "end_actions"):
+            for binding in getattr(cue, field):
+                action = getattr(binding, "action", None)
+                action_type = getattr(action, "type", None)
+                if (
+                    getattr(action, "surface", None) == "board"
+                    and action_type in {"write", "transform"}
+                ):
+                    board_clause_ids.add(binding.clause_id)
+                action_step_id = getattr(action, "teaching_step_id", None)
+                if (
+                    action_step_id in step_lifecycle
+                    and action_type in {"reveal_step_header", "complete_step"}
+                ):
+                    step_lifecycle[action_step_id].add(action_type)
+    board_must_teach = {
+        must_teach_id
+        for clause in all_clauses
+        if clause.clause_id in board_clause_ids
+        for must_teach_id in clause.must_teach_refs
+    }
+    must_teach_to_board_metric = _ratio_metric(
+        "covered",
+        len(required_must_teach & board_must_teach),
+        len(required_must_teach),
+    )
+    complete_steps = sum(
+        actions == {"reveal_step_header", "complete_step"}
+        for actions in step_lifecycle.values()
+    )
+    lifecycle_metric = _ratio_metric(
+        "complete", complete_steps, len(step_ids)
+    )
+
+    responses_by_pair = {
+        (response.interaction_id, response.option_id): response
+        for response in response_scripts
+    }
+    interactions = list(
+        getattr(
+            getattr(prepared, "interaction_plan", None),
+            "interactions",
+            [],
+        )
+        or []
+    )
+    diagnostic_covered = 0
+    for interaction in interactions:
+        branches_valid = True
+        for option in interaction.options:
+            response = responses_by_pair.get(
+                (interaction.interaction_id, option.option_id)
+            )
+            if response is None:
+                branches_valid = False
+                break
+            is_correct = option.option_id == interaction.correct_option_id
+            expected_depth = (
+                "brief" if is_correct else option.remediation_depth
+            )
+            if response.depth != expected_depth or not response.clauses:
+                branches_valid = False
+                break
+        diagnostic_covered += int(branches_valid)
+    diagnostic_metric = _ratio_metric(
+        "covered", diagnostic_covered, len(interactions)
+    )
+
     schema_runtime_pass = False
     if isinstance(lesson, RuntimeLesson) and isinstance(record, GenerationRecord):
         validate_lesson_generation_pair(lesson, record)
@@ -968,12 +1183,30 @@ def _contract_metrics(
         "generation_success": True,
         "hard_gate_review_pass": prepared.review.status == "approved",
         "must_teach_coverage": must_teach_metric,
+        "step_coverage": step_metric,
+        "must_teach_to_script_coverage": must_teach_metric.copy(),
+        "must_teach_to_board_coverage": must_teach_to_board_metric,
+        "display_speech_alignment": display_speech_metric,
+        "diagnostic_branch_coverage": diagnostic_metric,
+        "step_lifecycle_coverage": lifecycle_metric,
         "clause_action_binding": binding_metric,
         "schema_runtime_pass": schema_runtime_pass,
         "duration_ms": duration_ms,
         "call_count": (
             call_count if call_count is not None else len(record.role_calls)
         ),
+    }
+
+
+def _ratio_metric(
+    count_key: str,
+    count: int,
+    total: int,
+) -> Dict[str, object]:
+    return {
+        count_key: count,
+        "total": total,
+        "ratio": count / total if total else 1.0,
     }
 
 
@@ -1041,6 +1274,9 @@ async def _run_evaluation_async(
                         problem,
                         on_stage=on_stage,
                     )
+                    _validate_structured_case_evidence(
+                        case, bundle.generation_record
+                    )
                     duration_ms = max(0, round((clock() - started) * 1000))
                     metrics = _contract_metrics(
                         bundle.lesson,
@@ -1088,6 +1324,12 @@ async def _run_evaluation_async(
                             "generation_success": False,
                             "hard_gate_review_pass": False,
                             "must_teach_coverage": None,
+                            "step_coverage": None,
+                            "must_teach_to_script_coverage": None,
+                            "must_teach_to_board_coverage": None,
+                            "display_speech_alignment": None,
+                            "diagnostic_branch_coverage": None,
+                            "step_lifecycle_coverage": None,
                             "clause_action_binding": None,
                             "schema_runtime_pass": False,
                             "duration_ms": duration_ms,
@@ -1113,15 +1355,7 @@ async def _run_evaluation_async(
         "runs_per_case": runs_per_case,
         "case_ids": [case["case_id"] for case in cases],
         "case_set_sha256": _case_set_fingerprint(cases),
-        "metric_scope": [
-            "generation_success",
-            "hard_gate_review_pass",
-            "must_teach_coverage",
-            "clause_action_binding",
-            "schema_runtime_pass",
-            "duration_ms",
-            "call_count",
-        ],
+        "metric_scope": list(_METRIC_SCOPE),
         "evidence_boundary": (
             "Deterministic generation contracts only; no teacher preference "
             "or student learning inference."
@@ -1185,15 +1419,7 @@ def _read_manifest(run_dir: Path) -> Dict[str, object]:
     case_ids = payload["case_ids"]
     runs = payload["runs"]
     metric_scope = payload["metric_scope"]
-    expected_metric_scope = [
-        "generation_success",
-        "hard_gate_review_pass",
-        "must_teach_coverage",
-        "clause_action_binding",
-        "schema_runtime_pass",
-        "duration_ms",
-        "call_count",
-    ]
+    expected_metric_scope = list(_METRIC_SCOPE)
     if (
         payload["schema_version"] != MANIFEST_SCHEMA_VERSION
         or type(rubric_version) is not str
@@ -1296,8 +1522,7 @@ def _validate_manifest_metrics(payload: object, status: str) -> None:
     keys = {
         "generation_success",
         "hard_gate_review_pass",
-        "must_teach_coverage",
-        "clause_action_binding",
+        *_METRIC_COUNT_KEYS,
         "schema_runtime_pass",
         "duration_ms",
         "call_count",
@@ -1325,10 +1550,7 @@ def _validate_manifest_metrics(payload: object, status: str) -> None:
         )
     ):
         raise EvaluationConfigurationError("comparison run metrics are invalid")
-    for field, count_key in (
-        ("must_teach_coverage", "covered"),
-        ("clause_action_binding", "valid"),
-    ):
+    for field, count_key in _METRIC_COUNT_KEYS.items():
         metric = payload[field]
         if not expected_success:
             if metric is not None:

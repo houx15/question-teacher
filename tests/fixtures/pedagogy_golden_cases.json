@@ -10,11 +10,17 @@
     "coverage_tags": ["equation_parameter", "omitted_condition"],
     "trace_anchors": ["是根意味着代入", "约去n前使用n不等于0", "结果重新连接m-n"],
     "required_reasoning_modes": ["plan", "execute", "monitor"],
-    "required_must_teach": ["目标只需要m与n的关系", "含字母因子约分前确认非零"],
-    "typical_misconceptions": ["直接除以n却不检查非零条件", "只算代入而不解释为什么"],
-    "required_board_states": ["x=2n代入原方程", "提取2n后的关系式", "m-n=1/2"],
-    "acceptable_excerpt_patterns": ["先看目标", "因为n不等于0"],
-    "unacceptable_excerpt_patterns": ["直接把n约掉", "答案显然是二分之一"]
+    "required_must_teach": ["方程的根代入后等式仍成立", "关于x的方程只代入x", "计算(2n)^2时先平方整体", "含字母因子约分前确认非零", "n-m与m-n互为相反数"],
+    "typical_misconceptions": ["把2n代给m或n", "把(2n)^2算成2n^2", "直接除以n却不检查非零条件", "把n-m直接当作m-n"],
+    "required_board_states": ["方程的根→代入后等式成立", "x=2n代入原方程", "(2n)^2-4mn+2n=0", "因为n不等于0约去n", "-4(m-n)+2=0", "m-n=1/2"],
+    "acceptable_excerpt_patterns": ["是关于x的方程", "平方的是整个2n", "因为n不等于0", "n-m与m-n互为相反数"],
+    "unacceptable_excerpt_patterns": ["直接把n约掉", "把2n代入m", "(2n)^2=2n^2", "答案显然是二分之一"],
+    "required_step_labels": ["第一步：理解方程的根", "第二步：代入方程", "第三步：展开并化简", "第四步：利用n不等于0约去n", "第五步：整理出m-n"],
+    "required_spoken_forms": [
+      {"display": "m-n", "spoken_contains": "m 减 n"},
+      {"display": "n≠0", "spoken_contains": "n 不等于零"}
+    ],
+    "required_error_codes": ["substitution-variable-error", "square-distribution-error", "nonzero-condition-error", "opposite-expression-error"]
   },
   {
     "case_id": "square_root_condition_02",

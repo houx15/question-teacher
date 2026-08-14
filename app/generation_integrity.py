@@ -184,6 +184,16 @@ def _validate_current_runtime_semantics(
     record: GenerationRecord,
 ) -> None:
     prepared = record.prepared_lesson
+    if any(
+        ability is not True
+        for result in prepared.simulation_report.episode_results
+        for ability in (
+            result.can_align_display_and_spoken_math,
+            result.can_recover_with_adaptive_support,
+            result.can_locate_current_step,
+        )
+    ):
+        raise ValueError("current simulation structured ability failed or missing")
     script = prepared.teaching_script
     main_clauses = list(script.clauses)
     response_pairs = [

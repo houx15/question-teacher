@@ -25,6 +25,7 @@ from app.config import Settings
 from app.generation import LessonGenerationService, LessonInputError
 from app.audio_service import LessonAudioService
 from app.preparation_models import GenerationRecord
+from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.problem_focus import compile_problem_focus_targets
 from app.main import PROJECT_ROOT, create_app
 from app.math_engine import MathEngine
@@ -58,12 +59,17 @@ from tests.test_preparation_models import (
 )
 from tests.test_preparation_pipeline import (
     client as preparation_client,
+    downstream_interaction_payload,
     downstream_review_payload,
     downstream_score_payload,
     downstream_simulation_payload,
+    downstream_script_payload,
     review_finding,
+    teaching_progression_payload as parameter_progression_payload,
+    trace_payload,
+    trajectory_payload,
 )
-from tests.generation_fakes import FakeClient
+from tests.generation_fakes import CompositeGenerationClient, FakeClient
 
 
 def problem_input() -> ProblemInput:
@@ -220,7 +226,7 @@ class FakeAudioService:
 
 def generation_record_for(lesson):
     prepared = prepared_lesson()
-    prepared["rubric_version"] = "0.1"
+    prepared["rubric_version"] = PEDAGOGY_RUBRIC_VERSION
     prepared["teaching_progression"] = teaching_progression_payload()
     prepared["teaching_script"]["title"] = lesson.title
     prepared["teaching_script"]["learning_goal"] = lesson.learning_goal
@@ -341,7 +347,7 @@ class BundleGenerator:
                 "summary": "我们把等式两边同时减一。",
                 "validation_report": {
                     "teaching_route_fingerprint": "route-api-1",
-                    "pedagogy_rubric_version": "0.1",
+                    "pedagogy_rubric_version": PEDAGOGY_RUBRIC_VERSION,
                     "artifact_versions": {
                         "solution_trace": 1,
                         "reasoning_trajectory": 1,
@@ -2839,6 +2845,348 @@ def test_lifespan_does_not_close_injected_services():
 
     assert generator.close_calls == 0
     assert audio_service.close_calls == 0
+
+
+def _parameter_root_interactions():
+    return [
+        {
+            "interaction_id": "substitution-check",
+            "episode_id": "episode-2",
+            "teaching_step_id": "teaching-step-2",
+            "after_clause_id": "clause-2",
+            "why_pause": "此处停下，检查学生是否把2n代入x。",
+            "diagnostic_target": "是否把2n代入x",
+            "diagnostic_kind": "conception",
+            "prompt": "2n应该代入方程中的谁？",
+            "options": [
+                {
+                    "option_id": "sub-correct",
+                    "display_text": "代入x",
+                    "canonical_answer": "substitute-x",
+                },
+                {
+                    "option_id": "sub-wrong-variable",
+                    "display_text": "代入m",
+                    "canonical_answer": "substitute-m",
+                    "misconception": "把根代给了参数m",
+                    "error_code": "substitution-variable-error",
+                    "remediation_depth": "conceptual",
+                },
+                {
+                    "option_id": "sub-wrong-nonzero",
+                    "display_text": "先约去n",
+                    "canonical_answer": "divide-n-first",
+                    "misconception": "还没有代入就先约去n",
+                    "error_code": "nonzero-condition-error",
+                    "remediation_depth": "conceptual",
+                },
+            ],
+            "correct_option_id": "sub-correct",
+            "correct_feedback": "对，关于x的方程就代入x。",
+            "incorrect_feedback_by_option": {
+                "sub-wrong-variable": "关于x的方程只替换x。",
+                "sub-wrong-nonzero": "先代入并化简，再判断能否约分。",
+            },
+            "hint": "看清楚这是关于谁的方程。",
+            "resume_clause_id": "clause-2-resume",
+            "resume_step_id": "teaching-step-2",
+            "resume_policy": "continue",
+            "concealed_targets": [],
+        },
+        {
+            "interaction_id": "square-check",
+            "episode_id": "episode-3",
+            "teaching_step_id": "teaching-step-3",
+            "after_clause_id": "clause-3",
+            "why_pause": "此处停下，检查学生是否会计算2n的整体平方。",
+            "diagnostic_target": "是否会计算2n的整体平方",
+            "diagnostic_kind": "execution",
+            "prompt": "计算2n的整体平方时，哪一个式子正确？",
+            "options": [
+                {
+                    "option_id": "square-correct",
+                    "display_text": "(2n)^2=4n^2",
+                    "canonical_answer": "(2n)^2=4n^2",
+                },
+                {
+                    "option_id": "square-wrong",
+                    "display_text": "(2n)^2=2n^2",
+                    "canonical_answer": "(2n)^2=2n^2",
+                    "misconception": "只平方了n，没有平方系数2",
+                    "error_code": "square-distribution-error",
+                    "remediation_depth": "worked",
+                },
+                {
+                    "option_id": "opposite-wrong",
+                    "display_text": "n-m=m-n",
+                    "canonical_answer": "same-expression",
+                    "misconception": "把n-m直接当成m-n",
+                    "error_code": "opposite-expression-error",
+                    "remediation_depth": "conceptual",
+                },
+            ],
+            "correct_option_id": "square-correct",
+            "correct_feedback": "对，系数2和n都要平方。",
+            "incorrect_feedback_by_option": {
+                "square-wrong": "中间一步是2的平方乘n的平方，所以得到4n^2。",
+                "opposite-wrong": "n-m与m-n互为相反数。",
+            },
+            "hint": "平方作用于整个2n。",
+            "resume_clause_id": "clause-3",
+            "resume_step_id": "teaching-step-3",
+            "resume_policy": "continue",
+            "concealed_targets": [],
+        },
+    ]
+
+
+def _parameter_root_preparation_client():
+    interactions = _parameter_root_interactions()
+    progression = parameter_progression_payload(
+        ["problem-math-001", "problem-math-002", "problem-math-003"]
+    )
+    labels = [
+        "第一步：理解方程的根",
+        "第二步：代入方程",
+        "第三步：展开并化简",
+        "第四步：利用n不等于0约去n",
+        "第五步：整理出m-n",
+    ]
+    for step, label in zip(progression["steps"], labels):
+        step["directory_label"] = label
+    progression["steps"][1]["checkpoint"] = {
+        "diagnostic_goal": "检查学生是否把2n代入x",
+        "misconception_ids": [
+            "misconception-002-001",
+            "misconception-002-002",
+        ],
+    }
+    progression["steps"][2]["checkpoint"] = {
+        "diagnostic_goal": "检查学生是否会计算2n的整体平方",
+        "misconception_ids": [
+            "misconception-003-001",
+            "misconception-003-002",
+        ],
+    }
+    plan = downstream_interaction_payload()
+    plan["interactions"] = interactions
+    script = downstream_script_payload(interactions)
+    clause_by_id = {
+        clause["clause_id"]: clause for clause in script["clauses"]
+    }
+    clause_by_id["clause-open"].update(
+        display_text="方程的根：代入后等式仍成立。",
+        spoken_text="方程的根，代入以后等式仍然成立。",
+    )
+    clause_by_id["clause-method"].update(
+        display_text="关于x的方程，只代入x。",
+        spoken_text="这是关于 x 的方程，所以只把根代入 x。",
+    )
+    clause_by_id["clause-2"].update(
+        display_text="将x=2n代入原方程。",
+        spoken_text="将 x 等于二 n 代入原方程。",
+    )
+    clause_by_id["clause-3"].update(
+        display_text="(2n)^2=4n^2，展开并化简。",
+        spoken_text="二 n 的整体平方等于四 n 的平方，然后展开并化简。",
+    )
+    clause_by_id["clause-4"].update(
+        display_text="因为n≠0，可以约去n。",
+        spoken_text="因为 n 不等于零，所以可以约去 n。",
+    )
+    clause_by_id["clause-close"].update(
+        display_text=r"所以 $m-n=\frac{1}{2}$。",
+        spoken_text="所以 m 减 n 等于二分之一。",
+    )
+    score = downstream_score_payload(interactions)
+    label_by_step = {
+        step["step_id"]: step["directory_label"]
+        for step in progression["steps"]
+    }
+    for cue in score["cues"]:
+        for phase in ("lead_actions", "start_actions", "end_actions"):
+            for binding in cue.get(phase, []):
+                action = binding["action"]
+                if action["type"] == "reveal_step_header":
+                    action["step_label"] = label_by_step[
+                        action["teaching_step_id"]
+                    ]
+    simulation = downstream_simulation_payload()
+    simulation["interaction_results"] = [
+        "学生能在代入错误后修正并继续。",
+        "学生能在平方错误后借助中间步骤修正并继续。",
+    ]
+    trajectory = trajectory_payload()
+    trajectory["episodes"][1]["likely_misconceptions"] = [
+        "把根代给参数",
+        "还未代入就约分",
+    ]
+    trajectory["episodes"][2]["likely_misconceptions"] = [
+        "只平方字母不平方系数",
+        "混淆互为相反数的式子",
+    ]
+    preparation = preparation_client(
+        trace=trace_payload(),
+        trajectory=trajectory,
+        progression=progression,
+        interaction=plan,
+        script=script,
+        performance=score,
+        simulations=[simulation],
+        reviews=[downstream_review_payload()],
+    )
+    return CompositeGenerationClient(FakeClient([]), preparation)
+
+
+def test_parameter_root_deterministic_pipeline_persistence_and_interactions(
+    tmp_path,
+):
+    source = preparation_problem().model_copy(
+        update={
+            "problem_text": (
+                "若$2n$ ($n\\ne 0$)是关于 x的方程 "
+                "$x^2-2mx+2n=0$的根，则m-n的值为"
+            ),
+            "reference_answer": r"$\frac{1}{2}$",
+            "reference_solution_text": (
+                "因为2n是关于x的方程的根，所以代入并化简，"
+                "由n不等于0约去n，得到m-n等于二分之一。"
+            ),
+        }
+    )
+    generator = LessonGenerationService(
+        _parameter_root_preparation_client(), MathEngine()
+    )
+
+    async def grounded_route(_problem, _on_stage):
+        return preparation_route()
+
+    generator._build_grounded_teaching_route = grounded_route
+    database = tmp_path / "parameter-root.sqlite3"
+    store = MemoryStore(database)
+    job = store.create_job()
+    asyncio.run(
+        run_generation(
+            job.job_id,
+            source,
+            store,
+            generator,
+            FakeAudioService(),
+        )
+    )
+    completed = store.get_job(job.job_id)
+    assert completed.status == "completed"
+    lesson_id = completed.lesson_id
+    assert lesson_id
+
+    restarted = MemoryStore(database)
+    lesson = restarted.get_lesson(lesson_id)
+    record = restarted.get_generation_record(lesson_id)
+    assert lesson is not None and record is not None
+    assert [
+        step.directory_label
+        for step in record.prepared_lesson.teaching_progression.steps
+    ] == [
+        "第一步：理解方程的根",
+        "第二步：代入方程",
+        "第三步：展开并化简",
+        "第四步：利用n不等于0约去n",
+        "第五步：整理出m-n",
+    ]
+    authored_cues = [
+        cue
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+        if cue.teaching_step_id is not None
+    ]
+    assert authored_cues
+    assert any(
+        "m-n" in (cue.display_text or "")
+        and "m 减 n" in cue.spoken_text
+        for cue in authored_cues
+    )
+    allowed = {
+        "reveal_step_header",
+        "scroll_to_step",
+        "write",
+        "complete_step",
+        "open_supporting_explanation",
+        "close_supporting_explanation",
+    }
+    assert all(
+        action.type in allowed
+        for cue in authored_cues
+        for action in (
+            *cue.lead_actions,
+            *cue.start_actions,
+            *cue.end_actions,
+        )
+        if action.teaching_step_id is not None
+    )
+
+    app = create_app(
+        generator=generator,
+        audio_service=FakeAudioService(),
+        store=restarted,
+    )
+    with TestClient(app) as client:
+        public = client.get(f"/api/lessons/{lesson_id}")
+        assert public.status_code == 200
+        public_payload = public.json()
+        public_text = json.dumps(public_payload, ensure_ascii=False)
+        for private_key in (
+            "correct_option_id",
+            "expected_answer",
+            "error_code",
+            "review",
+            "teaching_progression",
+            "simulation_report",
+        ):
+            assert f'"{private_key}"' not in public_text
+
+        interactions = {
+            beat.interaction.interaction_id: beat.interaction
+            for beat in lesson.beats
+            if beat.interaction is not None
+            and beat.interaction.interaction_id != "near-transfer"
+        }
+        substitution = interactions["substitution-check"]
+        square = interactions["square-check"]
+        correct = client.post(
+            "/api/interactions/evaluate",
+            json={
+                "lesson_id": lesson_id,
+                "interaction_id": substitution.interaction_id,
+                "answer": "sub-correct",
+            },
+        )
+        wrong = client.post(
+            "/api/interactions/evaluate",
+            json={
+                "lesson_id": lesson_id,
+                "interaction_id": square.interaction_id,
+                "answer": "square-wrong",
+            },
+        )
+        assert correct.json()["classification"] == "correct"
+        assert wrong.json()["classification"] == "incorrect"
+        correct_support = correct.json()["support_cues"]
+        wrong_support = wrong.json()["support_cues"]
+        assert len(correct_support) == 1
+        assert any("4n^2" in cue["display_text"] for cue in wrong_support)
+        assert sum(len(cue["spoken_text"]) for cue in correct_support) < sum(
+            len(cue["spoken_text"]) for cue in wrong_support
+        )
+        assert substitution.advance_after_response is True
+        assert square.advance_after_response is True
+
+    reloaded = MemoryStore(database).get_lesson(lesson_id)
+    assert reloaded is not None
+    assert all(
+        cue.audio_url
+        for beat in reloaded.beats
+        for cue in beat.sync_cues
+    )
 
 
 def test_production_lifespan_constructs_services_and_closes_owned_clients():

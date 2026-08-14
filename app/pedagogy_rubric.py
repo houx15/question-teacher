@@ -3,7 +3,7 @@
 from typing import Dict, Literal
 
 
-PEDAGOGY_RUBRIC_VERSION = "0.1"
+PEDAGOGY_RUBRIC_VERSION = "0.2"
 
 ReviewCriterionId = Literal[
     "current_emphasis_correct",
@@ -13,6 +13,11 @@ ReviewCriterionId = Literal[
     "must_teach_coverage",
     "interaction_no_answer_leak",
     "visual_action_alignment",
+    "step_purpose_and_transition",
+    "display_speech_math_alignment",
+    "adaptive_explanation_depth",
+    "continuous_board_structure",
+    "current_step_visible",
 ]
 
 NON_COMPENSABLE_CRITERIA = {
@@ -26,6 +31,11 @@ HARD_REQUIREMENT_CRITERIA = {
     "must_teach_coverage": "每个 must_teach 都有可定位的讲稿证据。",
     "interaction_no_answer_leak": "互动诊断理解，不通过选项提前泄露尚未讲授的答案。",
     "visual_action_alignment": "视觉动作只在对应语句发生时出现，并引用合法语义目标。",
+    "step_purpose_and_transition": "每一步都说明此刻要解决的问题、为什么现在处理，以及结果怎样推动下一步。",
+    "display_speech_math_alignment": "学生看到的数学式与口播含义一致，减号、不等号等关键运算必须自然读出。",
+    "adaptive_explanation_depth": "正确回答使用简短确认；错误回答按诊断类型提供更深且有边界的讲解，再回到主线。",
+    "continuous_board_structure": "板书以连续步骤累积，当前步骤、已完成摘要和临时支持内容保持同一结构。",
+    "current_step_visible": "当前步骤在讲解、互动支持和恢复主线时始终可见，并由受控动作请求滚动定位。",
 }
 
 REVIEW_CRITERIA: Dict[str, str] = {

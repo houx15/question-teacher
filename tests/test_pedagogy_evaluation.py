@@ -7,6 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import run_pedagogy_evaluation as evaluation
+from app.pedagogy_rubric import (
+    NON_COMPENSABLE_CRITERIA,
+    PEDAGOGY_RUBRIC_VERSION,
+    rubric_payload,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +42,11 @@ CASE_KEYS = {
     "acceptable_excerpt_patterns",
     "unacceptable_excerpt_patterns",
 }
+STRUCTURED_EXPECTATION_KEYS = {
+    "required_step_labels",
+    "required_spoken_forms",
+    "required_error_codes",
+}
 PROBLEM_KEYS = {
     "problem_text",
     "reference_answer",
@@ -52,6 +62,32 @@ REASONING_MODES = {
     "revise",
     "reflect",
 }
+EXPECTED_NEW_CRITERIA = {
+    "step_purpose_and_transition",
+    "display_speech_math_alignment",
+    "adaptive_explanation_depth",
+    "continuous_board_structure",
+    "current_step_visible",
+}
+
+
+def test_rubric_contains_structured_teaching_hard_gates():
+    payload = rubric_payload()
+    criteria = {
+        item["criterion_id"]: item
+        for item in payload["criteria"]
+    }
+
+    assert PEDAGOGY_RUBRIC_VERSION == "0.2"
+    assert EXPECTED_NEW_CRITERIA <= set(criteria)
+    assert all(
+        criteria[criterion_id]["non_compensable"] is False
+        for criterion_id in EXPECTED_NEW_CRITERIA
+    )
+    assert set(NON_COMPENSABLE_CRITERIA) == {
+        "current_emphasis_correct",
+        "learner_follows_why",
+    }
 
 
 def _load_cases():
@@ -68,7 +104,10 @@ def test_golden_fixture_contains_exactly_18_unique_reviewable_cases():
     assert all(re.fullmatch(r"[a-z][a-z0-9_]{2,63}", item) for item in case_ids)
 
     for case in cases:
-        assert set(case) == CASE_KEYS
+        assert frozenset(case) in {
+            frozenset(CASE_KEYS),
+            frozenset(CASE_KEYS | STRUCTURED_EXPECTATION_KEYS),
+        }
         assert set(case["problem"]) == PROBLEM_KEYS
         assert case["problem"]["lesson_length"] in {"concise", "standard"}
         for key in ("problem_text", "reference_answer", "reference_solution_text"):
@@ -92,7 +131,8 @@ def test_golden_fixture_contains_exactly_18_unique_reviewable_cases():
 
 
 def test_golden_fixture_starts_with_approved_parameter_root_case():
-    assert _load_cases()[0] == {
+    case = _load_cases()[0]
+    assert {key: case[key] for key in CASE_KEYS} == {
         "case_id": "parameter_root_01",
         "problem": {
             "problem_text": "若2n（n不等于0）是方程x^2-2mx+2n=0的根，求m-n。",
@@ -103,12 +143,29 @@ def test_golden_fixture_starts_with_approved_parameter_root_case():
         "coverage_tags": ["equation_parameter", "omitted_condition"],
         "trace_anchors": ["是根意味着代入", "约去n前使用n不等于0", "结果重新连接m-n"],
         "required_reasoning_modes": ["plan", "execute", "monitor"],
-        "required_must_teach": ["目标只需要m与n的关系", "含字母因子约分前确认非零"],
-        "typical_misconceptions": ["直接除以n却不检查非零条件", "只算代入而不解释为什么"],
-        "required_board_states": ["x=2n代入原方程", "提取2n后的关系式", "m-n=1/2"],
-        "acceptable_excerpt_patterns": ["先看目标", "因为n不等于0"],
-        "unacceptable_excerpt_patterns": ["直接把n约掉", "答案显然是二分之一"],
+        "required_must_teach": ["方程的根代入后等式仍成立", "关于x的方程只代入x", "计算(2n)^2时先平方整体", "含字母因子约分前确认非零", "n-m与m-n互为相反数"],
+        "typical_misconceptions": ["把2n代给m或n", "把(2n)^2算成2n^2", "直接除以n却不检查非零条件", "把n-m直接当作m-n"],
+        "required_board_states": ["方程的根→代入后等式成立", "x=2n代入原方程", "(2n)^2-4mn+2n=0", "因为n不等于0约去n", "-4(m-n)+2=0", "m-n=1/2"],
+        "acceptable_excerpt_patterns": ["是关于x的方程", "平方的是整个2n", "因为n不等于0", "n-m与m-n互为相反数"],
+        "unacceptable_excerpt_patterns": ["直接把n约掉", "把2n代入m", "(2n)^2=2n^2", "答案显然是二分之一"],
     }
+    assert case["required_step_labels"] == [
+        "第一步：理解方程的根",
+        "第二步：代入方程",
+        "第三步：展开并化简",
+        "第四步：利用n不等于0约去n",
+        "第五步：整理出m-n",
+    ]
+    assert case["required_spoken_forms"] == [
+        {"display": "m-n", "spoken_contains": "m 减 n"},
+        {"display": "n≠0", "spoken_contains": "n 不等于零"},
+    ]
+    assert case["required_error_codes"] == [
+        "substitution-variable-error",
+        "square-distribution-error",
+        "nonzero-condition-error",
+        "opposite-expression-error",
+    ]
 
 
 def test_golden_fixture_covers_reviewed_breadth_without_templated_expectations():
@@ -149,6 +206,55 @@ def test_golden_fixture_covers_reviewed_breadth_without_templated_expectations()
         "不等式": any("不等式" in case["problem"]["problem_text"] for case in cases),
     }
     assert all(families.values())
+
+
+def _structured_evidence_record(case):
+    clauses = [
+        SimpleNamespace(
+            display_text=expected["display"],
+            spoken_text=expected["spoken_contains"],
+        )
+        for expected in case["required_spoken_forms"]
+    ]
+    options = [
+        SimpleNamespace(error_code=error_code)
+        for error_code in case["required_error_codes"]
+    ]
+    prepared = SimpleNamespace(
+        teaching_progression=SimpleNamespace(
+            steps=[
+                SimpleNamespace(directory_label=label)
+                for label in case["required_step_labels"]
+            ]
+        ),
+        teaching_script=SimpleNamespace(
+            clauses=clauses,
+            response_scripts=[],
+        ),
+        interaction_plan=SimpleNamespace(
+            interactions=[SimpleNamespace(options=options)]
+        ),
+    )
+    return SimpleNamespace(prepared_lesson=prepared)
+
+
+@pytest.mark.parametrize("mutation", ("label", "spoken", "error_code"))
+def test_parameter_root_structured_evidence_fails_closed(mutation):
+    case = _load_cases()[0]
+    record = _structured_evidence_record(case)
+    if mutation == "label":
+        record.prepared_lesson.teaching_progression.steps[0].directory_label = (
+            "第一步：缺少根的意义"
+        )
+    elif mutation == "spoken":
+        record.prepared_lesson.teaching_script.clauses[0].spoken_text = "m n"
+    else:
+        record.prepared_lesson.interaction_plan.interactions[0].options[
+            0
+        ].error_code = "other-error"
+
+    with pytest.raises(evaluation.GoldenEvidenceError):
+        evaluation._validate_structured_case_evidence(case, record)
 
 
 def _fake_bundle(case_id="case_one"):
@@ -317,6 +423,12 @@ def _success_metrics():
         "generation_success": True,
         "hard_gate_review_pass": True,
         "must_teach_coverage": {"covered": 1, "total": 1, "ratio": 1.0},
+        "step_coverage": {"covered": 0, "total": 0, "ratio": 1.0},
+        "must_teach_to_script_coverage": {"covered": 1, "total": 1, "ratio": 1.0},
+        "must_teach_to_board_coverage": {"covered": 0, "total": 1, "ratio": 0.0},
+        "display_speech_alignment": {"aligned": 0, "total": 0, "ratio": 1.0},
+        "diagnostic_branch_coverage": {"covered": 0, "total": 0, "ratio": 1.0},
+        "step_lifecycle_coverage": {"complete": 0, "total": 0, "ratio": 1.0},
         "clause_action_binding": {"valid": 0, "total": 0, "ratio": 1.0},
         "schema_runtime_pass": True,
         "duration_ms": 10,
@@ -329,6 +441,12 @@ def _failure_metrics():
         "generation_success": False,
         "hard_gate_review_pass": False,
         "must_teach_coverage": None,
+        "step_coverage": None,
+        "must_teach_to_script_coverage": None,
+        "must_teach_to_board_coverage": None,
+        "display_speech_alignment": None,
+        "diagnostic_branch_coverage": None,
+        "step_lifecycle_coverage": None,
         "clause_action_binding": None,
         "schema_runtime_pass": False,
         "duration_ms": 10,
@@ -487,6 +605,12 @@ def test_runner_separates_private_records_and_public_summaries(tmp_path, monkeyp
         "generation_success": True,
         "hard_gate_review_pass": True,
         "must_teach_coverage": {"covered": 2, "total": 2, "ratio": 1.0},
+        "step_coverage": {"covered": 0, "total": 0, "ratio": 1.0},
+        "must_teach_to_script_coverage": {"covered": 2, "total": 2, "ratio": 1.0},
+        "must_teach_to_board_coverage": {"covered": 0, "total": 2, "ratio": 0.0},
+        "display_speech_alignment": {"aligned": 0, "total": 0, "ratio": 1.0},
+        "diagnostic_branch_coverage": {"covered": 0, "total": 0, "ratio": 1.0},
+        "step_lifecycle_coverage": {"complete": 0, "total": 0, "ratio": 1.0},
         "clause_action_binding": {"valid": 1, "total": 1, "ratio": 1.0},
         "schema_runtime_pass": True,
         "duration_ms": 125,

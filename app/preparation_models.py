@@ -505,6 +505,9 @@ class EpisodeSimulationResult(SchemaModel):
     can_explain_decision: bool
     can_execute_action: bool
     can_use_result_to_continue: bool
+    can_align_display_and_spoken_math: Optional[bool] = None
+    can_recover_with_adaptive_support: Optional[bool] = None
+    can_locate_current_step: Optional[bool] = None
     evidence: List[BoundedReviewText] = Field(
         min_length=1, max_length=MAX_SIMULATION_EVIDENCE_ITEMS
     )
