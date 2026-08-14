@@ -29,6 +29,7 @@ from app.preparation_models import (
     ReasoningTrajectory,
     SimulationReport,
     SolutionTrace,
+    TeachingProgression,
     TeachingScript,
 )
 from app.schemas import ProblemFocusTarget, SyncVisualAction
@@ -50,8 +51,9 @@ _REVIEW_ROLE_ORDER = {
 _ARTIFACT_DEPENDENCY_ORDER = (
     "solution_trace",
     "reasoning_trajectory",
-    "teaching_script",
+    "teaching_progression",
     "interaction_plan",
+    "teaching_script",
     "performance_score",
     "simulation_report",
 )
@@ -59,18 +61,12 @@ _ARTIFACT_OWNER_ORDER = {
     artifact_type: index
     for index, artifact_type in enumerate(_ARTIFACT_DEPENDENCY_ORDER)
 }
-_REPAIR_ROLE_ARTIFACT = {
-    "reference_analyst": "solution_trace",
-    "teaching_designer": "reasoning_trajectory",
-    "script_teacher": "teaching_script",
-    "interaction_designer": "interaction_plan",
-    "classroom_director": "performance_score",
-}
 _ARTIFACT_HISTORY_ROLES = {
     "solution_trace": "reference_analyst",
     "reasoning_trajectory": "teaching_designer",
-    "teaching_script": "script_teacher",
+    "teaching_progression": "teaching_designer",
     "interaction_plan": "interaction_designer",
+    "teaching_script": "script_teacher",
     "performance_score": "classroom_director",
     "simulation_report": "student_simulator",
 }
@@ -1373,6 +1369,7 @@ def validate_review_decision(
     plan: Optional[InteractionPlan] = None,
     score: Optional[PerformanceScore] = None,
     report: Optional[SimulationReport] = None,
+    progression: Optional[TeachingProgression] = None,
 ) -> None:
     _require_exact(decision, LessonReviewDecision, "decision")
     if decision.status == "approved" and any(
@@ -1395,6 +1392,8 @@ def validate_review_decision(
     _require_exact(plan, InteractionPlan, "plan")
     _require_exact(score, PerformanceScore, "score")
     _require_exact(report, SimulationReport, "report")
+    if progression is not None:
+        _require_exact(progression, TeachingProgression, "progression")
 
     artifact_ids = {
         "solution_trace": {
@@ -1413,6 +1412,13 @@ def validate_review_decision(
                 for must_teach in episode.must_teach
             ),
         },
+        "teaching_progression": {
+            "teaching_progression",
+            *(
+                item.step_id
+                for item in progression.steps
+            ),
+        } if progression is not None else set(),
         "teaching_script": {
             "teaching_script",
             *(item.clause_id for item in script.clauses),
@@ -1448,7 +1454,9 @@ def validate_review_decision(
             )
         if (
             _REVIEW_ROLE_ORDER[finding.responsible_role]
-            > _ARTIFACT_OWNER_ORDER[finding.artifact_type]
+            > _REVIEW_ROLE_ORDER[
+                _ARTIFACT_HISTORY_ROLES[finding.artifact_type]
+            ]
         ):
             _fail(
                 "review_responsibility_invalid",
@@ -1484,12 +1492,7 @@ def _validate_review_dependency_metadata(
     for finding in decision.findings:
         expected_invalidated: List[str] = []
         if finding.severity != "polish":
-            responsible_artifact = _REPAIR_ROLE_ARTIFACT[
-                finding.responsible_role
-            ]
-            start_index = (
-                _ARTIFACT_OWNER_ORDER[responsible_artifact] + 1
-            )
+            start_index = _ARTIFACT_OWNER_ORDER[finding.artifact_type] + 1
             expected_invalidated = list(
                 _ARTIFACT_DEPENDENCY_ORDER[start_index:]
             )
@@ -1502,11 +1505,10 @@ def _validate_review_dependency_metadata(
 
     expected_retained: List[str] = []
     if material_findings:
-        earliest_role = min(
+        earliest_artifact = min(
             material_findings,
-            key=lambda item: _REVIEW_ROLE_ORDER[item.responsible_role],
-        ).responsible_role
-        earliest_artifact = _REPAIR_ROLE_ARTIFACT[earliest_role]
+            key=lambda item: _ARTIFACT_OWNER_ORDER[item.artifact_type],
+        ).artifact_type
         expected_retained = list(
             _ARTIFACT_DEPENDENCY_ORDER[
                 : _ARTIFACT_OWNER_ORDER[earliest_artifact]
@@ -1565,6 +1567,17 @@ def validate_prepared_lesson(
     validate_reasoning_trajectory(
         prepared.reasoning_trajectory, prepared.solution_trace
     )
+    if prepared.teaching_progression is None:
+        _fail(
+            "artifact_history_invalid",
+            "teaching_progression",
+            "Current-rubric prepared lessons require teaching progression.",
+        )
+    _require_exact(
+        prepared.teaching_progression,
+        TeachingProgression,
+        "teaching_progression",
+    )
     validate_teaching_script(
         prepared.teaching_script, prepared.reasoning_trajectory
     )
@@ -1593,6 +1606,7 @@ def validate_prepared_lesson(
         prepared.interaction_plan,
         prepared.performance_score,
         prepared.simulation_report,
+        progression=prepared.teaching_progression,
     )
     if prepared.review.status != "approved":
         _fail(

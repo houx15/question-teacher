@@ -49,7 +49,10 @@ from tests.test_generation import (
     problem,
     valid_draft,
 )
-from tests.test_preparation_models import prepared_lesson
+from tests.test_preparation_models import (
+    prepared_lesson,
+    teaching_progression_payload,
+)
 from tests.test_preparation_pipeline import (
     client as preparation_client,
     downstream_review_payload,
@@ -205,6 +208,24 @@ class FakeAudioService:
 def generation_record_for(lesson):
     prepared = prepared_lesson()
     prepared["rubric_version"] = "0.1"
+    prepared["teaching_progression"] = teaching_progression_payload()
+    artifact_roles = [
+        ("solution_trace", "reference_analyst"),
+        ("reasoning_trajectory", "teaching_designer"),
+        ("teaching_progression", "teaching_designer"),
+        ("interaction_plan", "interaction_designer"),
+        ("teaching_script", "script_teacher"),
+        ("performance_score", "classroom_director"),
+        ("simulation_report", "student_simulator"),
+    ]
+    prepared["artifact_history"] = [
+        {
+            "artifact_type": artifact_type,
+            "version": 1,
+            "responsible_role": role,
+        }
+        for artifact_type, role in artifact_roles
+    ]
     prepared["performance_score"] = {
         "cues": [
             {
@@ -290,8 +311,9 @@ class BundleGenerator:
                     "artifact_versions": {
                         "solution_trace": 1,
                         "reasoning_trajectory": 1,
-                        "teaching_script": 1,
+                        "teaching_progression": 1,
                         "interaction_plan": 1,
+                        "teaching_script": 1,
                         "performance_score": 1,
                         "simulation_report": 1,
                     },
@@ -324,8 +346,9 @@ class PreparationStageGenerator(FakeGenerator):
             "正在验证数学路线",
             "整理参考解析",
             "设计解题思维轨迹",
-            "编写讲稿",
+            "设计教学推进",
             "设计互动",
+            "编写讲稿",
             "编排板书与高亮",
             "模拟学生并审核课程",
             "正在编译课堂",
@@ -340,8 +363,9 @@ class RepairStageGenerator(FakeGenerator):
         "正在验证数学路线",
         "整理参考解析",
         "设计解题思维轨迹",
-        "编写讲稿",
+        "设计教学推进",
         "设计互动",
+        "编写讲稿",
         "编排板书与高亮",
         "模拟学生并审核课程",
     ]
@@ -404,16 +428,18 @@ class FailingLessonStore(RecordingStore):
 
 _DETAILED_PUBLIC_STAGES = [
     "正在理解题目",
+    "正在核对题目材料",
     "正在整理参考解析",
     "正在设计解题思维轨迹",
-    "正在编写讲稿",
+    "正在设计课堂推进",
     "正在设计互动",
+    "正在编写讲稿",
     "正在编排板书与高亮",
     "正在审核和优化课程",
-    "正在编译课堂",
-    "正在生成讲解语音",
+    "正在编译课程",
+    "正在生成语音",
     "正在保存课程",
-    "已完成",
+    "课程已生成",
 ]
 
 
@@ -423,8 +449,9 @@ def test_public_preparation_stage_mapping_is_specific_and_stable():
         for stage in [
             "整理参考解析",
             "设计解题思维轨迹",
-            "编写讲稿",
+            "设计教学推进",
             "设计互动",
+            "编写讲稿",
             "编排板书与高亮",
             "模拟学生并审核课程",
             "正在编译课堂",
@@ -434,12 +461,13 @@ def test_public_preparation_stage_mapping_is_specific_and_stable():
     } == {
         "整理参考解析": "正在整理参考解析",
         "设计解题思维轨迹": "正在设计解题思维轨迹",
-        "编写讲稿": "正在编写讲稿",
+        "设计教学推进": "正在设计课堂推进",
         "设计互动": "正在设计互动",
+        "编写讲稿": "正在编写讲稿",
         "编排板书与高亮": "正在编排板书与高亮",
         "模拟学生并审核课程": "正在审核和优化课程",
-        "正在编译课堂": "正在编译课堂",
-        "正在生成讲解语音": "正在生成讲解语音",
+        "正在编译课堂": "正在编译课程",
+        "正在生成讲解语音": "正在生成语音",
         "正在保存课程": "正在保存课程",
     }
 
@@ -1655,7 +1683,7 @@ def test_generation_job_completes_with_public_stage_sequence():
     job = client.get(f"/api/jobs/{job_id}")
     assert job.status_code == 200
     assert job.json()["status"] == "completed"
-    assert job.json()["stage"] == "已完成"
+    assert job.json()["stage"] == "课程已生成"
     lesson = client.get(f"/api/lessons/{job.json()['lesson_id']}")
     assert lesson.status_code == 200
     assert lesson.json()["lesson_id"] == "lesson-1"
@@ -1663,13 +1691,13 @@ def test_generation_job_completes_with_public_stage_sequence():
     assert audio_service.calls == 1
     assert store.seen_stages == [
         "正在理解题目",
-        "正在整理参考解析",
+        "正在核对题目材料",
         "正在编写讲稿",
         "正在审核和优化课程",
-        "正在编译课堂",
-        "正在生成讲解语音",
+        "正在编译课程",
+        "正在生成语音",
         "正在保存课程",
-        "已完成",
+        "课程已生成",
     ]
 
 
@@ -1826,18 +1854,18 @@ def test_concurrent_generation_jobs_keep_independent_progress_state():
 
 
 @pytest.mark.parametrize(
-    "internal_stage",
+    ("internal_stage", "public_stage"),
     [
-        "正在验证数学路线",
-        "正在规划数学路线",
-        "正在审阅参考解析",
-        "正在整理参考教学路线",
+        ("正在验证数学路线", "正在核对题目材料"),
+        ("正在规划数学路线", "正在核对题目材料"),
+        ("正在审阅参考解析", "正在整理参考解析"),
+        ("正在整理参考教学路线", "正在整理参考解析"),
     ],
 )
-def test_capability_and_grounding_share_one_public_generation_stage(
-    internal_stage,
+def test_capability_and_grounding_use_their_public_generation_stage(
+    internal_stage, public_stage,
 ):
-    assert _PUBLIC_GENERATION_STAGES[internal_stage] == "正在整理参考解析"
+    assert _PUBLIC_GENERATION_STAGES[internal_stage] == public_stage
 
 
 def test_generation_with_reference_solution_keeps_audit_internal():
@@ -1942,18 +1970,8 @@ def test_compiler_failure_never_reaches_audio_service():
             del args, kwargs
             raise LessonCompileError("private compiler output")
 
-    model_client = _approved_preparation_client()
-    generator = LessonGenerationService(
-        model_client,
-        MathEngine(),
-        compiler=FailingCompiler(),
-    )
-
-    async def grounded_route(source_problem, on_stage):
-        del source_problem, on_stage
-        return preparation_route()
-
-    generator._build_grounded_teaching_route = grounded_route
+    generator = _generation_service_with_pipeline(preparation_client())
+    generator.compiler = FailingCompiler()
     audio_service = FakeAudioService()
     store = RecordingStore()
     job = store.create_job()

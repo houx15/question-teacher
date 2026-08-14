@@ -9,18 +9,32 @@ from app.schemas import FIXED_RUNTIME_CUE_IDS, RuntimeLesson
 _AUTHORITATIVE_ARTIFACT_ORDER = (
     "solution_trace",
     "reasoning_trajectory",
-    "teaching_script",
+    "teaching_progression",
     "interaction_plan",
+    "teaching_script",
     "performance_score",
     "simulation_report",
 )
 _AUTHORITATIVE_ARTIFACT_ROLES = {
     "solution_trace": "reference_analyst",
     "reasoning_trajectory": "teaching_designer",
-    "teaching_script": "script_teacher",
+    "teaching_progression": "teaching_designer",
     "interaction_plan": "interaction_designer",
+    "teaching_script": "script_teacher",
     "performance_score": "classroom_director",
     "simulation_report": "student_simulator",
+}
+_LEGACY_ARTIFACT_ORDER = (
+    "solution_trace",
+    "reasoning_trajectory",
+    "teaching_script",
+    "interaction_plan",
+    "performance_score",
+    "simulation_report",
+)
+_LEGACY_ARTIFACT_ROLES = {
+    artifact_type: _AUTHORITATIVE_ARTIFACT_ROLES[artifact_type]
+    for artifact_type in _LEGACY_ARTIFACT_ORDER
 }
 
 
@@ -31,38 +45,58 @@ def _model_payload(value: object) -> object:
     return model_dump(mode="python")
 
 
-def _latest_artifact_versions(record: GenerationRecord) -> Dict[str, int]:
+def _latest_artifact_versions(
+    record: GenerationRecord,
+    *,
+    allow_legacy: bool = False,
+) -> Dict[str, int]:
+    historical_legacy = (
+        allow_legacy
+        and record.prepared_lesson.rubric_version
+        != PEDAGOGY_RUBRIC_VERSION
+        and record.prepared_lesson.teaching_progression is None
+    )
+    artifact_order = (
+        _LEGACY_ARTIFACT_ORDER
+        if historical_legacy
+        else _AUTHORITATIVE_ARTIFACT_ORDER
+    )
+    artifact_roles = (
+        _LEGACY_ARTIFACT_ROLES
+        if historical_legacy
+        else _AUTHORITATIVE_ARTIFACT_ROLES
+    )
     history = record.prepared_lesson.artifact_history
-    initial = history[: len(_AUTHORITATIVE_ARTIFACT_ORDER)]
+    initial = history[: len(artifact_order)]
     if (
         tuple(item.artifact_type for item in initial)
-        != _AUTHORITATIVE_ARTIFACT_ORDER
+        != artifact_order
         or any(
             item.version != 1
             or item.responsible_role
-            != _AUTHORITATIVE_ARTIFACT_ROLES[item.artifact_type]
+            != artifact_roles[item.artifact_type]
             for item in initial
         )
     ):
         raise ValueError("generation record artifact history invalid")
     latest = {
         artifact_type: 1
-        for artifact_type in _AUTHORITATIVE_ARTIFACT_ORDER
+        for artifact_type in artifact_order
     }
-    cursor = len(_AUTHORITATIVE_ARTIFACT_ORDER)
+    cursor = len(artifact_order)
     for _repair in range(record.prepared_lesson.repair_count):
         if cursor >= len(history):
             raise ValueError("generation record artifact history invalid")
         first_type = history[cursor].artifact_type
         try:
-            start = _AUTHORITATIVE_ARTIFACT_ORDER.index(first_type)
+            start = artifact_order.index(first_type)
         except ValueError:
             raise ValueError(
                 "generation record artifact history invalid"
             ) from None
-        if start == len(_AUTHORITATIVE_ARTIFACT_ORDER) - 1:
+        if start == len(artifact_order) - 1:
             raise ValueError("generation record artifact history invalid")
-        expected_types = _AUTHORITATIVE_ARTIFACT_ORDER[start:]
+        expected_types = artifact_order[start:]
         segment = history[cursor : cursor + len(expected_types)]
         if tuple(item.artifact_type for item in segment) != expected_types:
             raise ValueError("generation record artifact history invalid")
@@ -70,7 +104,7 @@ def _latest_artifact_versions(record: GenerationRecord) -> Dict[str, int]:
             if (
                 item.version != latest[artifact_type] + 1
                 or item.responsible_role
-                != _AUTHORITATIVE_ARTIFACT_ROLES[artifact_type]
+                != artifact_roles[artifact_type]
             ):
                 raise ValueError("generation record artifact history invalid")
             latest[artifact_type] = item.version
@@ -136,7 +170,8 @@ def validate_lesson_generation_pair(
     if report_repair_count != prepared.repair_count:
         raise ValueError("generation record repair count mismatch")
     if report_artifact_versions != _latest_artifact_versions(
-        validated_record
+        validated_record,
+        allow_legacy=not require_current_rubric,
     ):
         raise ValueError("generation record artifact versions mismatch")
 

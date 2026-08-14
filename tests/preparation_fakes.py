@@ -11,12 +11,14 @@ from app.preparation_prompts import (
     SOLUTION_TRACE_SYSTEM,
     STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
 )
 
 
 _ROLE_BY_SYSTEM = {
     SOLUTION_TRACE_SYSTEM: "reference_analyst",
     TEACHING_DESIGNER_SYSTEM: "teaching_designer",
+    TEACHING_PROGRESSION_SYSTEM: "teaching_designer",
     SCRIPT_TEACHER_SYSTEM: "script_teacher",
     INTERACTION_DESIGNER_SYSTEM: "interaction_designer",
     CLASSROOM_DIRECTOR_SYSTEM: "classroom_director",

@@ -46,6 +46,7 @@ from tests.test_preparation_pipeline import (
     problem as preparation_problem,
     route as preparation_route,
     trace_payload,
+    teaching_progression_payload,
     trajectory_payload,
 )
 
@@ -326,7 +327,10 @@ def _approved_preparation_client(
                 else trace_payload()
             ],
             "teaching_designer": [
-                grounded_trajectory_payload() if grounded else trajectory_payload()
+                grounded_trajectory_payload()
+                if grounded
+                else trajectory_payload(),
+                teaching_progression_payload(),
             ],
             "script_teacher": [downstream_script_payload()],
             "interaction_designer": [downstream_interaction_payload()],
@@ -440,8 +444,9 @@ def test_real_grounder_precedes_preparation_and_freezes_route_and_focus_targets(
         "reference_grounder",
         "reference_analyst",
         "teaching_designer",
-        "script_teacher",
+        "teaching_designer",
         "interaction_designer",
+        "script_teacher",
         "classroom_director",
         "student_simulator",
         "lesson_reviewer",
@@ -584,9 +589,12 @@ def test_grounded_reference_anchor_marker_is_absent_from_all_downstream_outputs(
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace],
-            "teaching_designer": [grounded_trajectory_payload()],
-            "script_teacher": [downstream_script_payload()],
+            "teaching_designer": [
+                grounded_trajectory_payload(),
+                teaching_progression_payload(),
+            ],
             "interaction_designer": [downstream_interaction_payload()],
+            "script_teacher": [downstream_script_payload()],
             "classroom_director": [downstream_score_payload()],
             "student_simulator": [downstream_simulation_payload()],
             "lesson_reviewer": [downstream_review_payload()],
@@ -626,9 +634,12 @@ def test_reference_analyst_prose_is_rebuilt_from_frozen_route_before_downstream(
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace],
-            "teaching_designer": [grounded_trajectory_payload()],
-            "script_teacher": [downstream_script_payload()],
+            "teaching_designer": [
+                grounded_trajectory_payload(),
+                teaching_progression_payload(),
+            ],
             "interaction_designer": [downstream_interaction_payload()],
+            "script_teacher": [downstream_script_payload()],
             "classroom_director": [downstream_score_payload()],
             "student_simulator": [downstream_simulation_payload()],
             "lesson_reviewer": [downstream_review_payload()],
@@ -824,7 +835,7 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
     assert bundle.generation_record.lesson_id == bundle.lesson.lesson_id
     assert bundle.generation_record.route_fingerprint == received_route.fingerprint
     assert bundle.generation_record.prepared_lesson.review.status == "approved"
-    assert len(bundle.generation_record.role_calls) == 7
+    assert len(bundle.generation_record.role_calls) == 8
     provenance = bundle.generation_record.cue_provenance
     assert [item.clause_id for item in provenance] == [
         clause.clause_id
@@ -857,8 +868,9 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
         "artifact_versions": {
             "solution_trace": 1,
             "reasoning_trajectory": 1,
-            "teaching_script": 1,
+            "teaching_progression": 1,
             "interaction_plan": 1,
+            "teaching_script": 1,
             "performance_score": 1,
             "simulation_report": 1,
         },
@@ -887,9 +899,12 @@ def test_model_authored_review_summary_remains_private():
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [trace_payload()],
-            "teaching_designer": [trajectory_payload()],
-            "script_teacher": [downstream_script_payload()],
+            "teaching_designer": [
+                trajectory_payload(),
+                teaching_progression_payload(),
+            ],
             "interaction_designer": [downstream_interaction_payload()],
+            "script_teacher": [downstream_script_payload()],
             "classroom_director": [downstream_score_payload()],
             "student_simulator": [downstream_simulation_payload()],
             "lesson_reviewer": [review],

@@ -17,7 +17,10 @@ from app.schemas import (
 )
 from app.preparation_models import GenerationRecord
 from app.store import MemoryStore
-from tests.test_preparation_models import prepared_lesson
+from tests.test_preparation_models import (
+    prepared_lesson,
+    teaching_progression_payload,
+)
 
 
 def runtime_lesson() -> RuntimeLesson:
@@ -82,8 +85,9 @@ def runtime_lesson() -> RuntimeLesson:
             "artifact_versions": {
                 "solution_trace": 1,
                 "reasoning_trajectory": 1,
-                "teaching_script": 1,
+                "teaching_progression": 1,
                 "interaction_plan": 1,
+                "teaching_script": 1,
                 "performance_score": 1,
                 "simulation_report": 1,
             },
@@ -100,6 +104,23 @@ def private_generation_record(
 ) -> GenerationRecord:
     prepared = prepared_lesson()
     prepared["rubric_version"] = "0.1"
+    prepared["teaching_progression"] = teaching_progression_payload()
+    prepared["artifact_history"] = [
+        {
+            "artifact_type": artifact_type,
+            "version": 1,
+            "responsible_role": role,
+        }
+        for artifact_type, role in [
+            ("solution_trace", "reference_analyst"),
+            ("reasoning_trajectory", "teaching_designer"),
+            ("teaching_progression", "teaching_designer"),
+            ("interaction_plan", "interaction_designer"),
+            ("teaching_script", "script_teacher"),
+            ("performance_score", "classroom_director"),
+            ("simulation_report", "student_simulator"),
+        ]
+    ]
     prepared["performance_score"] = {
         "cues": [
             {
@@ -130,8 +151,9 @@ def private_generation_record(
                 for role in [
                     "reference_analyst",
                     "teaching_designer",
-                    "script_teacher",
+                    "teaching_designer",
                     "interaction_designer",
+                    "script_teacher",
                     "classroom_director",
                     "student_simulator",
                     "lesson_reviewer",
@@ -597,22 +619,65 @@ def test_store_requires_exact_positive_integer_artifact_versions(value):
 
 def test_historical_record_remains_readable_after_current_rubric_upgrade(
     tmp_path,
-    monkeypatch,
 ):
-    import app.generation_integrity as integrity
-
     database_path = tmp_path / "historical.sqlite3"
     lesson = runtime_lesson()
-    record = private_generation_record(lesson)
-    MemoryStore(database_path).save_lesson(lesson, record)
-    monkeypatch.setattr(integrity, "PEDAGOGY_RUBRIC_VERSION", "next-version")
+    report = dict(lesson.validation_report)
+    report["pedagogy_rubric_version"] = "legacy-0.0"
+    report["artifact_versions"] = {
+        artifact_type: version
+        for artifact_type, version in report["artifact_versions"].items()
+        if artifact_type != "teaching_progression"
+    }
+    lesson = lesson.model_copy(update={"validation_report": report})
+    record_payload = private_generation_record(lesson).model_dump(
+        mode="python"
+    )
+    prepared = record_payload["prepared_lesson"]
+    prepared["rubric_version"] = "legacy-0.0"
+    prepared["teaching_progression"] = None
+    revisions = {
+        revision["artifact_type"]: revision
+        for revision in prepared["artifact_history"]
+    }
+    prepared["artifact_history"] = [
+        revisions[artifact_type]
+        for artifact_type in (
+            "solution_trace",
+            "reasoning_trajectory",
+            "teaching_script",
+            "interaction_plan",
+            "performance_score",
+            "simulation_report",
+        )
+    ]
+    record = GenerationRecord.model_validate(record_payload)
+    MemoryStore(database_path).save_lesson(lesson)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO lesson_generation_records (
+                lesson_id, generation_id, rubric_version,
+                record_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                lesson.lesson_id,
+                record.generation_id,
+                record.prepared_lesson.rubric_version,
+                record.model_dump_json(),
+                record.created_at,
+            ),
+        )
 
     restarted = MemoryStore(database_path)
     assert restarted.get_generation_record(lesson.lesson_id) == record
     new_lesson = lesson.model_copy(update={"lesson_id": "lesson-new-write"})
-    old_record = private_generation_record(
-        new_lesson,
-        generation_id="generation-new-write",
+    old_record = record.model_copy(
+        update={
+            "generation_id": "generation-new-write",
+            "lesson_id": new_lesson.lesson_id,
+        }
     )
     with pytest.raises(ValueError, match="prepared rubric version invalid"):
         restarted.save_lesson(new_lesson, old_record)

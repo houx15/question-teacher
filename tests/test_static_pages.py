@@ -26,14 +26,16 @@ from app.preparation_prompts import (
     SOLUTION_TRACE_SYSTEM,
     STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
 )
 
 
 PREPARATION_SYSTEM_PROMPTS = [
     SOLUTION_TRACE_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
-    SCRIPT_TEACHER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
     INTERACTION_DESIGNER_SYSTEM,
+    SCRIPT_TEACHER_SYSTEM,
     CLASSROOM_DIRECTOR_SYSTEM,
     STUDENT_SIMULATOR_SYSTEM,
     LESSON_REVIEWER_SYSTEM,
@@ -614,6 +616,14 @@ def test_live_smoke_requires_the_complete_preparation_role_chain():
     smoke_live.assert_model_call_contract(PREPARATION_SYSTEM_PROMPTS)
 
 
+def test_live_smoke_rejects_interaction_and_script_in_the_wrong_order():
+    swapped = list(PREPARATION_SYSTEM_PROMPTS)
+    swapped[3], swapped[4] = swapped[4], swapped[3]
+
+    with pytest.raises(smoke_live.SmokeContractError):
+        smoke_live.assert_model_call_contract(swapped)
+
+
 def test_grounded_live_smoke_runs_grounder_before_preparation_roles():
     smoke_live.assert_model_call_contract(
         [REFERENCE_GROUNDING_SYSTEM, *PREPARATION_SYSTEM_PROMPTS],
@@ -659,7 +669,7 @@ def test_live_smoke_rejects_a_stray_incomplete_repair_suffix():
 
 
 def test_live_smoke_accepts_more_than_two_complete_targeted_repairs():
-    performance_repair = PREPARATION_SYSTEM_PROMPTS[4:]
+    performance_repair = PREPARATION_SYSTEM_PROMPTS[5:]
 
     smoke_live.assert_model_call_contract(
         [
@@ -672,7 +682,7 @@ def test_live_smoke_accepts_more_than_two_complete_targeted_repairs():
 
 
 def test_live_smoke_accepts_the_pipeline_repair_cycle_limit():
-    performance_repair = PREPARATION_SYSTEM_PROMPTS[4:]
+    performance_repair = PREPARATION_SYSTEM_PROMPTS[5:]
 
     smoke_live.assert_model_call_contract(
         [
@@ -683,7 +693,7 @@ def test_live_smoke_accepts_the_pipeline_repair_cycle_limit():
 
 
 def test_live_smoke_rejects_more_than_the_pipeline_repair_cycle_limit():
-    performance_repair = PREPARATION_SYSTEM_PROMPTS[4:]
+    performance_repair = PREPARATION_SYSTEM_PROMPTS[5:]
 
     with pytest.raises(smoke_live.SmokeContractError):
         smoke_live.assert_model_call_contract(
@@ -710,7 +720,7 @@ def test_live_smoke_accepts_bounded_review_retries_after_a_complete_repair(
     smoke_live.assert_model_call_contract(
         [
             *PREPARATION_SYSTEM_PROMPTS,
-            *PREPARATION_SYSTEM_PROMPTS[4:6],
+            *PREPARATION_SYSTEM_PROMPTS[5:7],
             *([LESSON_REVIEWER_SYSTEM] * review_call_count),
         ]
     )
@@ -733,13 +743,13 @@ def test_live_smoke_rejects_five_reviews_after_a_complete_repair():
         smoke_live.assert_model_call_contract(
             [
                 *PREPARATION_SYSTEM_PROMPTS,
-                *PREPARATION_SYSTEM_PROMPTS[4:6],
+                *PREPARATION_SYSTEM_PROMPTS[5:7],
                 *([LESSON_REVIEWER_SYSTEM] * 5),
             ]
         )
 
 
-@pytest.mark.parametrize("role_index", range(7))
+@pytest.mark.parametrize("role_index", range(8))
 def test_live_smoke_accepts_one_structural_retry_for_each_role(role_index):
     role_prompt = PREPARATION_SYSTEM_PROMPTS[role_index]
 
@@ -753,7 +763,7 @@ def test_live_smoke_accepts_one_structural_retry_for_each_role(role_index):
     )
 
 
-@pytest.mark.parametrize("repair_start", range(5))
+@pytest.mark.parametrize("repair_start", range(6))
 def test_live_smoke_accepts_each_legal_targeted_repair_start(repair_start):
     smoke_live.assert_model_call_contract(
         [
@@ -1242,7 +1252,7 @@ def test_generation_page_has_focused_authoring_form():
     assert 'id="model-status"' in html
     assert 'id="voice-status"' in html
     assert 'id="generation-progress"' in html
-    assert 'src="/static/generate.js?v=20260812-1"' in html
+    assert 'src="/static/generate.js?v=20260814-1"' in html
     assert "OPENAI_API_KEY" not in html
     assert "validation_report" not in html
 
@@ -1271,7 +1281,7 @@ def test_generation_page_can_reopen_and_confirm_a_saved_lesson():
 def test_versioned_generation_module_remains_cacheable():
     client = page_client()
     generate_response = client.get(
-        "/static/generate.js?v=20260812-1",
+        "/static/generate.js?v=20260814-1",
     )
     source = generate_response.text
     assert (
@@ -1303,19 +1313,26 @@ def test_generation_page_submits_optional_reference_solution():
     assert "reference_solution_text: referenceSolution || null" in source
     public_stages = (
         "正在理解题目",
+        "正在核对题目材料",
         "正在整理参考解析",
         "正在设计解题思维轨迹",
-        "正在编写讲稿",
+        "正在设计课堂推进",
         "正在设计互动",
+        "正在编写讲稿",
         "正在编排板书与高亮",
         "正在审核和优化课程",
-        "正在编译课堂",
-        "正在生成讲解语音",
+        "正在编译课程",
+        "正在生成语音",
         "正在保存课程",
     )
     for stage in public_stages:
         assert f'"{stage}"' in source
         assert f'data-stage="{stage}"' in html
+    assert (
+        '"正在设计课堂推进": '
+        '"把思路组织成学生能够一步步跟上的课堂结构。"'
+        in source
+    )
     for private_status in (
         "正在验证数学路线",
         "正在审阅参考解析",

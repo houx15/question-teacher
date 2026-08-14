@@ -13,6 +13,7 @@ from app.preparation_models import (
     ReasoningTrajectory,
     SimulationReport,
     SolutionTrace,
+    TeachingProgression,
     TeachingScript,
 )
 from app.preparation_validation import (
@@ -227,6 +228,37 @@ def trajectory_payload():
     }
 
 
+def progression_payload():
+    trajectory = trajectory_payload()
+    return {
+        "steps": [
+            {
+                "step_id": "teaching-step-%d" % (index + 1),
+                "sequence_index": index,
+                "episode_ids": [episode["episode_id"]],
+                "phase": "construct" if index == 0 else "execute",
+                "student_problem": episode["thinking_question"],
+                "why_now": episode["transition_reason"],
+                "evidence_target_ids": [],
+                "guiding_questions": [episode["thinking_question"]],
+                "knowledge_anchor": episode["decision_reason"],
+                "checkpoint": None,
+                "reveal": episode["decision"],
+                "math_action": episode["mathematical_action"],
+                "directory_question": episode["thinking_question"],
+                "directory_label": "第%d步：处理当前问题" % (index + 1),
+                "board_summary": [episode["result"]],
+                "error_tip": "注意条件使用范围",
+                "transition_question": episode["transition_reason"],
+                "must_teach_refs": [
+                    item["must_teach_id"] for item in episode["must_teach"]
+                ],
+            }
+            for index, episode in enumerate(trajectory["episodes"])
+        ]
+    }
+
+
 def clause_payload(index, clause_id=None, episode_id=None, math_reference=None):
     return {
         "clause_id": clause_id or "clause-%d" % (index + 1),
@@ -397,8 +429,9 @@ def prepared_payload():
         "rubric_version": PEDAGOGY_RUBRIC_VERSION,
         "solution_trace": trace_payload(),
         "reasoning_trajectory": trajectory_payload(),
-        "teaching_script": script_payload(),
+        "teaching_progression": progression_payload(),
         "interaction_plan": interaction_plan_payload(),
+        "teaching_script": script_payload(),
         "performance_score": score_payload(),
         "simulation_report": simulation_payload(),
         "review": review_payload(),
@@ -408,8 +441,9 @@ def prepared_payload():
             for artifact, role in (
                 ("solution_trace", "reference_analyst"),
                 ("reasoning_trajectory", "teaching_designer"),
-                ("teaching_script", "script_teacher"),
+                ("teaching_progression", "teaching_designer"),
                 ("interaction_plan", "interaction_designer"),
+                ("teaching_script", "script_teacher"),
                 ("performance_score", "classroom_director"),
                 ("simulation_report", "student_simulator"),
             )
@@ -427,6 +461,89 @@ def models():
         PerformanceScore.model_validate(payload["performance_score"]),
         SimulationReport.model_validate(payload["simulation_report"]),
         LessonReviewDecision.model_validate(payload["review"]),
+    )
+
+
+def test_current_rubric_prepared_lesson_requires_progression_and_seven_history_items():
+    payload = prepared_payload()
+    payload["teaching_progression"] = None
+    payload["artifact_history"] = [
+        item
+        for item in payload["artifact_history"]
+        if item["artifact_type"] != "teaching_progression"
+    ]
+
+    assert_history_invalid(payload)
+
+
+def test_review_dependency_uses_artifact_order_for_progression_interaction_and_script():
+    trace, trajectory, script, plan, score, report, _ = models()
+    progression = TeachingProgression.model_validate(progression_payload())
+    progression_finding = {
+        "finding_id": "finding-progression",
+        "severity": "material",
+        "artifact_type": "teaching_progression",
+        "artifact_id": "teaching-step-1",
+        "criterion": "learner_follows_why",
+        "evidence": "推进缺少为什么此刻处理",
+        "responsible_role": "teaching_designer",
+        "requested_change": "补充 why_now",
+        "invalidated_downstream_artifacts": [
+            "interaction_plan",
+            "teaching_script",
+            "performance_score",
+            "simulation_report",
+        ],
+    }
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [progression_finding],
+            "retained_artifacts": [
+                "solution_trace",
+                "reasoning_trajectory",
+            ],
+            "approval_summary": "从教学推进开始修订",
+        }
+    )
+
+    validate_review_decision(
+        decision,
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+        progression=progression,
+    )
+
+    interaction_payload = decision.model_dump(mode="python")
+    interaction_payload["findings"][0].update(
+        finding_id="finding-interaction",
+        artifact_type="interaction_plan",
+        artifact_id="interaction-1",
+        responsible_role="interaction_designer",
+        invalidated_downstream_artifacts=[
+            "teaching_script",
+            "performance_score",
+            "simulation_report",
+        ],
+    )
+    interaction_payload["retained_artifacts"] = [
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_progression",
+    ]
+    validate_review_decision(
+        LessonReviewDecision.model_validate(interaction_payload),
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+        progression=progression,
     )
 
 
@@ -1664,8 +1781,9 @@ def test_review_can_cite_a_concrete_nested_source_anchor_id():
                     "requested_change": "标明条件的数学用途",
                     "invalidated_downstream_artifacts": [
                         "reasoning_trajectory",
-                        "teaching_script",
+                        "teaching_progression",
                         "interaction_plan",
+                        "teaching_script",
                         "performance_score",
                         "simulation_report",
                     ],
@@ -1734,7 +1852,6 @@ def test_review_retained_and_invalidated_artifacts_follow_dependency_order():
                 "responsible_role": "script_teacher",
                 "requested_change": "补充决定理由",
                 "invalidated_downstream_artifacts": [
-                    "interaction_plan",
                     "performance_score",
                     "simulation_report",
                 ],
@@ -1743,6 +1860,8 @@ def test_review_retained_and_invalidated_artifacts_follow_dependency_order():
         "retained_artifacts": [
             "solution_trace",
             "reasoning_trajectory",
+            "teaching_progression",
+            "interaction_plan",
         ],
         "approval_summary": "从讲稿开始修订",
     }
@@ -1765,8 +1884,9 @@ def test_review_retained_and_invalidated_artifacts_follow_dependency_order():
     director_base["retained_artifacts"] = [
         "solution_trace",
         "reasoning_trajectory",
-        "teaching_script",
+        "teaching_progression",
         "interaction_plan",
+        "teaching_script",
     ]
     validate_review_decision(
         LessonReviewDecision.model_validate(director_base),
@@ -1881,7 +2001,6 @@ def test_material_review_requires_exact_retained_prefix_for_earliest_finding():
                 "responsible_role": "script_teacher",
                 "requested_change": "补充理由",
                 "invalidated_downstream_artifacts": [
-                    "interaction_plan",
                     "performance_score",
                     "simulation_report",
                 ],
@@ -1906,6 +2025,8 @@ def test_material_review_requires_exact_retained_prefix_for_earliest_finding():
     payload["retained_artifacts"] = [
         "solution_trace",
         "reasoning_trajectory",
+        "teaching_progression",
+        "interaction_plan",
     ]
     validate_review_decision(
         LessonReviewDecision.model_validate(payload),
@@ -1943,7 +2064,6 @@ def test_material_review_rejects_omitted_incomplete_or_reordered_retained_prefix
                 "responsible_role": "script_teacher",
                 "requested_change": "补充理由",
                 "invalidated_downstream_artifacts": [
-                    "interaction_plan",
                     "performance_score",
                     "simulation_report",
                 ],
@@ -2054,7 +2174,6 @@ def test_prepared_lesson_requires_an_approved_review_even_if_artifacts_validate(
                 "responsible_role": "script_teacher",
                 "requested_change": "补充理由",
                 "invalidated_downstream_artifacts": [
-                    "interaction_plan",
                     "performance_score",
                     "simulation_report",
                 ],
@@ -2063,6 +2182,8 @@ def test_prepared_lesson_requires_an_approved_review_even_if_artifacts_validate(
         "retained_artifacts": [
             "solution_trace",
             "reasoning_trajectory",
+            "teaching_progression",
+            "interaction_plan",
         ],
         "approval_summary": "需修订",
     }
@@ -2086,8 +2207,9 @@ def revision(artifact_type, version):
     roles = {
         "solution_trace": "reference_analyst",
         "reasoning_trajectory": "teaching_designer",
-        "teaching_script": "script_teacher",
+        "teaching_progression": "teaching_designer",
         "interaction_plan": "interaction_designer",
+        "teaching_script": "script_teacher",
         "performance_score": "classroom_director",
         "simulation_report": "student_simulator",
     }
@@ -2098,7 +2220,7 @@ def revision(artifact_type, version):
     }
 
 
-def test_prepared_history_requires_exactly_all_six_artifact_types():
+def test_prepared_history_requires_exactly_all_seven_artifact_types():
     payload = prepared_payload()
     payload["artifact_history"] = [
         item
@@ -2153,8 +2275,8 @@ def test_prepared_history_accepts_dependency_suffix_for_each_repair_cycle():
         [
             revision("performance_score", 2),
             revision("simulation_report", 2),
-            revision("teaching_script", 2),
             revision("interaction_plan", 2),
+            revision("teaching_script", 2),
             revision("performance_score", 3),
             revision("simulation_report", 3),
         ]

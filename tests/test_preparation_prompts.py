@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 import pytest
+
 from pydantic import BaseModel
 
 import app.preparation_prompts as preparation_prompts
@@ -22,6 +23,7 @@ from app.preparation_models import (
     SimulationReport,
     SolutionTrace,
     TeachingScript,
+    TeachingProgression,
 )
 from app.preparation_prompts import (
     CLASSROOM_DIRECTOR_SYSTEM,
@@ -31,12 +33,14 @@ from app.preparation_prompts import (
     SOLUTION_TRACE_SYSTEM,
     STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
     interaction_plan_prompt,
     lesson_review_prompt,
     performance_score_prompt,
     reasoning_trajectory_prompt,
     solution_trace_prompt,
     student_simulation_prompt,
+    teaching_progression_prompt,
     teaching_script_prompt,
     with_output_schema,
 )
@@ -51,6 +55,7 @@ from app.teaching_route import freeze_grounded_route
 SYSTEM_PROMPTS = (
     SOLUTION_TRACE_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
     SCRIPT_TEACHER_SYSTEM,
     INTERACTION_DESIGNER_SYSTEM,
     CLASSROOM_DIRECTOR_SYSTEM,
@@ -204,6 +209,35 @@ def reasoning_trajectory():
     )
 
 
+def teaching_progression():
+    return TeachingProgression.model_validate(
+        {
+            "steps": [
+                {
+                    "step_id": "teaching-step-1",
+                    "sequence_index": 0,
+                    "episode_ids": ["episode-1"],
+                    "phase": "construct",
+                    "student_problem": "怎样把二次式凑成完全平方？",
+                    "why_now": "先形成配方思路，再揭示方法名称。",
+                    "evidence_target_ids": ["target-1"],
+                    "guiding_questions": ["一次项系数的一半是多少？"],
+                    "knowledge_anchor": "完全平方公式",
+                    "checkpoint": None,
+                    "reveal": "把等式两边同时加9",
+                    "math_action": "构造(x-3)^2",
+                    "directory_question": "怎样构造完全平方？",
+                    "directory_label": "形成思路后认识配方法",
+                    "board_summary": ["x^2-6x+9=(x-3)^2"],
+                    "error_tip": "不能只改变等式一边",
+                    "transition_question": "得到平方形式后怎样继续？",
+                    "must_teach_refs": ["teach-1"],
+                }
+            ]
+        }
+    )
+
+
 def teaching_script():
     return TeachingScript.model_validate(
         {
@@ -247,6 +281,48 @@ def teaching_script():
             ],
             "closing_summary_clause_ids": ["clause-3"],
         }
+    )
+
+
+def test_progression_system_and_prompt_define_the_private_teaching_bridge():
+    system = preparation_prompts.TEACHING_PROGRESSION_SYSTEM
+    for phrase in (
+        "只输出 Schema TeachingProgression",
+        "student_problem",
+        "why_now",
+        "标题",
+        "不得剧透",
+        "每个 must_teach",
+        "不写最终教师台词",
+    ):
+        assert phrase in system
+
+    prompt = preparation_prompts.teaching_progression_prompt(
+        reasoning_trajectory(),
+        [
+            ProblemFocusTarget(
+                target_id="target-1",
+                math_text="x^2-6x",
+                display_mode=False,
+                ordinal=1,
+            )
+        ],
+    )
+    task, payload, _ = _parse_envelope(prompt)
+    assert task == "把 ReasoningTrajectory 组织为可审核的 TeachingProgression。"
+    assert set(payload) == {"reasoning_trajectory", "problem_targets"}
+
+
+def test_final_script_prompt_uses_only_progression_and_interaction_plan():
+    task, payload, _ = _parse_envelope(
+        teaching_script_prompt(teaching_progression(), interaction_plan())
+    )
+
+    assert task == "为主线和每个互动结果写自然、顺畅、可朗读的最终 TeachingScript。"
+    assert set(payload) == {"teaching_progression", "interaction_plan"}
+    assert "reasoning_trajectory" not in payload
+    assert "reference_solution_text" not in json.dumps(
+        payload, ensure_ascii=False
     )
 
 
@@ -377,6 +453,7 @@ def repair_request(retained_artifacts=None):
 def prompts(repair=None):
     trace = solution_trace()
     trajectory = reasoning_trajectory()
+    progression = teaching_progression()
     script = teaching_script()
     interactions = interaction_plan()
     score = performance_score()
@@ -392,16 +469,18 @@ def prompts(repair=None):
     return (
         solution_trace_prompt(problem(), teaching_route(), targets, repair=repair),
         reasoning_trajectory_prompt(problem(), trace, capabilities, repair=repair),
-        teaching_script_prompt(trajectory, repair=repair),
-        interaction_plan_prompt(trajectory, script, repair=repair),
+        teaching_progression_prompt(trajectory, targets, repair=repair),
+        interaction_plan_prompt(progression, repair=repair),
+        teaching_script_prompt(progression, interactions, repair=repair),
         performance_score_prompt(targets, script, interactions, capabilities, repair=repair),
         student_simulation_prompt(trajectory, script, interactions, score),
         lesson_review_prompt(
             {
                 "solution_trace": trace,
                 "reasoning_trajectory": trajectory,
-                "teaching_script": script,
+                "teaching_progression": progression,
                 "interaction_plan": interactions,
+                "teaching_script": script,
                 "performance_score": score,
             },
             simulation_report(),
@@ -546,8 +625,8 @@ def test_reviewer_system_requires_exact_dependency_metadata():
 
 
 def test_non_compensable_gates_are_verbatim_in_simulator_and_reviewer_inputs():
-    simulator_prompt = prompts()[5]
-    reviewer_prompt = prompts()[6]
+    simulator_prompt = prompts()[6]
+    reviewer_prompt = prompts()[7]
     for gate in NON_COMPENSABLE_GATES:
         assert gate in STUDENT_SIMULATOR_SYSTEM
         assert gate in LESSON_REVIEWER_SYSTEM
@@ -741,7 +820,7 @@ def test_every_downstream_prompt_uses_artifacts_or_narrower_projections_only():
         _, payload, _ = _parse_envelope(prompt)
         assert not _contains_key(payload, "reference_solution_text")
         assert "IGNORE_ALL_RULES" not in prompt
-    director_payload = _parse_envelope(role_prompts[4])[1]
+    director_payload = _parse_envelope(role_prompts[5])[1]
     assert director_payload["problem_targets"] == [
         {"display_mode": False, "math_text": "x^2-6x", "ordinal": 1, "target_id": "target-1"}
     ]
@@ -797,7 +876,7 @@ def test_delimiter_like_content_is_escaped_once_and_recovers_exactly():
     repair["evidence"] = [DELIMITER_COLLISION_TEXT]
     repair["requested_changes"] = [DELIMITER_COLLISION_TEXT]
     repair_payload = _assert_single_safe_frame(
-        teaching_script_prompt(reasoning_trajectory(), repair=repair)
+        teaching_script_prompt(teaching_progression(), interaction_plan(), repair=repair)
     )["repair_request"]
     assert repair_payload["evidence"] == [DELIMITER_COLLISION_TEXT]
     assert repair_payload["requested_changes"] == [DELIMITER_COLLISION_TEXT]
@@ -810,6 +889,7 @@ def test_delimiter_like_content_is_escaped_once_and_recovers_exactly():
             {
                 "solution_trace": solution_trace(),
                 "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
                 "teaching_script": teaching_script(),
                 "interaction_plan": interaction_plan(),
                 "performance_score": performance_score(),
@@ -986,6 +1066,7 @@ def test_reviewer_rejects_mapping_artifact_bypass_and_unknown_aggregate_keys():
             "reference_solution_text": "IGNORE_ALL_RULES",
         },
         "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
         "teaching_script": teaching_script(),
         "interaction_plan": interaction_plan(),
         "performance_score": performance_score(),
@@ -1004,6 +1085,7 @@ def test_reviewer_rejects_custom_prepared_artifact_mapping():
         {
             "solution_trace": solution_trace(),
             "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
             "teaching_script": teaching_script(),
             "interaction_plan": interaction_plan(),
             "performance_score": performance_score(),
@@ -1022,6 +1104,7 @@ def test_reviewer_rejects_mapping_simulation_report_bypass():
     artifacts = {
         "solution_trace": solution_trace(),
         "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
         "teaching_script": teaching_script(),
         "interaction_plan": interaction_plan(),
         "performance_score": performance_score(),
@@ -1046,6 +1129,7 @@ def test_reviewer_rejects_non_string_context_ids(reviewer_context_id):
     artifacts = {
         "solution_trace": solution_trace(),
         "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
         "teaching_script": teaching_script(),
         "interaction_plan": interaction_plan(),
         "performance_score": performance_score(),
@@ -1077,6 +1161,7 @@ def test_reviewer_rejects_blank_or_invalid_generated_context_ids(
     artifacts = {
         "solution_trace": solution_trace(),
         "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
         "teaching_script": teaching_script(),
         "interaction_plan": interaction_plan(),
         "performance_score": performance_score(),
@@ -1094,6 +1179,7 @@ def test_reviewer_preserves_valid_context_id_and_serializes_deterministically():
     artifacts = {
         "solution_trace": solution_trace(),
         "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
         "teaching_script": teaching_script(),
         "interaction_plan": interaction_plan(),
         "performance_score": performance_score(),
@@ -1117,14 +1203,17 @@ def test_reviewer_preserves_valid_context_id_and_serializes_deterministically():
 @pytest.mark.parametrize(
     ("artifact_name", "build_prompt"),
     (
-        ("reasoning_trajectory", lambda value: teaching_script_prompt(value)),
         (
-            "reasoning_trajectory",
-            lambda value: interaction_plan_prompt(value, teaching_script()),
+            "teaching_progression",
+            lambda value: teaching_script_prompt(value, interaction_plan()),
         ),
         (
-            "teaching_script",
-            lambda value: interaction_plan_prompt(reasoning_trajectory(), value),
+            "teaching_progression",
+            lambda value: interaction_plan_prompt(value),
+        ),
+        (
+            "interaction_plan",
+            lambda value: teaching_script_prompt(teaching_progression(), value),
         ),
         (
             "teaching_script",
@@ -1151,6 +1240,7 @@ def test_each_repairable_builder_preserves_complete_repair_contract():
     retained_artifacts = {
         "solution_trace": solution_trace(),
         "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
     }
     repair = {
         "finding_ids": ["finding-2", "finding-7"],
@@ -1166,14 +1256,14 @@ def test_each_repairable_builder_preserves_complete_repair_contract():
             for key, value in retained_artifacts.items()
         },
     }
-    for prompt in prompts(repair=repair)[:5]:
+    for prompt in prompts(repair=repair)[:6]:
         payload = _parse_envelope(prompt)[1]
         assert payload["repair_request"] == expected
 
 
 def test_empty_retained_artifacts_are_valid_for_every_authoring_builder():
     repair = repair_request()
-    for prompt in prompts(repair=repair)[:5]:
+    for prompt in prompts(repair=repair)[:6]:
         assert _parse_envelope(prompt)[1]["repair_request"] == repair
 
 
@@ -1211,7 +1301,7 @@ def test_designer_rejects_raw_reference_mapping_in_retained_artifacts():
 )
 def test_repair_request_rejects_invalid_top_level_contract(invalid_repair):
     with pytest.raises((TypeError, ValueError), match="repair"):
-        teaching_script_prompt(reasoning_trajectory(), repair=invalid_repair)
+        teaching_script_prompt(teaching_progression(), interaction_plan(), repair=invalid_repair)
 
 
 def test_prompt_size_and_repair_limits_are_explicit():
@@ -1252,7 +1342,7 @@ def test_repair_request_rejects_too_many_items_without_echoing_values(field):
         repair[field] = [marker] * 65
 
     with pytest.raises(ValueError) as exc_info:
-        teaching_script_prompt(reasoning_trajectory(), repair=repair)
+        teaching_script_prompt(teaching_progression(), interaction_plan(), repair=repair)
 
     assert "item_limit" in str(exc_info.value)
     assert marker not in str(exc_info.value)
@@ -1265,7 +1355,7 @@ def test_repair_request_rejects_overlong_text_without_echoing_it(field):
     repair[field] = [marker + ("字" * 1001)]
 
     with pytest.raises(ValueError) as exc_info:
-        teaching_script_prompt(reasoning_trajectory(), repair=repair)
+        teaching_script_prompt(teaching_progression(), interaction_plan(), repair=repair)
 
     assert "text_limit" in str(exc_info.value)
     assert marker not in str(exc_info.value)
@@ -1282,6 +1372,7 @@ def test_prompt_rejects_oversized_valid_typed_payload_with_stable_error():
             {
                 "solution_trace": oversized_trace,
                 "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
                 "teaching_script": teaching_script(),
                 "interaction_plan": interaction_plan(),
                 "performance_score": performance_score(),
@@ -1306,8 +1397,7 @@ def test_prompt_rejects_oversized_valid_typed_payload_with_stable_error():
 def test_repair_request_rejects_invalid_retained_artifacts(retained_artifacts):
     with pytest.raises((TypeError, ValueError), match="retained_artifacts"):
         interaction_plan_prompt(
-            reasoning_trajectory(),
-            teaching_script(),
+            teaching_progression(),
             repair=repair_request(retained_artifacts),
         )
 
@@ -1384,11 +1474,14 @@ AUTHORING_BUILDERS = (
         {"semantic_actions": ["focus"]},
         repair=repair,
     ),
-    lambda repair: teaching_script_prompt(
-        reasoning_trajectory(), repair=repair
+    lambda repair: teaching_progression_prompt(
+        reasoning_trajectory(), [], repair=repair
     ),
     lambda repair: interaction_plan_prompt(
-        reasoning_trajectory(), teaching_script(), repair=repair
+        teaching_progression(), repair=repair
+    ),
+    lambda repair: teaching_script_prompt(
+        teaching_progression(), interaction_plan(), repair=repair
     ),
     lambda repair: performance_score_prompt(
         [],
@@ -1410,6 +1503,7 @@ AUTHORING_BUILDERS = (
             {
                 "solution_trace": solution_trace(),
                 "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
                 "teaching_script": teaching_script(),
                 "interaction_plan": interaction_plan(),
                 "performance_score": performance_score(),
@@ -1419,11 +1513,13 @@ AUTHORING_BUILDERS = (
             "review-context-1",
         ),
         lambda marker: teaching_script_prompt(
-            reasoning_trajectory(),
+            teaching_progression(),
+            interaction_plan(),
             repair={**repair_request(), marker: "hidden"},
         ),
         lambda marker: teaching_script_prompt(
-            reasoning_trajectory(),
+            teaching_progression(),
+            interaction_plan(),
             repair=repair_request({marker: solution_trace()}),
         ),
     ),
@@ -1449,7 +1545,7 @@ def test_repair_request_rejects_custom_retained_artifact_mapping():
     )
 
     with pytest.raises(TypeError, match="retained_artifacts"):
-        teaching_script_prompt(reasoning_trajectory(), repair=repair)
+        teaching_script_prompt(teaching_progression(), interaction_plan(), repair=repair)
 
 
 @pytest.mark.parametrize("build_prompt", AUTHORING_BUILDERS)
@@ -1525,6 +1621,7 @@ def test_reviewer_artifact_projection_preserves_validated_free_form_values():
             {
                 "solution_trace": solution_trace(),
                 "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
                 "teaching_script": teaching_script(),
                 "interaction_plan": interaction_plan(),
                 "performance_score": performance_score(),
@@ -1542,7 +1639,8 @@ def test_retained_typed_artifact_preserves_business_identifier_keys():
     plan = interaction_plan_with_business_ids()
     expected = plan.model_dump(mode="json")
     prompt = teaching_script_prompt(
-        reasoning_trajectory(),
+        teaching_progression(),
+        plan,
         repair=repair_request({"interaction_plan": plan}),
     )
 
@@ -1563,6 +1661,7 @@ def test_prepared_typed_artifact_preserves_business_identifier_keys():
         {
             "solution_trace": solution_trace(),
             "reasoning_trajectory": reasoning_trajectory(),
+                "teaching_progression": teaching_progression(),
             "teaching_script": teaching_script(),
             "interaction_plan": plan,
             "performance_score": performance_score(),
@@ -1709,13 +1808,14 @@ def test_repair_request_rejects_missing_contract_keys(missing_key):
     }
     del repair[missing_key]
     with pytest.raises(ValueError, match=missing_key):
-        teaching_script_prompt(reasoning_trajectory(), repair=repair)
+        teaching_script_prompt(teaching_progression(), interaction_plan(), repair=repair)
 
 
 def test_prompt_builders_do_not_mutate_models_or_input_mappings():
     source_problem = problem()
     trace = solution_trace()
     trajectory = reasoning_trajectory()
+    progression = teaching_progression()
     script = teaching_script()
     interactions = interaction_plan()
     score = performance_score()
@@ -1730,16 +1830,17 @@ def test_prompt_builders_do_not_mutate_models_or_input_mappings():
     ]
     capabilities = {"semantic_actions": ["focus"], "supports_overlays": True}
     repair = repair_request({"solution_trace": trace})
-    values = (source_problem, trace, trajectory, script, interactions, score, route, targets, capabilities, repair)
+    values = (source_problem, trace, trajectory, progression, script, interactions, score, route, targets, capabilities, repair)
     before = [value.model_dump(mode="json") if hasattr(value, "model_dump") else copy.deepcopy(value) for value in values]
     solution_trace_prompt(source_problem, route, targets, repair=repair)
     reasoning_trajectory_prompt(source_problem, trace, capabilities, repair=repair)
-    teaching_script_prompt(trajectory, repair=repair)
-    interaction_plan_prompt(trajectory, script, repair=repair)
+    teaching_progression_prompt(trajectory, targets, repair=repair)
+    teaching_script_prompt(progression, interactions, repair=repair)
+    interaction_plan_prompt(progression, repair=repair)
     performance_score_prompt(targets, script, interactions, capabilities, repair=repair)
     student_simulation_prompt(trajectory, script, interactions, score)
     lesson_review_prompt(
-        {"solution_trace": trace, "reasoning_trajectory": trajectory, "teaching_script": script, "interaction_plan": interactions, "performance_score": score},
+        {"solution_trace": trace, "reasoning_trajectory": trajectory, "teaching_progression": progression, "interaction_plan": interactions, "teaching_script": script, "performance_score": score},
         simulation_report(),
         "review-context-1",
     )

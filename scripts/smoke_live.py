@@ -33,6 +33,7 @@ from app.preparation_prompts import (
     SOLUTION_TRACE_SYSTEM,
     STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
 )
 from app.preparation_pipeline import (
     LessonPreparationPipeline,
@@ -93,9 +94,10 @@ def _require_contract(condition: bool, message: str) -> None:
 PromptRun = Tuple[str, int]
 _PREPARATION_PROMPT_STAGES = {
     SOLUTION_TRACE_SYSTEM: "TRACE",
-    TEACHING_DESIGNER_SYSTEM: "DESIGN",
-    SCRIPT_TEACHER_SYSTEM: "SCRIPT",
+    TEACHING_DESIGNER_SYSTEM: "TRAJECTORY",
+    TEACHING_PROGRESSION_SYSTEM: "PROGRESSION",
     INTERACTION_DESIGNER_SYSTEM: "INTERACTION",
+    SCRIPT_TEACHER_SYSTEM: "SCRIPT",
     CLASSROOM_DIRECTOR_SYSTEM: "PERFORMANCE",
     STUDENT_SIMULATOR_SYSTEM: "SIMULATION",
     LESSON_REVIEWER_SYSTEM: "REVIEW",
@@ -165,9 +167,10 @@ def assert_model_call_contract(
     )
     preparation_order = [
         "TRACE",
-        "DESIGN",
-        "SCRIPT",
+        "TRAJECTORY",
+        "PROGRESSION",
         "INTERACTION",
+        "SCRIPT",
         "PERFORMANCE",
         "SIMULATION",
         "REVIEW",
@@ -187,7 +190,7 @@ def assert_model_call_contract(
         "smoke 首轮备课或审核的结构重试超限。",
     )
     remaining = preparation_runs[len(preparation_order) :]
-    repair_starts = preparation_order[:5]
+    repair_starts = preparation_order[:6]
     repair_cycles = 0
     while remaining:
         repair_cycles += 1

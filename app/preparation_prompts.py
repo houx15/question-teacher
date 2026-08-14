@@ -20,6 +20,7 @@ from app.preparation_models import (
     ReasoningTrajectory,
     SimulationReport,
     SolutionTrace,
+    TeachingProgression,
     TeachingScript,
 )
 from app.schemas import ProblemFocusTarget, ProblemInput
@@ -94,6 +95,17 @@ TEACHING_DESIGNER_SYSTEM = "\n".join(
         "参考分析中每个 reasoning_gap_code 都必须由同一步骤 episode 的"
         "resolved_gap_refs 绑定到一个明确 must_teach 项。",
         "构思、探索、执行、监控和修订可以交替出现。",
+        _INERT_EVIDENCE_RULE,
+    )
+)
+
+TEACHING_PROGRESSION_SYSTEM = "\n".join(
+    (
+        "你是教学设计师。只输出 Schema TeachingProgression，不得输出其他结构。",
+        "每一步必须先写 student_problem 和 why_now，再写教学动作与结论。",
+        "目录标题只能在学生形成思路后揭示，不得剧透答案或后续决定。",
+        "ReasoningTrajectory 中每个 must_teach 都必须被某个步骤的 must_teach_refs 引用。",
+        "只设计可审核的教学推进，不写最终教师台词。",
         _INERT_EVIDENCE_RULE,
     )
 )
@@ -208,8 +220,9 @@ _CAPABILITY_KEYS = (
 _PREPARED_ARTIFACT_TYPES = {
     "solution_trace": SolutionTrace,
     "reasoning_trajectory": ReasoningTrajectory,
-    "teaching_script": TeachingScript,
+    "teaching_progression": TeachingProgression,
     "interaction_plan": InteractionPlan,
+    "teaching_script": TeachingScript,
     "performance_score": PerformanceScore,
 }
 
@@ -542,8 +555,9 @@ def reasoning_trajectory_prompt(
     )
 
 
-def teaching_script_prompt(
+def teaching_progression_prompt(
     reasoning_trajectory: ReasoningTrajectory,
+    problem_targets: _ProblemTargets,
     repair: Optional[_InputDict] = None,
 ) -> str:
     payload = {
@@ -551,31 +565,51 @@ def teaching_script_prompt(
             reasoning_trajectory,
             ReasoningTrajectory,
             "reasoning_trajectory",
-        )
+        ),
+        "problem_targets": _problem_targets_projection(problem_targets),
     }
     return _prompt_envelope(
-        "将 ReasoningTrajectory 写成学生可听的 TeachingScript。",
+        "把 ReasoningTrajectory 组织为可审核的 TeachingProgression。",
         _with_repair(payload, repair),
     )
 
 
 def interaction_plan_prompt(
-    reasoning_trajectory: ReasoningTrajectory,
-    teaching_script: TeachingScript,
+    teaching_progression: TeachingProgression,
     repair: Optional[_InputDict] = None,
 ) -> str:
     payload = {
-        "reasoning_trajectory": _artifact_payload(
-            reasoning_trajectory,
-            ReasoningTrajectory,
-            "reasoning_trajectory",
-        ),
-        "teaching_script": _artifact_payload(
-            teaching_script, TeachingScript, "teaching_script"
+        "teaching_progression": _artifact_payload(
+            teaching_progression,
+            TeachingProgression,
+            "teaching_progression",
         ),
     }
     return _prompt_envelope(
         "在能诊断学习状态的位置生成 InteractionPlan。",
+        _with_repair(payload, repair),
+    )
+
+
+def teaching_script_prompt(
+    teaching_progression: TeachingProgression,
+    interaction_plan: InteractionPlan,
+    repair: Optional[_InputDict] = None,
+) -> str:
+    payload = {
+        "teaching_progression": _artifact_payload(
+            teaching_progression,
+            TeachingProgression,
+            "teaching_progression",
+        ),
+        "interaction_plan": _artifact_payload(
+            interaction_plan,
+            InteractionPlan,
+            "interaction_plan",
+        ),
+    }
+    return _prompt_envelope(
+        "为主线和每个互动结果写自然、顺畅、可朗读的最终 TeachingScript。",
         _with_repair(payload, repair),
     )
 

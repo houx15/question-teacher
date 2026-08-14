@@ -18,6 +18,7 @@ from app.preparation_models import (
     ReasoningTrajectory,
     RoleCallRecord,
     SolutionTrace,
+    TeachingProgression,
 )
 from app.preparation_pipeline import (
     LessonPreparationPipeline,
@@ -232,6 +233,41 @@ def trajectory_payload(
     }
 
 
+def teaching_progression_payload():
+    trajectory = trajectory_payload()
+    return {
+        "steps": [
+            {
+                "step_id": "teaching-step-%d" % (index + 1),
+                "sequence_index": index,
+                "episode_ids": [episode["episode_id"]],
+                "phase": (
+                    "construct" if index == 0 else
+                    "check" if index == len(trajectory["episodes"]) - 1 else
+                    "execute"
+                ),
+                "student_problem": episode["thinking_question"],
+                "why_now": episode["transition_reason"],
+                "evidence_target_ids": ["problem-root"],
+                "guiding_questions": [episode["thinking_question"]],
+                "knowledge_anchor": episode["decision_reason"],
+                "checkpoint": None,
+                "reveal": episode["decision"],
+                "math_action": episode["mathematical_action"],
+                "directory_question": episode["thinking_question"],
+                "directory_label": "第%d步：推进当前问题" % (index + 1),
+                "board_summary": [episode["result"]],
+                "error_tip": "注意当前条件的使用范围",
+                "transition_question": episode["transition_reason"],
+                "must_teach_refs": [
+                    item["must_teach_id"] for item in episode["must_teach"]
+                ],
+            }
+            for index, episode in enumerate(trajectory["episodes"])
+        ]
+    }
+
+
 def downstream_script_payload():
     clause_specs = (
         ("clause-open", "episode-1", ["must-1"], "先找到题目要求的关系。", ["m-n"]),
@@ -358,16 +394,17 @@ def downstream_simulation_payload():
 REVIEW_ARTIFACT_ORDER = [
     "solution_trace",
     "reasoning_trajectory",
-    "teaching_script",
+    "teaching_progression",
     "interaction_plan",
+    "teaching_script",
     "performance_score",
     "simulation_report",
 ]
 REVIEW_ROLE_ARTIFACT = {
     "reference_analyst": "solution_trace",
     "teaching_designer": "reasoning_trajectory",
-    "script_teacher": "teaching_script",
     "interaction_designer": "interaction_plan",
+    "script_teacher": "teaching_script",
     "classroom_director": "performance_score",
 }
 
@@ -429,25 +466,40 @@ def prompt_payload(recorded_call):
 def client(
     trace=None,
     trajectory=None,
+    progression=None,
     script=None,
     interaction=None,
     performance=None,
     traces=None,
     trajectories=None,
+    progressions=None,
     scripts=None,
     interactions=None,
     performances=None,
     simulations=None,
     reviews=None,
 ):
+    trajectory_responses = list(
+        trajectories or [trajectory or trajectory_payload()]
+    )
+    progression_responses = list(
+        progressions
+        or [progression or teaching_progression_payload()]
+    )
+    teaching_designer_responses = []
+    for index, trajectory_response in enumerate(trajectory_responses):
+        teaching_designer_responses.append(trajectory_response)
+        teaching_designer_responses.append(
+            progression_responses[
+                min(index, len(progression_responses) - 1)
+            ]
+        )
     return PreparationFakeClient(
         {
             "reference_analyst": list(
                 traces or [trace or trace_payload()]
             ),
-            "teaching_designer": list(
-                trajectories or [trajectory or trajectory_payload()]
-            ),
+            "teaching_designer": teaching_designer_responses,
             "script_teacher": list(
                 scripts or [script or downstream_script_payload()]
             ),
@@ -466,6 +518,179 @@ def client(
             ),
         }
     )
+
+
+def dependency_finding(artifact_type):
+    order = [
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_progression",
+        "interaction_plan",
+        "teaching_script",
+        "performance_score",
+        "simulation_report",
+    ]
+    role_and_id = {
+        "teaching_progression": ("teaching_designer", "teaching-step-1"),
+        "interaction_plan": ("interaction_designer", "interaction-1"),
+        "teaching_script": ("script_teacher", "clause-open"),
+    }
+    role, artifact_id = role_and_id[artifact_type]
+    index = order.index(artifact_type)
+    return {
+        "finding_id": "finding-%s" % artifact_type,
+        "severity": "material",
+        "artifact_type": artifact_type,
+        "artifact_id": artifact_id,
+        "criterion": "learner_follows_why",
+        "evidence": "%s 需要定向修订。" % artifact_id,
+        "responsible_role": role,
+        "requested_change": "修订该产物的教学逻辑。",
+        "invalidated_downstream_artifacts": order[index + 1 :],
+    }
+
+
+def dependency_review_payload(artifact_type):
+    finding = dependency_finding(artifact_type)
+    order = REVIEW_ARTIFACT_ORDER = [
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_progression",
+        "interaction_plan",
+        "teaching_script",
+        "performance_score",
+        "simulation_report",
+    ]
+    return {
+        "status": "revision_required",
+        "findings": [finding],
+        "retained_artifacts": order[: order.index(artifact_type)],
+        "approval_summary": "需要定向修订",
+    }
+
+
+@pytest.mark.parametrize(
+    ("artifact_type", "expected_rebuilt", "expected_versions"),
+    (
+        (
+            "teaching_progression",
+            [
+                "teaching_designer",
+                "interaction_designer",
+                "script_teacher",
+                "classroom_director",
+                "student_simulator",
+            ],
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_progression": 2,
+                "interaction_plan": 2,
+                "teaching_script": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+        (
+            "interaction_plan",
+            [
+                "interaction_designer",
+                "script_teacher",
+                "classroom_director",
+                "student_simulator",
+            ],
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_progression": 1,
+                "interaction_plan": 2,
+                "teaching_script": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+        (
+            "teaching_script",
+            ["script_teacher", "classroom_director", "student_simulator"],
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_progression": 1,
+                "interaction_plan": 1,
+                "teaching_script": 2,
+                "performance_score": 2,
+                "simulation_report": 2,
+            },
+        ),
+    ),
+)
+def test_repair_rebuilds_exact_seven_artifact_dependency_suffix(
+    artifact_type,
+    expected_rebuilt,
+    expected_versions,
+):
+    interaction = {
+        "interactions": [downstream_planned_interaction()],
+        "transfer_item": downstream_transfer_payload(),
+    }
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [trace_payload()],
+            "teaching_designer": [
+                trajectory_payload(),
+                teaching_progression_payload(),
+                *(
+                    [teaching_progression_payload()]
+                    if artifact_type == "teaching_progression"
+                    else []
+                ),
+            ],
+            "interaction_designer": [
+                interaction,
+                *([interaction] if artifact_type != "teaching_script" else []),
+            ],
+            "script_teacher": [
+                downstream_script_payload(),
+                downstream_script_payload(),
+            ],
+            "classroom_director": [
+                downstream_score_payload(),
+                downstream_score_payload(),
+            ],
+            "student_simulator": [
+                downstream_simulation_payload(),
+                downstream_simulation_payload(),
+            ],
+            "lesson_reviewer": [
+                dependency_review_payload(artifact_type),
+                downstream_review_payload(),
+            ],
+        }
+    )
+
+    run = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    roles = [call.role for call in fake.calls]
+    reviewer_index = roles.index("lesson_reviewer")
+    assert roles[reviewer_index + 1 : -1] == expected_rebuilt
+    assert run.audit.active_versions == expected_versions
+    assert [
+        item.artifact_type
+        for item in run.audit.history[-len(expected_rebuilt) :]
+    ] == [
+        {
+            "teaching_designer": "teaching_progression",
+            "interaction_designer": "interaction_plan",
+            "script_teacher": "teaching_script",
+            "classroom_director": "performance_score",
+            "student_simulator": "simulation_report",
+        }[role]
+        for role in expected_rebuilt
+    ]
 
 
 def run_early(pipeline, on_stage=None):
@@ -489,7 +714,7 @@ def test_public_prepare_returns_only_an_approved_complete_prepared_lesson():
 
 def test_pipeline_clears_retained_artifacts_on_finding_free_approval():
     review = downstream_review_payload()
-    review["retained_artifacts"] = list(REVIEW_ARTIFACT_ORDER)
+    review["retained_artifacts"] = list(REVIEW_ARTIFACT_ORDER[:-1])
 
     result = asyncio.run(
         LessonPreparationPipeline(client(reviews=[review])).prepare(
@@ -503,8 +728,10 @@ def test_pipeline_clears_retained_artifacts_on_finding_free_approval():
     assert len(result.simulation_report.episode_results) == 5
 
 
-def test_script_interaction_and_performance_stages_run_in_dependency_order():
-    fake = client()
+def test_interaction_before_final_script_progression_runs_in_dependency_order():
+    fake = client(
+        trajectories=[trajectory_payload(), teaching_progression_payload()]
+    )
     stages = []
 
     asyncio.run(
@@ -516,8 +743,9 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
         "teaching_designer",
-        "script_teacher",
+        "teaching_designer",
         "interaction_designer",
+        "script_teacher",
         "classroom_director",
         "student_simulator",
         "lesson_reviewer",
@@ -525,11 +753,21 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
     assert stages == [
         "整理参考解析",
         "设计解题思维轨迹",
-        "编写讲稿",
+        "设计教学推进",
         "设计互动",
+        "编写讲稿",
         "编排板书与高亮",
         "模拟学生并审核课程",
     ]
+    run = asyncio.run(
+        LessonPreparationPipeline(
+            client(
+                trajectories=[trajectory_payload(), teaching_progression_payload()]
+            )
+        ).prepare_with_audit(problem(), route(), focus_targets())
+    )
+    assert type(run.prepared_lesson.teaching_progression) is TeachingProgression
+    assert run.prepared_lesson.teaching_progression.steps
 
 
 @pytest.mark.parametrize(
@@ -540,6 +778,7 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
             {
                 "solution_trace": 2,
                 "reasoning_trajectory": 2,
+                "teaching_progression": 2,
                 "teaching_script": 2,
                 "interaction_plan": 2,
                 "performance_score": 2,
@@ -551,6 +790,7 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
             {
                 "solution_trace": 1,
                 "reasoning_trajectory": 2,
+                "teaching_progression": 2,
                 "teaching_script": 2,
                 "interaction_plan": 2,
                 "performance_score": 2,
@@ -562,8 +802,9 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
             {
                 "solution_trace": 1,
                 "reasoning_trajectory": 1,
+                "teaching_progression": 1,
                 "teaching_script": 2,
-                "interaction_plan": 2,
+                "interaction_plan": 1,
                 "performance_score": 2,
                 "simulation_report": 2,
             },
@@ -573,7 +814,8 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
             {
                 "solution_trace": 1,
                 "reasoning_trajectory": 1,
-                "teaching_script": 1,
+                "teaching_progression": 1,
+                "teaching_script": 2,
                 "interaction_plan": 2,
                 "performance_score": 2,
                 "simulation_report": 2,
@@ -584,6 +826,7 @@ def test_script_interaction_and_performance_stages_run_in_dependency_order():
             {
                 "solution_trace": 1,
                 "reasoning_trajectory": 1,
+                "teaching_progression": 1,
                 "teaching_script": 1,
                 "interaction_plan": 1,
                 "performance_score": 2,
@@ -632,14 +875,17 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
     assert [call.role for call in fake.calls].count("student_simulator") == 2
     assert [call.role for call in fake.calls].count("lesson_reviewer") == 2
     repair_call = [
-        call for call in fake.calls if call.role == responsible_role
-    ][1]
+        call
+        for call in fake.calls
+        if call.role == responsible_role and "repair_request" in call.user
+    ][0]
     repair = prompt_payload(repair_call)["repair_request"]
     artifact_order = [
         "solution_trace",
         "reasoning_trajectory",
-        "teaching_script",
+        "teaching_progression",
         "interaction_plan",
+        "teaching_script",
         "performance_score",
     ]
     assert set(repair["retained_artifacts"]) == set(
@@ -649,7 +895,7 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
     repaired_revision = next(
         revision
         for revision in reversed(run.audit.history)
-        if revision.responsible_role == responsible_role
+        if revision.finding_ids
     )
     assert repaired_revision.finding_ids == [finding["finding_id"]]
 
@@ -686,9 +932,10 @@ def test_repair_prompt_contains_current_and_upstream_but_no_downstream_artifacts
     assert set(repair["retained_artifacts"]) == {
         "solution_trace",
         "reasoning_trajectory",
+        "teaching_progression",
+        "interaction_plan",
         "teaching_script",
     }
-    assert "interaction_plan" not in repair_call.user
     assert "performance_score" not in repair_call.user
     repaired_call_record = [
         call for call in run.audit.role_calls if call.role == "script_teacher"
@@ -696,7 +943,8 @@ def test_repair_prompt_contains_current_and_upstream_but_no_downstream_artifacts
     assert repaired_call_record.input_artifact_versions == {
         "solution_trace": 1,
         "reasoning_trajectory": 1,
-        "teaching_script": 1,
+        "teaching_progression": 1,
+        "interaction_plan": 1,
     }
 
 
@@ -741,6 +989,7 @@ def test_mid_repair_failure_keeps_issued_history_but_clears_inactive_downstream(
     assert captured.value.audit.versions == {
         "solution_trace": 2,
         "reasoning_trajectory": 1,
+        "teaching_progression": 1,
         "teaching_script": 1,
         "interaction_plan": 1,
         "performance_score": 1,
@@ -883,8 +1132,9 @@ def test_every_repair_rebuild_boundary_preserves_truthful_active_versions(
     dependency_order = [
         "solution_trace",
         "reasoning_trajectory",
-        "teaching_script",
+        "teaching_progression",
         "interaction_plan",
+        "teaching_script",
         "performance_score",
         "simulation_report",
     ]
@@ -902,8 +1152,6 @@ def test_every_repair_rebuild_boundary_preserves_truthful_active_versions(
     for index, artifact_type in enumerate(dependency_order):
         if index < boundary or failure_role == "lesson_reviewer":
             expected_active[artifact_type] = 2
-    if failure_role == "reference_analyst":
-        expected_active = {"solution_trace": 1}
     assert captured.value.audit.active_versions == expected_active
     assert set(captured.value.audit.versions) == set(dependency_order)
 
@@ -942,10 +1190,10 @@ def test_simulation_and_review_prompt_size_failures_are_safe_and_audited(
 def test_repair_projection_limit_failure_is_safe_and_audited(monkeypatch):
     original = preparation_pipeline.teaching_script_prompt
 
-    def bounded_repair_prompt(trajectory, repair=None):
+    def bounded_repair_prompt(progression, interaction_plan, repair=None):
         if repair is not None:
             raise ValueError("repair_request_evidence_text_limit")
-        return original(trajectory, repair=repair)
+        return original(progression, interaction_plan, repair=repair)
 
     monkeypatch.setattr(
         preparation_pipeline,
@@ -972,7 +1220,8 @@ def test_repair_projection_limit_failure_is_safe_and_audited(monkeypatch):
     assert captured.value.audit.active_versions == {
         "solution_trace": 1,
         "reasoning_trajectory": 1,
-        "teaching_script": 1,
+        "teaching_progression": 1,
+        "interaction_plan": 1,
     }
 
 
@@ -1119,8 +1368,9 @@ def test_three_repairs_can_converge_without_fixed_two_round_acceptance():
     assert stages == [
         "整理参考解析",
         "设计解题思维轨迹",
-        "编写讲稿",
+        "设计教学推进",
         "设计互动",
+        "编写讲稿",
         "编排板书与高亮",
         "模拟学生并审核课程",
         "正在修订完整讲解",
@@ -1186,7 +1436,11 @@ def test_reference_analyst_typed_repair_changes_downstream_projection():
     designer_calls = [
         item for item in fake.calls if item.role == "teaching_designer"
     ]
-    repaired_prompt = prompt_payload(designer_calls[1])
+    repaired_prompt = next(
+        prompt_payload(call)
+        for call in designer_calls[2:]
+        if "solution_trace" in prompt_payload(call)
+    )
     projected_step = repaired_prompt["solution_trace"]["source_steps"][0]
     assert projected_step["operation_kind"] == "substitute"
     assert projected_step["mathematical_action"] == "代入已知数学量：x=2n"
@@ -1303,7 +1557,7 @@ def test_unknown_repair_role_is_rejected_before_state_mutation():
     context_type = preparation_pipeline.PreparationContext
     context = context_type(problem(), route(), focus_targets(), None)
 
-    with pytest.raises(RuntimeError, match="unknown responsible role"):
+    with pytest.raises(RuntimeError, match="unknown repair artifact"):
         asyncio.run(pipeline._repair_from("unknown", state, [], context))
 
     assert state.__dict__ == before
@@ -1326,7 +1580,7 @@ def test_oversized_valid_upstream_prompt_fails_safely_with_current_audit():
 
     failure = captured.value
     assert failure.category == "prompt_payload_too_large"
-    assert failure.role == "script_teacher"
+    assert failure.role == "teaching_designer"
     assert failure.detail == "备课内容超出可处理范围。"
     assert private_marker not in failure.detail
     assert [call.role for call in fake.calls] == [
@@ -1341,7 +1595,7 @@ def test_oversized_valid_upstream_prompt_fails_safely_with_current_audit():
     assert [call.role for call in failure.audit.role_calls] == [
         "reference_analyst",
         "teaching_designer",
-        "script_teacher",
+        "teaching_designer",
     ]
     assert failure.audit.role_calls[-1].failure_category == (
         "prompt_payload_too_large"
@@ -1361,7 +1615,7 @@ def test_zero_interactions_and_cues_without_highlights_are_accepted():
     )
 
     assert [call.role for call in fake.calls][-4:] == [
-        "interaction_designer",
+        "script_teacher",
         "classroom_director",
         "student_simulator",
         "lesson_reviewer",
@@ -1389,6 +1643,8 @@ def test_script_dependency_reordering_fails_without_structure_retry():
     assert captured.value.audit.versions == {
         "solution_trace": 1,
         "reasoning_trajectory": 1,
+        "teaching_progression": 1,
+        "interaction_plan": 1,
     }
 
 
@@ -1902,7 +2158,7 @@ def test_reference_only_literal_in_trajectory_is_rejected_before_script():
     ]
 
 
-def test_reference_only_literal_in_script_is_rejected_before_interaction():
+def test_reference_only_literal_in_script_is_rejected_after_private_planning():
     script = downstream_script_payload()
     script["title"] += " " + RAW_REFERENCE_MARKER
     fake = client(script=script)
@@ -1919,6 +2175,8 @@ def test_reference_only_literal_in_script_is_rejected_before_interaction():
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
         "teaching_designer",
+        "teaching_designer",
+        "interaction_designer",
         "script_teacher",
     ]
 
@@ -1973,22 +2231,25 @@ def test_every_preparation_role_receives_its_exact_output_schema():
         )
     )
 
-    required_property_by_role = {
-        "reference_analyst": "source_steps",
-        "teaching_designer": "episodes",
-        "script_teacher": "clauses",
-        "interaction_designer": "interactions",
-        "classroom_director": "cues",
-        "student_simulator": "episode_results",
-        "lesson_reviewer": "status",
-    }
-    assert [call.role for call in fake.calls] == list(required_property_by_role)
-    for call in fake.calls:
+    required_calls = [
+        ("reference_analyst", "source_steps"),
+        ("teaching_designer", "episodes"),
+        ("teaching_designer", "steps"),
+        ("interaction_designer", "interactions"),
+        ("script_teacher", "clauses"),
+        ("classroom_director", "cues"),
+        ("student_simulator", "episode_results"),
+        ("lesson_reviewer", "status"),
+    ]
+    assert [call.role for call in fake.calls] == [
+        role for role, _ in required_calls
+    ]
+    for call, (_, required_property) in zip(fake.calls, required_calls):
         schema_text = call.user.split("<OUTPUT_JSON_SCHEMA>\n", 1)[1].split(
             "\n</OUTPUT_JSON_SCHEMA>", 1
         )[0]
         schema = json.loads(schema_text)
-        assert required_property_by_role[call.role] in schema["properties"]
+        assert required_property in schema["properties"]
 
 
 def test_structure_retry_keeps_schema_without_echoing_invalid_output():
@@ -2691,8 +2952,12 @@ def test_real_full_state_machine_reverses_concurrent_runs_without_state_leakage(
                 payload = trace_payload()
                 payload["audit_notes"] = [marker]
             elif role == "teaching_designer":
-                payload = trajectory_payload()
-                payload["lesson_purpose"] += " " + marker
+                if "Schema TeachingProgression" in system:
+                    payload = teaching_progression_payload()
+                    payload["steps"][0]["why_now"] += " " + marker
+                else:
+                    payload = trajectory_payload()
+                    payload["lesson_purpose"] += " " + marker
             elif role == "script_teacher":
                 payload = downstream_script_payload()
                 payload["title"] += " " + marker

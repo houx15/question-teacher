@@ -39,6 +39,7 @@ from app.preparation_models import (
     RoleCallRecord,
     SimulationReport,
     SolutionTrace,
+    TeachingProgression,
     TeachingScript,
 )
 from app.preparation_prompts import (
@@ -49,12 +50,14 @@ from app.preparation_prompts import (
     SOLUTION_TRACE_SYSTEM,
     STUDENT_SIMULATOR_SYSTEM,
     TEACHING_DESIGNER_SYSTEM,
+    TEACHING_PROGRESSION_SYSTEM,
     interaction_plan_prompt,
     performance_score_prompt,
     reasoning_trajectory_prompt,
     lesson_review_prompt,
     solution_trace_prompt,
     student_simulation_prompt,
+    teaching_progression_prompt,
     teaching_script_prompt,
     with_output_schema,
 )
@@ -103,9 +106,27 @@ DEFAULT_PREPARATION_CAPABILITIES = {
 ROLE_ORDER = {
     "reference_analyst": 0,
     "teaching_designer": 1,
-    "script_teacher": 2,
-    "interaction_designer": 3,
+    "interaction_designer": 2,
+    "script_teacher": 3,
     "classroom_director": 4,
+}
+ARTIFACT_DEPENDENCY_ORDER = (
+    "solution_trace",
+    "reasoning_trajectory",
+    "teaching_progression",
+    "interaction_plan",
+    "teaching_script",
+    "performance_score",
+    "simulation_report",
+)
+ARTIFACT_RESPONSIBLE_ROLE = {
+    "solution_trace": "reference_analyst",
+    "reasoning_trajectory": "teaching_designer",
+    "teaching_progression": "teaching_designer",
+    "interaction_plan": "interaction_designer",
+    "teaching_script": "script_teacher",
+    "performance_score": "classroom_director",
+    "simulation_report": "student_simulator",
 }
 
 
@@ -189,6 +210,11 @@ def _normalize_script_section_metadata(
 def earliest_responsible_role(
     findings: List[ReviewFinding],
 ) -> ResponsibleRole:
+    artifact_type = earliest_repair_artifact(findings)
+    return ARTIFACT_RESPONSIBLE_ROLE[artifact_type]
+
+
+def earliest_repair_artifact(findings: List[ReviewFinding]) -> str:
     material = [
         finding for finding in findings if finding.severity != "polish"
     ]
@@ -196,8 +222,10 @@ def earliest_responsible_role(
         raise RuntimeError("no material review finding to route")
     return min(
         material,
-        key=lambda finding: ROLE_ORDER[finding.responsible_role],
-    ).responsible_role
+        key=lambda finding: ARTIFACT_DEPENDENCY_ORDER.index(
+            finding.artifact_type
+        ),
+    ).artifact_type
 
 
 class PreparationFailure(RuntimeError):
@@ -219,6 +247,7 @@ class PreparationState:
     reference_safety: Optional[ReferenceSafetyPolicy] = None
     solution_trace: Optional[SolutionTrace] = None
     reasoning_trajectory: Optional[ReasoningTrajectory] = None
+    teaching_progression: Optional[TeachingProgression] = None
     teaching_script: Optional[TeachingScript] = None
     interaction_plan: Optional[InteractionPlan] = None
     performance_score: Optional[PerformanceScore] = None
@@ -504,8 +533,13 @@ class LessonPreparationPipeline:
             problem_focus_targets=list(problem_focus_targets),
             on_stage=on_stage,
         )
-        await self._create_teaching_script(state, on_stage)
+        await self._create_teaching_progression(
+            state,
+            problem_focus_targets,
+            on_stage,
+        )
         await self._create_interaction_plan(state, on_stage)
+        await self._create_teaching_script(state, on_stage)
         await self._create_performance_score(
             state,
             problem_focus_targets,
@@ -536,9 +570,9 @@ class LessonPreparationPipeline:
             if repair_count >= self.MAX_REPAIR_CYCLES:
                 self._raise_not_converged()
             previous_signature = signature
-            role = earliest_responsible_role(state.review.findings)
+            artifact_type = earliest_repair_artifact(state.review.findings)
             await self._repair_from(
-                role,
+                artifact_type,
                 state,
                 state.review.findings,
                 context,
@@ -553,8 +587,9 @@ class LessonPreparationPipeline:
         expected_active = {
             "solution_trace",
             "reasoning_trajectory",
-            "teaching_script",
+            "teaching_progression",
             "interaction_plan",
+            "teaching_script",
             "performance_score",
             "simulation_report",
         }
@@ -569,8 +604,9 @@ class LessonPreparationPipeline:
         required = (
             state.solution_trace,
             state.reasoning_trajectory,
-            state.teaching_script,
+            state.teaching_progression,
             state.interaction_plan,
+            state.teaching_script,
             state.performance_score,
             state.simulation_report,
         )
@@ -580,6 +616,7 @@ class LessonPreparationPipeline:
             rubric_version=PEDAGOGY_RUBRIC_VERSION,
             solution_trace=state.solution_trace,
             reasoning_trajectory=state.reasoning_trajectory,
+            teaching_progression=state.teaching_progression,
             teaching_script=state.teaching_script,
             interaction_plan=state.interaction_plan,
             performance_score=state.performance_score,
@@ -732,6 +769,42 @@ class LessonPreparationPipeline:
         )
         return trajectory
 
+    async def _create_teaching_progression(
+        self,
+        state: PreparationState,
+        problem_focus_targets: List[ProblemFocusTarget],
+        on_stage: Optional[StageCallback],
+        repair: Optional[Dict[str, object]] = None,
+        finding_ids: Optional[List[str]] = None,
+    ) -> TeachingProgression:
+        self._require_active_state(state)
+        if state.reasoning_trajectory is None:
+            raise RuntimeError(
+                "reasoning trajectory must exist before progression design"
+            )
+        await self._emit(on_stage, "设计教学推进")
+        progression = await self._complete_model(
+            "teaching_designer",
+            TEACHING_PROGRESSION_SYSTEM,
+            self._build_prompt(
+                state,
+                "teaching_designer",
+                teaching_progression_prompt,
+                state.reasoning_trajectory,
+                problem_focus_targets,
+                repair,
+            ),
+            TeachingProgression,
+        )
+        self._accept_artifact(
+            state,
+            artifact_type="teaching_progression",
+            responsible_role="teaching_designer",
+            artifact=progression,
+            finding_ids=finding_ids,
+        )
+        return progression
+
     async def _create_teaching_script(
         self,
         state: PreparationState,
@@ -740,9 +813,13 @@ class LessonPreparationPipeline:
         finding_ids: Optional[List[str]] = None,
     ) -> TeachingScript:
         self._require_active_state(state)
-        if state.reasoning_trajectory is None:
+        if (
+            state.reasoning_trajectory is None
+            or state.teaching_progression is None
+            or state.interaction_plan is None
+        ):
             raise RuntimeError(
-                "reasoning trajectory must exist before script writing"
+                "progression and interaction plan must exist before script writing"
             )
         await self._emit(on_stage, "编写讲稿")
         script = await self._complete_model(
@@ -752,7 +829,8 @@ class LessonPreparationPipeline:
                 state,
                 "script_teacher",
                 teaching_script_prompt,
-                state.reasoning_trajectory,
+                state.teaching_progression,
+                state.interaction_plan,
                 repair,
             ),
             TeachingScript,
@@ -773,6 +851,30 @@ class LessonPreparationPipeline:
                 role="script_teacher",
                 detail="讲稿未通过确定性校验。",
             ) from None
+        normalized_plan = normalize_interaction_control_metadata(
+            state.interaction_plan,
+            state.reasoning_trajectory,
+            script,
+        )
+        try:
+            validate_interaction_plan(
+                normalized_plan,
+                state.reasoning_trajectory,
+                script,
+            )
+        except PreparationValidationError:
+            self._reject_accepted_artifact(
+                state,
+                "interaction_plan",
+                "interaction_designer",
+                "interaction_plan_failed",
+            )
+            raise PreparationFailure(
+                category="interaction_plan_failed",
+                role="interaction_designer",
+                detail="互动方案未通过确定性校验。",
+            ) from None
+        state.interaction_plan = normalized_plan
         self._accept_artifact(
             state,
             artifact_type="teaching_script",
@@ -790,17 +892,16 @@ class LessonPreparationPipeline:
         finding_ids: Optional[List[str]] = None,
     ) -> InteractionPlan:
         self._require_active_state(state)
-        if state.reasoning_trajectory is None or state.teaching_script is None:
+        if state.teaching_progression is None:
             raise RuntimeError(
-                "trajectory and script must exist before interaction design"
+                "teaching progression must exist before interaction design"
             )
         await self._emit(on_stage, "设计互动")
         prompt = self._build_prompt(
             state,
             "interaction_designer",
             interaction_plan_prompt,
-            state.reasoning_trajectory,
-            state.teaching_script,
+            state.teaching_progression,
             repair,
         )
         plan = await self._complete_model(
@@ -809,28 +910,6 @@ class LessonPreparationPipeline:
             prompt,
             InteractionPlan,
         )
-        plan = normalize_interaction_control_metadata(
-            plan,
-            state.reasoning_trajectory,
-            state.teaching_script,
-        )
-        try:
-            validate_interaction_plan(
-                plan,
-                state.reasoning_trajectory,
-                state.teaching_script,
-            )
-        except PreparationValidationError:
-            self._mark_last_call_failed(
-                state,
-                "interaction_designer",
-                "interaction_plan_failed",
-            )
-            raise PreparationFailure(
-                category="interaction_plan_failed",
-                role="interaction_designer",
-                detail="互动方案未通过确定性校验。",
-            ) from None
         self._accept_artifact(
             state,
             artifact_type="interaction_plan",
@@ -988,6 +1067,7 @@ class LessonPreparationPipeline:
             for item in (
                 state.solution_trace,
                 state.reasoning_trajectory,
+                state.teaching_progression,
                 state.teaching_script,
                 state.interaction_plan,
                 state.performance_score,
@@ -1005,8 +1085,9 @@ class LessonPreparationPipeline:
                 {
                     "solution_trace": state.solution_trace,
                     "reasoning_trajectory": state.reasoning_trajectory,
-                    "teaching_script": state.teaching_script,
+                    "teaching_progression": state.teaching_progression,
                     "interaction_plan": state.interaction_plan,
+                    "teaching_script": state.teaching_script,
                     "performance_score": state.performance_score,
                 },
                 state.simulation_report,
@@ -1031,6 +1112,7 @@ class LessonPreparationPipeline:
                 state.interaction_plan,
                 state.performance_score,
                 state.simulation_report,
+                progression=state.teaching_progression,
             )
         except PreparationValidationError:
             self._mark_last_call_failed(
@@ -1049,36 +1131,34 @@ class LessonPreparationPipeline:
 
     async def _repair_from(
         self,
-        role: ResponsibleRole,
+        artifact_type: str,
         state: PreparationState,
         findings: List[ReviewFinding],
         context: PreparationContext,
     ) -> None:
-        if role not in ROLE_ORDER:
-            raise RuntimeError("unknown responsible role")
+        repairable = ARTIFACT_DEPENDENCY_ORDER[:-1]
+        if artifact_type not in repairable:
+            raise RuntimeError("unknown repair artifact")
         self._require_active_state(state)
         routed = [
             finding
             for finding in findings
             if finding.severity != "polish"
-            and finding.responsible_role == role
+            and finding.artifact_type == artifact_type
         ]
         if not routed:
             raise RuntimeError("repair route has no material finding")
         await self._emit(context.on_stage, "正在修订完整讲解")
-        repair = self._repair_request(role, state, routed)
+        repair = self._repair_request(artifact_type, state, routed)
         finding_ids = [item.finding_id for item in routed]
         state.review = None
-        self._deactivate_artifacts(state, "simulation_report")
+        start_index = ARTIFACT_DEPENDENCY_ORDER.index(artifact_type)
+        self._deactivate_artifacts(
+            state,
+            *ARTIFACT_DEPENDENCY_ORDER[start_index:],
+        )
 
-        if role == "reference_analyst":
-            self._deactivate_artifacts(
-                state,
-                "reasoning_trajectory",
-                "teaching_script",
-                "interaction_plan",
-                "performance_score",
-            )
+        if artifact_type == "solution_trace":
             await self._create_solution_trace(
                 state,
                 context.problem,
@@ -1091,20 +1171,19 @@ class LessonPreparationPipeline:
             await self._create_reasoning_trajectory(
                 state, context.problem, context.on_stage
             )
-            await self._create_teaching_script(state, context.on_stage)
+            await self._create_teaching_progression(
+                state,
+                context.problem_focus_targets,
+                context.on_stage,
+            )
             await self._create_interaction_plan(state, context.on_stage)
+            await self._create_teaching_script(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
                 context.on_stage,
             )
-        elif role == "teaching_designer":
-            self._deactivate_artifacts(
-                state,
-                "teaching_script",
-                "interaction_plan",
-                "performance_score",
-            )
+        elif artifact_type == "reasoning_trajectory":
             await self._create_reasoning_trajectory(
                 state,
                 context.problem,
@@ -1112,45 +1191,59 @@ class LessonPreparationPipeline:
                 repair,
                 finding_ids,
             )
-            await self._create_teaching_script(state, context.on_stage)
+            await self._create_teaching_progression(
+                state,
+                context.problem_focus_targets,
+                context.on_stage,
+            )
             await self._create_interaction_plan(state, context.on_stage)
+            await self._create_teaching_script(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
                 context.on_stage,
             )
-        elif role == "script_teacher":
-            self._deactivate_artifacts(
+        elif artifact_type == "teaching_progression":
+            await self._create_teaching_progression(
                 state,
-                "interaction_plan",
-                "performance_score",
-            )
-            await self._create_teaching_script(
-                state,
+                context.problem_focus_targets,
                 context.on_stage,
                 repair,
                 finding_ids,
             )
             await self._create_interaction_plan(state, context.on_stage)
+            await self._create_teaching_script(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
                 context.on_stage,
             )
-        elif role == "interaction_designer":
-            self._deactivate_artifacts(state, "performance_score")
+        elif artifact_type == "interaction_plan":
             await self._create_interaction_plan(
                 state,
                 context.on_stage,
                 repair,
                 finding_ids,
             )
+            await self._create_teaching_script(state, context.on_stage)
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
                 context.on_stage,
             )
-        elif role == "classroom_director":
+        elif artifact_type == "teaching_script":
+            await self._create_teaching_script(
+                state,
+                context.on_stage,
+                repair,
+                finding_ids,
+            )
+            await self._create_performance_score(
+                state,
+                context.problem_focus_targets,
+                context.on_stage,
+            )
+        elif artifact_type == "performance_score":
             await self._create_performance_score(
                 state,
                 context.problem_focus_targets,
@@ -1170,32 +1263,25 @@ class LessonPreparationPipeline:
 
     @staticmethod
     def _repair_request(
-        role: ResponsibleRole,
+        artifact_type: str,
         state: PreparationState,
         findings: List[ReviewFinding],
     ) -> Dict[str, object]:
-        artifact_types = [
-            "solution_trace",
-            "reasoning_trajectory",
-            "teaching_script",
-            "interaction_plan",
-            "performance_score",
-        ]
-        role_index = ROLE_ORDER[role]
-        responsible_type = artifact_types[role_index]
+        artifact_types = list(ARTIFACT_DEPENDENCY_ORDER[:-1])
+        artifact_index = artifact_types.index(artifact_type)
         retained = {}
-        for artifact_type in artifact_types[: role_index + 1]:
-            artifact = getattr(state, artifact_type)
+        for retained_type in artifact_types[: artifact_index + 1]:
+            artifact = getattr(state, retained_type)
             if artifact is None:
                 raise RuntimeError("repair source artifact is missing")
-            retained[artifact_type] = artifact
+            retained[retained_type] = artifact
         return {
             "finding_ids": [item.finding_id for item in findings],
             "evidence": [item.evidence for item in findings],
             "requested_changes": [
                 item.requested_change for item in findings
             ],
-            "current_artifact_version": state.versions[responsible_type],
+            "current_artifact_version": state.versions[artifact_type],
             "retained_artifacts": retained,
         }
 
@@ -1379,6 +1465,7 @@ class LessonPreparationPipeline:
         if artifact_type not in {
             "solution_trace",
             "reasoning_trajectory",
+            "teaching_progression",
             "teaching_script",
             "interaction_plan",
             "performance_score",
@@ -1488,6 +1575,49 @@ class LessonPreparationPipeline:
         role_calls = list(state.role_calls)
         role_calls[-1] = updated_record
         state.role_calls = role_calls
+
+    @staticmethod
+    def _reject_accepted_artifact(
+        state: PreparationState,
+        artifact_type: str,
+        role: str,
+        category: str,
+    ) -> None:
+        current_version = state.active_versions.get(artifact_type)
+        if current_version is None:
+            raise RuntimeError("rejected artifact is not active")
+        matching = [
+            index
+            for index, record in enumerate(state.role_calls)
+            if record.role == role
+            and record.output_artifact_type == artifact_type
+            and record.output_artifact_version == current_version
+        ]
+        if not matching:
+            raise RuntimeError("rejected artifact has no model call record")
+        record_index = matching[-1]
+        payload = state.role_calls[record_index].model_dump(mode="python")
+        payload.update(
+            output_artifact_type=None,
+            output_artifact_version=None,
+            failure_category=category,
+        )
+        state.role_calls[record_index] = RoleCallRecord.model_validate(payload)
+        state.history = [
+            item
+            for item in state.history
+            if not (
+                item.artifact_type == artifact_type
+                and item.version == current_version
+            )
+        ]
+        previous_version = current_version - 1
+        if previous_version:
+            state.versions[artifact_type] = previous_version
+        else:
+            state.versions.pop(artifact_type, None)
+        state.active_versions.pop(artifact_type, None)
+        setattr(state, artifact_type, None)
 
     @staticmethod
     def _append_call_record(
