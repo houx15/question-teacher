@@ -43,6 +43,29 @@ def test_display_math_to_spoken_supports_approved_functions_and_operators(displa
     assert display_math_to_spoken(display) == spoken
 
 
+@pytest.mark.parametrize(
+    ("display", "spoken"),
+    (
+        (r"$x^{2}$", "x的平方"),
+        ("$x²$", "x的平方"),
+        ("$x³$", "x的立方"),
+        ("$x−1=0$", "x 减 一等于零"),
+    ),
+)
+def test_display_math_to_spoken_supports_standard_strict_display_forms(
+    display,
+    spoken,
+):
+    assert display_math_to_spoken(display) == spoken
+
+
+@pytest.mark.parametrize("display", (r"$x^{4}$", r"$x^{23}$", "$x⁴$"))
+def test_display_math_to_spoken_rejects_unsupported_exponents(display):
+    with pytest.raises(MathSpeechError) as captured:
+        display_math_to_spoken(display)
+    assert captured.value.code == "unsupported_math_speech"
+
+
 def test_extract_display_math_supports_only_balanced_supported_delimiters():
     assert extract_display_math(r"由 $m-n$ 且 \(n\ne0\) 得 \[m-n=\frac{1}{2}\]") == [
         "m-n",

@@ -1189,6 +1189,47 @@ def test_incorrect_response_accepts_contained_anchor_when_repeated_separately():
     )
 
 
+def test_incorrect_response_deduplicates_identical_fused_display_and_spoken_units():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "目标关系",
+        "关系错误",
+        "目标关系错误",
+    )
+    script["response_scripts"][1]["clauses"][0][
+        "display_text"
+    ] = "目标关系错误"
+
+    assert_code(
+        "response_semantic_anchor_missing",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(script),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan),
+        ),
+    )
+
+
+def test_incorrect_response_accepts_reason_and_correction_in_distinct_units():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "回到目标关系",
+        "需要回到目标关系重新检查。",
+    )
+    script["response_scripts"][1]["clauses"][0][
+        "display_text"
+    ] = "这个选择偏离目标"
+
+    validate_teaching_script(
+        TeachingScript.model_validate(script),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan),
+    )
+
+
 def test_current_interaction_requires_misconception_on_every_wrong_option():
     _, trajectory, _, *_ = models()
     script = TeachingScript.model_validate(semantically_anchored_script_payload())
@@ -1320,6 +1361,55 @@ def test_incorrect_response_rejects_compact_or_spoken_canonical_equivalents(
     )
 
 
+@pytest.mark.parametrize(
+    ("canonical_answer", "spoken_leak"),
+    (
+        ("1/2", "二分之一"),
+        ("p-q=1/2", "p 减 q 等于二分之一"),
+    ),
+)
+def test_incorrect_response_rejects_slash_fraction_spoken_canonical_leakage(
+    canonical_answer,
+    spoken_leak,
+):
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "目标只是关系",
+        "这个选择偏离目标，目标只是关系，%s。" % spoken_leak,
+    )
+    plan["interactions"][0]["options"][1][
+        "canonical_answer"
+    ] = canonical_answer
+
+    assert_code(
+        "response_private_answer_leakage",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(script),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan),
+        ),
+    )
+
+
+def test_slash_fraction_spoken_canonical_fails_closed_for_zero_denominator():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "目标只是关系",
+        "这个选择偏离目标，目标只是关系，不能说零分之一。",
+    )
+    plan["interactions"][0]["options"][1]["canonical_answer"] = "1/0"
+
+    validate_teaching_script(
+        TeachingScript.model_validate(script),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan),
+    )
+
+
 def test_incorrect_response_does_not_treat_x1_as_spoken_prefix_of_x10():
     _, trajectory, _, *_ = models()
     payload = semantically_anchored_script_payload()
@@ -1334,6 +1424,47 @@ def test_incorrect_response_does_not_treat_x1_as_spoken_prefix_of_x10():
         trajectory,
         TeachingProgression.model_validate(progression_payload()),
         InteractionPlan.model_validate(plan_payload),
+    )
+
+
+def test_incorrect_response_allows_canonical_already_public_in_option_display():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "回到目标关系",
+        "这个选择偏离目标，需要回到目标关系。",
+    )
+    option = plan["interactions"][0]["options"][1]
+    option["display_text"] = "偏离目标"
+    option["canonical_answer"] = "偏离目标"
+
+    validate_teaching_script(
+        TeachingScript.model_validate(script),
+        trajectory,
+        TeachingProgression.model_validate(progression_payload()),
+        InteractionPlan.model_validate(plan),
+    )
+
+
+def test_incorrect_response_still_rejects_opaque_canonical_not_public_in_display():
+    _, trajectory, _, *_ = models()
+    script, plan = response_anchor_case(
+        "偏离目标",
+        "回到目标关系",
+        "这个选择偏离目标，需要回到目标关系，不能暴露 opaque-route。",
+    )
+    option = plan["interactions"][0]["options"][1]
+    option["display_text"] = "偏离目标"
+    option["canonical_answer"] = "opaque-route"
+
+    assert_code(
+        "response_private_answer_leakage",
+        lambda: validate_teaching_script(
+            TeachingScript.model_validate(script),
+            trajectory,
+            TeachingProgression.model_validate(progression_payload()),
+            InteractionPlan.model_validate(plan),
+        ),
     )
 
 
@@ -2332,6 +2463,28 @@ def test_review_requires_each_finding_to_cite_an_existing_artifact_id():
         lambda: validate_review_decision(
             decision, trace, trajectory, script, plan, score, report
         ),
+    )
+
+
+@pytest.mark.parametrize(
+    "artifact_id",
+    ("response-option-b", "response-clause-option-b"),
+)
+def test_review_can_cite_response_and_response_clause_ids(artifact_id):
+    trace, trajectory, script, plan, score, report, _ = models()
+    payload = review_payload()
+    payload["findings"][0]["artifact_id"] = artifact_id
+    decision = LessonReviewDecision.model_validate(payload)
+
+    validate_review_decision(
+        decision,
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+        progression=TeachingProgression.model_validate(progression_payload()),
     )
 
 

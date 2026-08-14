@@ -20,6 +20,7 @@ from app.math_content import (
     normalize_grounded_choice_option_label,
     normalize_cross_artifact_math_identity,
 )
+from app.math_expression import MAX_STRICT_MATH_EXPRESSION_LENGTH
 from app.math_speech import (
     MathSpeechError,
     contains_deterministic_math_speech,
@@ -526,10 +527,54 @@ def _contains_private_canonical_answer(
         compact_canonical,
     ):
         return True
-    return contains_deterministic_math_speech(
+    if contains_deterministic_math_speech(
         canonical_answer,
         visible,
+    ):
+        return True
+    fraction_form = _slash_fractions_to_latex(canonical_answer)
+    return fraction_form is not None and contains_deterministic_math_speech(
+        fraction_form,
+        visible,
     )
+
+
+def _canonical_is_public(option: object) -> bool:
+    return normalize_grounded_choice_option_label(
+        option.canonical_answer
+    ) == normalize_grounded_choice_option_label(option.display_text)
+
+
+_SLASH_FRACTION_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_.])(\d+)/(\d+)(?![A-Za-z0-9_.])"
+)
+
+
+def _slash_fractions_to_latex(value: str) -> Optional[str]:
+    if len(value) > MAX_STRICT_MATH_EXPRESSION_LENGTH:
+        return None
+    pieces = []
+    cursor = 0
+    matched = False
+    for match in _SLASH_FRACTION_TOKEN.finditer(value):
+        denominator = match.group(2)
+        if not denominator.strip("0"):
+            return None
+        pieces.extend(
+            (
+                value[cursor : match.start()],
+                r"\frac{%s}{%s}" % (match.group(1), denominator),
+            )
+        )
+        cursor = match.end()
+        matched = True
+    if not matched:
+        return None
+    pieces.append(value[cursor:])
+    transformed = "".join(pieces)
+    if len(transformed) > MAX_STRICT_MATH_EXPRESSION_LENGTH:
+        return None
+    return transformed
 
 
 def _all_occurrence_intervals(
@@ -550,17 +595,54 @@ def _all_occurrence_intervals(
 
 
 def _has_non_overlapping_anchor_evidence(
-    visible: str,
+    unit: str,
     first_anchor: str,
     second_anchor: str,
 ) -> bool:
-    first = _all_occurrence_intervals(visible, first_anchor)
-    second = _all_occurrence_intervals(visible, second_anchor)
+    first = _all_occurrence_intervals(unit, first_anchor)
+    second = _all_occurrence_intervals(unit, second_anchor)
     if not first or not second:
         return False
     return (
         first[0][1] <= second[-1][0]
         or second[0][1] <= first[-1][0]
+    )
+
+
+def _response_evidence_units(response: object) -> List[str]:
+    units = []
+    seen = set()
+    for clause in response.clauses:
+        for value in (clause.display_text or "", clause.spoken_text):
+            normalized = normalize_answer_leak_text(value)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                units.append(normalized)
+    return units
+
+
+def _has_distinct_response_anchor_evidence(
+    units: Sequence[str],
+    first_anchor: str,
+    second_anchor: str,
+) -> bool:
+    first_units = set()
+    second_units = set()
+    for index, unit in enumerate(units):
+        if _has_non_overlapping_anchor_evidence(
+            unit,
+            first_anchor,
+            second_anchor,
+        ):
+            return True
+        if first_anchor in unit:
+            first_units.add(index)
+        if second_anchor in unit:
+            second_units.add(index)
+    return bool(
+        first_units
+        and second_units
+        and len(first_units | second_units) > 1
     )
 
 
@@ -675,7 +757,6 @@ def _validate_response_scripts(
                     "%s|%s" % (clause.display_text or "", clause.spoken_text)
                     for clause in response.clauses
                 )
-                normalized_visible = normalize_answer_leak_text(visible)
                 misconception_anchor = normalize_answer_leak_text(
                     option.misconception or ""
                 )
@@ -694,8 +775,8 @@ def _validate_response_scripts(
                         response.response_id,
                         "Incorrect response requires distinct reason and correction units.",
                     )
-                if not _has_non_overlapping_anchor_evidence(
-                    normalized_visible,
+                if not _has_distinct_response_anchor_evidence(
+                    _response_evidence_units(response),
                     misconception_anchor,
                     correction_anchor,
                 ):
@@ -705,9 +786,9 @@ def _validate_response_scripts(
                         "Incorrect response must directly express its misconception and correction anchors.",
                     )
                 if any(
-                    _contains_private_canonical_answer(
-                        visible,
-                        private_option.canonical_answer,
+                    not _canonical_is_public(private_option)
+                    and _contains_private_canonical_answer(
+                        visible, private_option.canonical_answer
                     )
                     for private_option in interaction.options
                 ):
@@ -1757,6 +1838,12 @@ def validate_review_decision(
         "teaching_script": {
             "teaching_script",
             *(item.clause_id for item in script.clauses),
+            *(item.response_id for item in script.response_scripts),
+            *(
+                clause.clause_id
+                for response in script.response_scripts
+                for clause in response.clauses
+            ),
         },
         "interaction_plan": {
             "interaction_plan",

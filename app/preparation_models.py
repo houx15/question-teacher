@@ -328,10 +328,18 @@ class TeachingScript(SchemaModel):
     @model_validator(mode="after")
     def validate_clause_sections(self) -> "TeachingScript":
         clause_ids = [item.clause_id for item in self.clauses]
+        response_ids = [item.response_id for item in self.response_scripts]
+        response_clause_ids = [
+            clause.clause_id
+            for response in self.response_scripts
+            for clause in response.clauses
+        ]
         _require_unique(clause_ids, "clause ids")
+        _require_unique(response_ids, "response ids")
+        _require_unique(response_clause_ids, "response clause ids")
         _require_unique(
-            [item.response_id for item in self.response_scripts],
-            "response ids",
+            clause_ids + response_ids + response_clause_ids,
+            "teaching script ids",
         )
         clause_positions = {
             clause_id: index for index, clause_id in enumerate(clause_ids)

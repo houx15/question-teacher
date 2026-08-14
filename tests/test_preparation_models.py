@@ -513,6 +513,59 @@ def test_teaching_script_rejects_duplicate_response_ids_across_distinct_bindings
         TeachingScript.model_validate(payload)
 
 
+def response_script_payload(response_id, clause_id, option_id):
+    clause = script_clause(clause_id)
+    clause.update(
+        lesson_step_id="teaching-step-1",
+        display_text="说明当前判断",
+    )
+    return {
+        "response_id": response_id,
+        "interaction_id": "interaction-1",
+        "option_id": option_id,
+        "classification": "incorrect",
+        "error_code": None,
+        "depth": "conceptual",
+        "clauses": [clause],
+    }
+
+
+def test_teaching_script_rejects_duplicate_response_clause_ids():
+    payload = teaching_script()
+    payload["response_scripts"] = [
+        response_script_payload("response-a", "response-clause", "option-a"),
+        response_script_payload("response-b", "response-clause", "option-b"),
+    ]
+
+    with pytest.raises(ValidationError, match="response clause ids"):
+        TeachingScript.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("response_id", "response_clause_id"),
+    (
+        ("open-1", "response-clause"),
+        ("response-1", "open-1"),
+        ("response-1", "response-1"),
+    ),
+)
+def test_teaching_script_rejects_cross_namespace_id_collisions(
+    response_id,
+    response_clause_id,
+):
+    payload = teaching_script()
+    payload["response_scripts"] = [
+        response_script_payload(
+            response_id,
+            response_clause_id,
+            "option-a",
+        )
+    ]
+
+    with pytest.raises(ValidationError, match="teaching script ids"):
+        TeachingScript.model_validate(payload)
+
+
 def test_explanation_depth_alias_exposes_exact_supported_vocabulary():
     assert ExplanationDepth == Literal["brief", "conceptual", "worked"]
 

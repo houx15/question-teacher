@@ -151,6 +151,9 @@ def _single_expression(value: str) -> str:
 
 
 def _tokenize(expression: str) -> List[_Token]:
+    expression = expression.translate(
+        str.maketrans({"−": "-", "²": "^2", "³": "^3"})
+    )
     tokens: List[_Token] = []
     index = 0
     while index < len(expression):
@@ -270,9 +273,14 @@ class _Parser:
         node = self.primary()
         if self.current() == _Token("OP", "^"):
             self.position += 1
+            braced = self.current().kind == "LBRACE"
+            if braced:
+                self.position += 1
             exponent = self.consume("NUMBER").value
             if exponent not in {"2", "3"}:
                 raise _unsupported()
+            if braced:
+                self.consume("RBRACE")
             node = ("power", exponent, node)
         return node
 
