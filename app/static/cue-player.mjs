@@ -130,10 +130,14 @@ export class CuePlayer {
     this.preloaded = null;
     this.paused = false;
     this.beatCompleted = false;
+    this.playbackMode = "beat";
+    this.sequenceToken = null;
+    this.sequenceResolve = null;
   }
 
   playBeat(beat, { snapshot } = {}) {
     this.stop();
+    this.playbackMode = "beat";
     this.beat = beat;
     this.snapshot = snapshot;
     this.cues = Array.isArray(beat?.sync_cues)
@@ -148,6 +152,30 @@ export class CuePlayer {
       return;
     }
     this.launchCue(0, token);
+  }
+
+  playCueSequence(cues, token) {
+    this.stop();
+    this.playbackMode = "sequence";
+    this.beat = null;
+    this.snapshot = undefined;
+    this.sequenceToken = token;
+    this.cues = Array.isArray(cues)
+      ? cues.filter((cue) => cue && typeof cue === "object")
+      : [];
+    this.currentIndex = -1;
+    this.paused = false;
+    this.beatCompleted = false;
+    const playbackToken = this.token;
+    const completion = new Promise((resolve) => {
+      this.sequenceResolve = resolve;
+    });
+    if (this.cues.length === 0) {
+      this.completeBeat(playbackToken);
+      return completion;
+    }
+    this.launchCue(0, playbackToken);
+    return completion;
   }
 
   launchCue(index, token) {
@@ -199,7 +227,12 @@ export class CuePlayer {
       state.failureResolve = resolve;
     });
     this.currentState = state;
-    this.safeCall(this.onCueText, cue.spoken_text || "", cue, index);
+    this.safeCall(
+      this.onCueText,
+      cue.display_text || cue.spoken_text || "",
+      cue,
+      index,
+    );
     this.safeApply(actionList(cue.lead_actions));
     const waited = await this.wait(this.leadMs, token, state, "lead");
     if (!waited) return;
@@ -528,7 +561,20 @@ export class CuePlayer {
     if (token !== this.token || this.beatCompleted) return;
     this.beatCompleted = true;
     this.phase = "complete";
+    if (this.playbackMode === "sequence") {
+      this.settleSequence(true);
+      return;
+    }
     this.safeCall(this.onBeatComplete, this.beat);
+  }
+
+  settleSequence(completed) {
+    const resolve = this.sequenceResolve;
+    if (!resolve) return;
+    const token = this.sequenceToken;
+    this.sequenceResolve = null;
+    this.sequenceToken = null;
+    resolve({ completed, token });
   }
 
   preloadNext(index, token) {
@@ -611,6 +657,7 @@ export class CuePlayer {
     this.currentIndex = -1;
     this.phase = "stopped";
     this.paused = false;
+    this.settleSequence(false);
   }
 
   cancelState(state) {
@@ -628,6 +675,7 @@ export class CuePlayer {
     const snapshot = this.snapshot;
     if (!beat) return;
     this.stop();
+    this.playbackMode = "beat";
     this.safeCall(this.restoreSnapshot, snapshot);
     this.beat = beat;
     this.snapshot = snapshot;

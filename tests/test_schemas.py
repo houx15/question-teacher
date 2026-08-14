@@ -637,6 +637,43 @@ def test_main_sync_cues_preserve_optional_display_and_step_identity():
     assert runtime.display_text == "观察 $m-n$。"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "cue_id": "missing-display",
+            "teaching_step_id": "teaching-step-1",
+            "spoken_text": "观察这一步。",
+        },
+        {
+            "cue_id": "missing-step",
+            "display_text": "观察这一步。",
+            "spoken_text": "观察这一步。",
+        },
+    ],
+)
+def test_runtime_structured_cues_require_display_and_step_identity_together(
+    payload,
+):
+    with pytest.raises(ValidationError, match="require teaching_step_id"):
+        RuntimeSyncCue.model_validate(payload)
+
+
+def test_runtime_legacy_cue_keeps_spoken_only_compatibility():
+    cue = RuntimeSyncCue(cue_id="legacy-spoken", spoken_text="继续看。")
+
+    assert cue.display_text is None
+    assert cue.teaching_step_id is None
+    assert cue.model_dump() == {
+        "cue_id": "legacy-spoken",
+        "spoken_text": "继续看。",
+        "lead_actions": [],
+        "start_actions": [],
+        "end_actions": [],
+        "audio_url": None,
+    }
+
+
 def test_transfer_item_accepts_three_diagnostic_options():
     item = TransferItem(
         problem_text="用因式分解法解方程：x^2-7x+12=0",

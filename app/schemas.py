@@ -1358,6 +1358,15 @@ class RuntimeSyncCue(SchemaModel):
     end_actions: List[SyncVisualAction] = Field(default_factory=list)
     audio_url: Optional[NonEmptyString] = None
 
+    @model_validator(mode="after")
+    def require_complete_structured_identity(self) -> "RuntimeSyncCue":
+        if (self.teaching_step_id is None) != (self.display_text is None):
+            raise ValueError(
+                "structured runtime cues require teaching_step_id and "
+                "display_text together"
+            )
+        return self
+
     @model_serializer(mode="wrap")
     def omit_legacy_structured_fields(self, handler):
         payload = handler(self)

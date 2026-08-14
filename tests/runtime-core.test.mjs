@@ -1156,6 +1156,80 @@ test("support cue sequence applies phases in order and completes once", async ()
 });
 
 
+test("support actions restore the active main step and request one advance", async () => {
+  const stepId = "teaching-step-003";
+  let state = emptyVisualState();
+  for (const action of [
+    {
+      surface: "board",
+      type: "reveal_step_header",
+      target: stepId,
+      teaching_step_id: stepId,
+      step_label: "第三步：利用非零条件化简",
+    },
+    {
+      surface: "board",
+      type: "write",
+      target: "main-equation",
+      teaching_step_id: stepId,
+      board_role: "working",
+      content: "4n-4m+2=0",
+    },
+  ]) {
+    state = applySyncVisualAction(state, action);
+  }
+  let advanceCount = 0;
+  await runSupportCueSequence([
+    {
+      cue_id: "support-restore",
+      spoken_text: "先检查非零条件，再回到主线。",
+      lead_actions: [{
+        surface: "board",
+        type: "open_supporting_explanation",
+        target: "support-nonzero",
+        teaching_step_id: stepId,
+      }],
+      start_actions: [{
+        surface: "board",
+        type: "write",
+        target: "support-nonzero-line",
+        teaching_step_id: stepId,
+        board_role: "support",
+        content: "因为 n 不等于 0，所以可以同除以 n",
+      }],
+      end_actions: [
+        {
+          surface: "board",
+          type: "close_supporting_explanation",
+          target: "support-nonzero",
+          teaching_step_id: stepId,
+        },
+        {
+          surface: "board",
+          type: "scroll_to_step",
+          target: stepId,
+          teaching_step_id: stepId,
+        },
+      ],
+    },
+  ], {
+    applyActions: (_phase, actions) => {
+      for (const action of actions) {
+        state = applySyncVisualAction(state, action);
+      }
+    },
+    complete: () => { advanceCount += 1; },
+  });
+
+  const step = state.structuredBoard.steps.get(stepId);
+  assert.equal(step.status, "active");
+  assert.equal(step.support, null);
+  assert.equal(state.structuredBoard.activeStepId, stepId);
+  assert.equal(state.structuredBoard.requestedScrollStepId, stepId);
+  assert.equal(advanceCount, 1);
+});
+
+
 test("wrong legacy response presents its staged hint and matching audio", () => {
   const presentation = resolveInteractionPresentation({
     result: { classification: "incorrect" },

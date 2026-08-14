@@ -1416,7 +1416,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260814-1"' in html
+    assert 'src="/static/lesson.js?v=20260814-2"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -1424,7 +1424,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
 def test_versioned_lesson_module_remains_cacheable():
     client = page_client()
     html_response = client.get("/lesson/example")
-    response = client.get("/static/lesson.js?v=20260814-1")
+    response = client.get("/static/lesson.js?v=20260814-2")
     runtime_response = client.get(
         "/static/runtime-core.mjs?v=20260814-1"
     )
@@ -1474,7 +1474,7 @@ def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
     source = page_client().get("/static/lesson.js").text
 
     assert '} from "./runtime-core.mjs?v=20260814-1";' in source
-    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-3";' in source
+    assert 'import { CuePlayer } from "./cue-player.mjs?v=20260814-1";' in source
     assert "applySyncVisualAction" in source
     assert "let cuePlayer = null;" in source
     assert "cuePlayer = new CuePlayer({" in source
@@ -1506,6 +1506,24 @@ def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
         source.index("function leaveTemporaryLayer(")
     ]
     assert "showInteraction(beat.interaction)" in finish_branch
+
+
+def test_lesson_runtime_renders_and_scrolls_the_continuous_structured_board():
+    source = page_client().get("/static/lesson.js").text
+
+    assert 'section.className = "lesson-step"' in source
+    assert 'header.className = "lesson-step-header"' in source
+    assert 'bullet.className = "lesson-step-status-bullet"' in source
+    assert 'record.support.className = "lesson-step-support"' in source
+    assert "syncStructuredLines(record.main, step.lines, record.lines)" in source
+    assert "requestedScrollStepId: null" in source
+    assert 'const behavior = restoringSnapshot ? "auto" : "smooth"' in source
+    assert 'requested.scrollIntoView({ behavior, block: "center" })' in source
+    assert "cue.display_text || cue.spoken_text" in page_client().get(
+        "/static/cue-player.mjs"
+    ).text
+    assert "cuePlayer.playCueSequence(" in source
+    assert "runSupportCueSequence(" not in source
 
 
 def test_choice_submission_passes_selected_option_without_exposing_answer_key():

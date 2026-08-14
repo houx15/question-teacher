@@ -214,12 +214,14 @@ class FakeAudio {
 
 function cue(id, {
   audioUrl = `${id}.mp3`,
+  displayText = null,
   lead = [],
   start = [],
   end = [],
 } = {}) {
   return {
     cue_id: id,
+    ...(displayText === null ? {} : { display_text: displayText }),
     spoken_text: `spoken ${id}`,
     audio_url: audioUrl,
     lead_actions: lead,
@@ -238,6 +240,7 @@ function createHarness({ playModes = [] } = {}) {
   const unavailable = [];
   const completed = [];
   const restored = [];
+  const displayed = [];
   const player = new CuePlayer({
     createAudio: (url) => {
       const audio = new FakeAudio(
@@ -262,7 +265,9 @@ function createHarness({ playModes = [] } = {}) {
     fallbackDuration: () => 400,
     onsetTimeoutMs: 500,
     playbackTimeout: () => 600,
-    onCueText: () => {},
+    onCueText: (text, activeCue) => {
+      displayed.push({ text, cueId: activeCue.cue_id });
+    },
     onBeatComplete: () => {
       events.push("beat:complete");
       completed.push(true);
@@ -285,8 +290,96 @@ function createHarness({ playModes = [] } = {}) {
     unavailable,
     completed,
     restored,
+    displayed,
   };
 }
+
+
+test("cue displays display_text while audio uses spoken cue media", async () => {
+  const harness = createHarness();
+  harness.player.playBeat({
+    sync_cues: [cue("cue-target-sign", {
+      displayText: "我们要求的是 $m-n$。",
+      audioUrl: "/audio/cue-target-sign.mp3",
+    })],
+  });
+
+  harness.timelines[0].complete();
+  await flush();
+  harness.audios[0].emit("ended");
+  await flush();
+
+  assert.deepEqual(harness.displayed, [{
+    text: "我们要求的是 $m-n$。",
+    cueId: "cue-target-sign",
+  }]);
+  assert.equal(harness.audios[0].url, "/audio/cue-target-sign.mp3");
+});
+
+
+test("legacy cue falls back to spoken_text for display", async () => {
+  const harness = createHarness();
+  harness.player.playBeat({ sync_cues: [cue("legacy-cue")] });
+
+  harness.timelines[0].complete();
+  await flush();
+  harness.audios[0].emit("ended");
+  await flush();
+
+  assert.equal(harness.displayed[0].text, "spoken legacy-cue");
+});
+
+
+test("bounded support sequence reuses cue playback and settles with its token", async () => {
+  const harness = createHarness();
+  const completion = harness.player.playCueSequence([
+    cue("support-1", {
+      displayText: "先拆开平方。",
+      lead: [{ event: "lead:support-open" }],
+      start: [{ event: "start:support-write" }],
+    }),
+    cue("support-2", {
+      displayText: "再回到主步骤。",
+      end: [{ event: "end:support-close-scroll" }],
+    }),
+  ], 73);
+
+  harness.timelines[0].complete();
+  await flush();
+  harness.audios[0].emit("ended");
+  await flush();
+  harness.timelines[1].complete();
+  await flush();
+  harness.audios[1].emit("ended");
+  const result = await completion;
+
+  assert.deepEqual(result, { completed: true, token: 73 });
+  assert.deepEqual(harness.displayed.map((item) => item.text), [
+    "先拆开平方。",
+    "再回到主步骤。",
+  ]);
+  assert.equal(harness.completed.length, 0);
+  assert.equal(
+    harness.events.filter((event) => event === "end:support-close-scroll").length,
+    1,
+  );
+});
+
+
+test("stopping a support sequence settles cancellation and ignores stale cues", async () => {
+  const harness = createHarness();
+  const completion = harness.player.playCueSequence([
+    cue("support-stale", { start: [{ event: "start:must-not-run" }] }),
+  ], 81);
+
+  harness.player.stop();
+  harness.timelines[0].complete();
+  await flush();
+
+  assert.deepEqual(await completion, { completed: false, token: 81 });
+  assert.equal(harness.events.includes("start:must-not-run"), false);
+  assert.equal(harness.audios.length, 0);
+});
 
 
 test("two cues play semantic action boundaries in exact order", async () => {

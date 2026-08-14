@@ -11,10 +11,9 @@ import {
   isCurrentInteractionSubmission,
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
-  runSupportCueSequence,
   scheduleBoardActions,
 } from "./runtime-core.mjs?v=20260814-1";
-import { CuePlayer } from "./cue-player.mjs?v=20260807-3";
+import { CuePlayer } from "./cue-player.mjs?v=20260814-1";
 import {
   mathTextToPlainText,
   renderMathText,
@@ -83,8 +82,12 @@ let interactionSubmitting = false;
 let appliedActionIndexes = new Set();
 let beatSnapshots = new Map();
 let visualState = emptyVisualState();
+let restoringSnapshot = false;
+let scrollRequestSequence = 0;
+let supportFeedbackTarget = null;
 
 const boardRegistries = new WeakMap();
+const structuredBoardRegistries = new WeakMap();
 
 
 class PausableTimeline {
@@ -368,14 +371,196 @@ function renderBoard(board, region) {
 }
 
 
+function updateStructuredLine(node, line) {
+  const content = node.querySelector(".board-content");
+  const source = line?.content || humanizeTarget(line?.target);
+  if (content.dataset.source !== source) {
+    const previousSource = content.dataset.source;
+    content.dataset.source = source;
+    renderMathText(content, source);
+    if (previousSource !== undefined) {
+      node.classList.add("is-transforming");
+      window.setTimeout(() => node.classList.remove("is-transforming"), 620);
+    }
+  }
+  node.dataset.boardRole = line?.role || "working";
+  node.classList.toggle("is-focused", line?.focused === true);
+  node.classList.toggle("is-faded", line?.focusFaded === true);
+  node.classList.toggle("is-revealed", line?.revealed === true);
+  node.classList.remove(...EMPHASIS_CLASSES);
+  const emphasisClass = emphasisClassName(line?.emphasis?.style);
+  if (emphasisClass) {
+    node.classList.add(emphasisClass);
+    if (["active", "trace"].includes(line?.emphasis?.strength)) {
+      node.classList.add(`is-${line.emphasis.strength}`);
+    }
+  }
+  renderAnnotations(
+    node.querySelector(".board-annotations"),
+    line?.annotations,
+  );
+}
+
+
+function syncStructuredLines(container, lines, registry) {
+  const visibleTargets = new Set();
+  for (const line of lines || []) {
+    if (!line?.target) continue;
+    visibleTargets.add(line.target);
+    let node = registry.get(line.target);
+    if (!node) {
+      node = createBoardNode(line.target);
+      node.classList.add("lesson-step-line");
+      registry.set(line.target, node);
+      window.setTimeout(() => node.classList.remove("is-new"), 500);
+    }
+    updateStructuredLine(node, line);
+    container.append(node);
+  }
+  for (const [target, node] of registry.entries()) {
+    if (visibleTargets.has(target)) continue;
+    node.remove();
+    registry.delete(target);
+  }
+}
+
+
+function createStructuredStep(stepId) {
+  const section = document.createElement("section");
+  section.className = "lesson-step";
+  section.dataset.teachingStepId = stepId;
+
+  const main = document.createElement("div");
+  main.className = "lesson-step-content";
+  section.append(main);
+  return {
+    section,
+    main,
+    header: null,
+    lines: new Map(),
+    support: null,
+    supportLines: new Map(),
+  };
+}
+
+
+function renderStructuredStep(record, step) {
+  const { section } = record;
+  section.dataset.status = step.status || "questioning";
+  section.classList.toggle("is-active", step.status === "active");
+  section.classList.toggle("is-completed", step.status === "completed");
+  section.classList.toggle("is-supporting", step.status === "supporting");
+
+  if (step.label && !record.header) {
+    const header = document.createElement("h2");
+    header.className = "lesson-step-header";
+    header.id = `lesson-step-header-${step.stepId}`;
+    const bullet = document.createElement("span");
+    bullet.className = "lesson-step-status-bullet";
+    bullet.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "lesson-step-label";
+    header.append(bullet, label);
+    section.prepend(header);
+    section.setAttribute("aria-labelledby", header.id);
+    record.header = header;
+  }
+  if (record.header) {
+    renderMathText(record.header.querySelector(".lesson-step-label"), step.label);
+  } else {
+    section.setAttribute("aria-label", "正在形成的解题步骤");
+  }
+
+  syncStructuredLines(record.main, step.lines, record.lines);
+
+  if (step.support) {
+    if (!record.support) {
+      record.support = document.createElement("aside");
+      record.support.className = "lesson-step-support";
+      record.support.setAttribute("aria-live", "polite");
+      record.support.setAttribute("aria-label", "当前步骤的辅助讲解");
+      section.append(record.support);
+    }
+    syncStructuredLines(
+      record.support,
+      step.support.lines,
+      record.supportLines,
+    );
+  } else if (record.support) {
+    record.support.remove();
+    record.support = null;
+    record.supportLines = new Map();
+  }
+}
+
+
+function renderStructuredBoard(structuredBoard, region) {
+  let registry = structuredBoardRegistries.get(region);
+  if (!registry) {
+    registry = new Map();
+    structuredBoardRegistries.set(region, registry);
+  }
+  const visibleSteps = new Set();
+  for (const [stepId, step] of structuredBoard.steps.entries()) {
+    visibleSteps.add(stepId);
+    let record = registry.get(stepId);
+    if (!record) {
+      record = createStructuredStep(stepId);
+      registry.set(stepId, record);
+    }
+    renderStructuredStep(record, step);
+    region.append(record.section);
+  }
+  for (const [stepId, record] of registry.entries()) {
+    if (visibleSteps.has(stepId)) continue;
+    record.section.remove();
+    registry.delete(stepId);
+  }
+
+  const requestedStepId = structuredBoard.requestedScrollStepId;
+  if (requestedStepId) {
+    const requested = registry.get(requestedStepId)?.section;
+    visualState = {
+      ...visualState,
+      structuredBoard: {
+        ...visualState.structuredBoard,
+        requestedScrollStepId: null,
+      },
+    };
+    if (requested) {
+      const requestId = ++scrollRequestSequence;
+      const behavior = restoringSnapshot ? "auto" : "smooth";
+      window.requestAnimationFrame(() => {
+        if (requestId !== scrollRequestSequence || !requested.isConnected) {
+          return;
+        }
+        requested.scrollIntoView({ behavior, block: "center" });
+      });
+    }
+  }
+}
+
+
 function clearBoardRegion(region) {
   region.replaceChildren();
   boardRegistries.set(region, new Map());
+  structuredBoardRegistries.set(region, new Map());
 }
 
 
 function renderActiveBoards() {
-  renderBoard(runtime.baseBoard, dom.baseBoard);
+  const structuredBoard = visualState.structuredBoard;
+  if (structuredBoard?.steps instanceof Map && structuredBoard.steps.size > 0) {
+    if ((boardRegistries.get(dom.baseBoard)?.size || 0) > 0) {
+      clearBoardRegion(dom.baseBoard);
+    }
+    renderStructuredBoard(structuredBoard, dom.baseBoard);
+  } else {
+    if ((structuredBoardRegistries.get(dom.baseBoard)?.size || 0) > 0) {
+      clearBoardRegion(dom.baseBoard);
+    }
+    renderBoard(runtime.baseBoard, dom.baseBoard);
+  }
   if (runtime.layerStack.length > 0) {
     dom.layerStage.hidden = false;
     renderBoard(runtime.activeBoard, dom.layerStage);
@@ -395,6 +580,7 @@ function captureBeatSnapshot() {
   return {
     baseBoard: cloneBoard(runtime.baseBoard),
     problem: cloneBoard(visualState.problem),
+    structuredBoard: visualState.structuredBoard,
   };
 }
 
@@ -406,10 +592,17 @@ function restoreBeatSnapshot(snapshot) {
     ...visualState,
     board: cloneBoard(snapshot.baseBoard),
     problem: cloneBoard(snapshot.problem),
+    structuredBoard: snapshot.structuredBoard,
   };
   runtime.layerStack = [];
-  renderProblemFocus();
-  renderActiveBoards();
+  restoringSnapshot = true;
+  scrollRequestSequence += 1;
+  try {
+    renderProblemFocus();
+    renderActiveBoards();
+  } finally {
+    restoringSnapshot = false;
+  }
 }
 
 
@@ -417,6 +610,7 @@ function applyCueActions(actions) {
   let nextState = {
     board: runtime.activeBoard,
     problem: visualState.problem,
+    structuredBoard: visualState.structuredBoard,
   };
   let announcement = "";
   for (const action of actions) {
@@ -425,11 +619,13 @@ function applyCueActions(actions) {
       nextState = {
         board: nextState.board,
         problem: reduced.problem,
+        structuredBoard: reduced.structuredBoard,
       };
     } else if (action?.surface === "board") {
       nextState = {
         board: reduced.board,
         problem: nextState.problem,
+        structuredBoard: reduced.structuredBoard,
       };
       announcement = boardActionAnnouncement(nextState.board, action);
     }
@@ -443,6 +639,7 @@ function applyCueActions(actions) {
     ...visualState,
     board: nextState.board,
     problem: nextState.problem,
+    structuredBoard: nextState.structuredBoard,
   };
   renderProblemFocus();
   renderActiveBoards();
@@ -455,10 +652,13 @@ cuePlayer = new CuePlayer({
   fallbackDuration: (cue) => fallbackDurationForNarration(
     cue?.spoken_text || "",
   ),
-  onCueText: (spokenText) => {
+  onCueText: (displayText) => {
     runtime.markAudioStarted();
     dom.shell.classList.add("is-speaking");
-    renderMathText(dom.narration, spokenText);
+    renderMathText(dom.narration, displayText);
+    if (supportFeedbackTarget) {
+      renderMathText(supportFeedbackTarget, displayText);
+    }
     updateControls();
   },
   onBeatComplete: () => finishBeat(beatToken),
@@ -490,6 +690,7 @@ function stopMedia() {
   feedbackAudioFinalizer?.();
   activeFeedbackAudio?.pause();
   feedbackAudio = null;
+  supportFeedbackTarget = null;
   dom.shell.classList.remove("is-speaking");
 }
 
@@ -1078,18 +1279,22 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
     if (Array.isArray(presentation.supportCues)) {
       renderMathText(ui.hint, "");
       clearPointSelection();
-      await runSupportCueSequence(presentation.supportCues, {
-        applyActions: (_phase, actions) => applyCueActions(actions),
-        presentCue: (cue) => {
-          renderMathText(
-            ui.feedback,
-            cue.display_text || cue.spoken_text,
-          );
-          renderMathText(dom.narration, cue.spoken_text);
-        },
-        playAudio: (audioUrl) => playFeedbackAudio(audioUrl),
-      });
-      if (!isCurrentSubmission()) return;
+      supportFeedbackTarget = ui.feedback;
+      const supportResult = await cuePlayer.playCueSequence(
+        presentation.supportCues,
+        originatingBeatToken,
+      );
+      if (supportFeedbackTarget === ui.feedback) {
+        supportFeedbackTarget = null;
+      }
+      runtime.markAudioEnded();
+      dom.shell.classList.remove("is-speaking");
+      updateControls();
+      if (
+        !supportResult.completed
+        || supportResult.token !== originatingBeatToken
+        || !isCurrentSubmission()
+      ) return;
       const answeredBeatToken = beatToken;
       window.setTimeout(() => {
         if (
