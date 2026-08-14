@@ -40,6 +40,7 @@ from tests.test_preparation_pipeline import (
     RAW_REFERENCE_MARKER,
     client as preparation_client,
     downstream_interaction_payload,
+    downstream_planned_interaction,
     downstream_review_payload,
     downstream_score_payload,
     downstream_script_payload,
@@ -331,8 +332,17 @@ def _approved_preparation_client(
     performance=None,
     warning_step_ids=(),
     progression_target_ids=None,
+    interactions=None,
 ):
     grounded = route_responses is not None
+    selected_interactions = list(interactions or [])
+    interaction_payload = downstream_interaction_payload()
+    interaction_payload["interactions"] = selected_interactions
+    simulation = downstream_simulation_payload()
+    if selected_interactions:
+        simulation["interaction_results"] = [
+            "学生能根据当前条件修正判断并继续。"
+        ]
     preparation_client = PreparationFakeClient(
         {
             "reference_analyst": [
@@ -350,12 +360,15 @@ def _approved_preparation_client(
                     else teaching_progression_payload(progression_target_ids)
                 ),
             ],
-            "script_teacher": [downstream_script_payload()],
-            "interaction_designer": [downstream_interaction_payload()],
-            "classroom_director": [
-                performance or downstream_score_payload()
+            "script_teacher": [
+                downstream_script_payload(selected_interactions)
             ],
-            "student_simulator": [downstream_simulation_payload()],
+            "interaction_designer": [interaction_payload],
+            "classroom_director": [
+                performance
+                or downstream_score_payload(selected_interactions)
+            ],
+            "student_simulator": [simulation],
             "lesson_reviewer": [downstream_review_payload()],
         }
     )
@@ -869,6 +882,15 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
         clause.spoken_text
         for clause in bundle.generation_record.prepared_lesson.teaching_script.clauses
     ]
+    assert [item.lesson_step_id for item in provenance] == [
+        clause.lesson_step_id
+        for clause in bundle.generation_record.prepared_lesson.teaching_script.clauses
+    ]
+    assert [item.display_text for item in provenance] == [
+        clause.display_text
+        for clause in bundle.generation_record.prepared_lesson.teaching_script.clauses
+    ]
+    assert all(item.response_id is None for item in provenance)
     runtime_cues = {
         cue.cue_id: cue
         for beat in bundle.lesson.beats
@@ -1447,6 +1469,91 @@ def test_bundle_rejects_provenance_detached_from_private_preparation(
         GeneratedLessonBundle(
             lesson=bundle.lesson,
             generation_record=forged_record,
+        )
+
+
+def _structured_interaction_bundle():
+    client = _approved_preparation_client(
+        interactions=[downstream_planned_interaction()]
+    )
+    service = LessonGenerationService(client, MathEngine())
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+    return asyncio.run(service.generate_bundle(preparation_problem()))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "step_id",
+        "display_text",
+        "support_action",
+        "step_action",
+        "response_binding",
+        "layer",
+        "focus_target",
+    ),
+)
+def test_bundle_rejects_structured_runtime_mutation(mutation):
+    bundle = _structured_interaction_bundle()
+    lesson = bundle.lesson.model_copy(deep=True)
+    authored_beat = next(
+        beat
+        for beat in lesson.beats
+        if any(
+            cue.cue_id != "runtime-transfer-intro-cue"
+            for cue in beat.sync_cues
+        )
+    )
+    authored_cue = authored_beat.sync_cues[0]
+    if mutation == "step_id":
+        authored_cue.teaching_step_id = "forged-step"
+    elif mutation == "display_text":
+        authored_cue.display_text = "被改写的展示文本"
+    elif mutation == "step_action":
+        action_cue = next(
+            cue
+            for beat in lesson.beats
+            for cue in beat.sync_cues
+            if cue.end_actions
+        )
+        action_cue.end_actions = action_cue.end_actions[1:]
+    elif mutation == "layer":
+        authored_beat.layer = "comparison"
+    elif mutation == "focus_target":
+        lesson.problem_focus_targets = compile_problem_focus_targets(
+            "若$z$是一个额外条件"
+        )
+    else:
+        interaction = next(
+            beat.interaction
+            for beat in lesson.beats
+            if beat.interaction is not None
+            and beat.interaction.interaction_id != "near-transfer"
+        )
+        if mutation == "support_action":
+            support_cue = next(
+                cue
+                for option in interaction.options
+                for cue in option.support_cues
+                if cue.start_actions
+            )
+            support_cue.start_actions = support_cue.start_actions[1:]
+        else:
+            first, second = interaction.options[:2]
+            first.support_cues, second.support_cues = (
+                second.support_cues,
+                first.support_cues,
+            )
+
+    with pytest.raises(ValidationError):
+        GeneratedLessonBundle(
+            lesson=lesson,
+            generation_record=bundle.generation_record,
         )
 
 

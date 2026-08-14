@@ -482,6 +482,68 @@ def test_adapter_binds_interaction_to_its_exact_authored_section_cue():
     )
 
 
+def test_authoritative_adapter_factory_provenance_covers_main_and_response_clauses():
+    prepared = approved_prepared()
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+
+    main = prepared.teaching_script.clauses
+    responses = [
+        (response, clause)
+        for response in prepared.teaching_script.response_scripts
+        for clause in response.clauses
+    ]
+    assert [item.clause_id for item in run.cue_provenance] == [
+        *[clause.clause_id for clause in main],
+        *[clause.clause_id for _response, clause in responses],
+    ]
+    for item, clause in zip(run.cue_provenance[: len(main)], main):
+        assert item.lesson_step_id == clause.lesson_step_id
+        assert item.display_text == clause.display_text
+        assert item.response_id is None
+    for item, (response, clause) in zip(
+        run.cue_provenance[len(main) :], responses
+    ):
+        assert item.lesson_step_id == clause.lesson_step_id
+        assert item.display_text == clause.display_text
+        assert item.response_id == response.response_id
+        assert item.runtime_cue_id == clause.clause_id
+
+
+def test_authoritative_adapter_factory_rejects_swapped_support_binding():
+    prepared = approved_prepared()
+    run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
+        source_problem(), prepared, route()
+    )
+    draft = run.draft
+    interaction = [
+        *draft.fixed_section_interactions_after_cue.values(),
+        *(
+            moment.interaction
+            for moment in draft.moments
+            if moment.interaction is not None
+        ),
+    ][0]
+    first, second = interaction.options[:2]
+    first.support_cues, second.support_cues = (
+        second.support_cues,
+        first.support_cues,
+    )
+    main_assignment = {
+        item.clause_id: item.runtime_cue_id
+        for item in run.cue_provenance
+        if item.response_id is None
+    }
+
+    with pytest.raises(ValueError, match="response binding"):
+        prepared_adapter.PreparedDraftRun.from_prepared_lesson(
+            draft,
+            prepared,
+            main_assignment,
+        )
+
+
 def test_runtime_interaction_occurs_after_current_teaching_step():
     prepared = approved_prepared()
     lesson = LessonCompiler(lesson_id_factory=lambda: "boundary-order").compile(
@@ -888,7 +950,11 @@ def test_cross_section_split_provenance_maps_every_runtime_cue_exactly():
         for cue in beat.sync_cues
         if cue.cue_id != "runtime-transfer-intro-cue"
     }
-    assert {item.runtime_cue_id for item in run.cue_provenance} == set(
+    assert {
+        item.runtime_cue_id
+        for item in run.cue_provenance
+        if item.response_id is None
+    } == set(
         runtime_cues
     )
     split = [
@@ -927,6 +993,7 @@ def test_prepared_draft_factory_derives_records_without_mutable_alias():
     runtime_cue_by_clause = {
         item.clause_id: item.runtime_cue_id
         for item in original.cue_provenance
+        if item.response_id is None
     }
 
     rebuilt = prepared_adapter.PreparedDraftRun.from_prepared_lesson(
@@ -944,18 +1011,21 @@ def test_prepared_draft_factory_derives_records_without_mutable_alias():
         for cue in prepared.performance_score.cues
         for clause_id in cue.clause_ids
     }
-    assert [item.clause_id for item in rebuilt.cue_provenance] == [
+    rebuilt_main = [
+        item for item in rebuilt.cue_provenance if item.response_id is None
+    ]
+    assert [item.clause_id for item in rebuilt_main] == [
         clause.clause_id for clause in authoritative_clauses
     ]
-    assert [item.episode_id for item in rebuilt.cue_provenance] == [
+    assert [item.episode_id for item in rebuilt_main] == [
         clause.episode_id for clause in authoritative_clauses
     ]
-    assert [item.spoken_text for item in rebuilt.cue_provenance] == [
+    assert [item.spoken_text for item in rebuilt_main] == [
         clause.spoken_text for clause in authoritative_clauses
     ]
     assert [
         item.original_performance_cue_id
-        for item in rebuilt.cue_provenance
+        for item in rebuilt_main
     ] == [
         authoritative_original[clause.clause_id]
         for clause in authoritative_clauses
@@ -1069,7 +1139,9 @@ def test_prepared_draft_factory_rejects_invalid_runtime_assignment(mutation):
         source_problem(), prepared, route()
     )
     assignment = {
-        item.clause_id: item.runtime_cue_id for item in run.cue_provenance
+        item.clause_id: item.runtime_cue_id
+        for item in run.cue_provenance
+        if item.response_id is None
     }
     if mutation == "missing":
         assignment.pop(next(iter(assignment)))
@@ -1109,7 +1181,9 @@ def test_prepared_draft_factory_rejects_invalid_performance_membership(
         )
     invalid = PreparedLesson.model_validate(payload)
     assignment = {
-        item.clause_id: item.runtime_cue_id for item in run.cue_provenance
+        item.clause_id: item.runtime_cue_id
+        for item in run.cue_provenance
+        if item.response_id is None
     }
 
     with pytest.raises(ValueError, match="performance cue membership"):
@@ -1133,7 +1207,9 @@ def test_prepared_draft_factory_rejects_grouped_runtime_text_mismatch():
         source_problem(), prepared, route()
     )
     assignment = {
-        item.clause_id: item.runtime_cue_id for item in run.cue_provenance
+        item.clause_id: item.runtime_cue_id
+        for item in run.cue_provenance
+        if item.response_id is None
     }
     first_id = prepared.teaching_script.clauses[0].clause_id
     second_id = prepared.teaching_script.clauses[1].clause_id
@@ -1198,7 +1274,11 @@ def test_cross_episode_split_provenance_keeps_original_and_generated_ids():
     assert [item.episode_id for item in split] == ["episode-2", "episode-3"]
     assert split[0].runtime_cue_id == original_cue_id
     assert split[1].runtime_cue_id.startswith("prepared-cue-")
-    assert {item.runtime_cue_id for item in run.cue_provenance} == set(
+    assert {
+        item.runtime_cue_id
+        for item in run.cue_provenance
+        if item.response_id is None
+    } == set(
         runtime_cues
     )
     assert all(

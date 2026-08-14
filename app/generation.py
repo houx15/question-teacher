@@ -27,6 +27,7 @@ from app.llm_client import ModelResponseError
 from app.math_engine import MathValidationError
 from app.preparation_models import (
     GenerationRecord,
+    PreparedLesson,
     RuntimeCueProvenanceRecord,
 )
 from app.generation_integrity import validate_lesson_generation_pair
@@ -193,7 +194,43 @@ def _canonical_report(report: dict) -> str:
 def _runtime_semantics(lesson: RuntimeLesson) -> dict:
     payload = lesson.model_dump(mode="json")
     payload.pop("lesson_id", None)
+    for beat in payload["beats"]:
+        beat["audio_url"] = None
+        for cue in beat["sync_cues"]:
+            cue["audio_url"] = None
+        interaction = beat.get("interaction")
+        if interaction is None:
+            continue
+        interaction["hint_audio_urls"] = []
+        interaction["correct_audio_url"] = None
+        for option in interaction["options"]:
+            option["feedback_audio_url"] = None
+            for support_cue in option.get("support_cues", []):
+                support_cue["audio_url"] = None
     return payload
+
+
+def _has_audio_urls(lesson: RuntimeLesson) -> bool:
+    return any(
+        beat.audio_url is not None
+        or any(cue.audio_url is not None for cue in beat.sync_cues)
+        or (
+            beat.interaction is not None
+            and (
+                bool(beat.interaction.hint_audio_urls)
+                or beat.interaction.correct_audio_url is not None
+                or any(
+                    option.feedback_audio_url is not None
+                    or any(
+                        cue.audio_url is not None
+                        for cue in option.support_cues
+                    )
+                    for option in beat.interaction.options
+                )
+            )
+        )
+        for beat in lesson.beats
+    )
 
 
 @dataclass(frozen=True)
@@ -331,7 +368,15 @@ class LessonGenerationService:
             list(problem_focus_targets),
             on_stage=on_stage,
         )
-        prepared = prepared_run.prepared_lesson
+        frozen_prepared_json = (
+            prepared_run.prepared_lesson.model_copy(deep=True).model_dump_json()
+        )
+        prepared = PreparedLesson.model_validate_json(frozen_prepared_json)
+        frozen_progression_json = (
+            prepared.teaching_progression.model_copy(deep=True).model_dump_json()
+            if prepared.teaching_progression is not None
+            else None
+        )
         try:
             prepared_draft_run = prepared_lesson_to_draft_with_provenance(
                 problem,
@@ -429,8 +474,16 @@ class LessonGenerationService:
             or lesson.problem.model_dump_json() != frozen_problem_json
             or _canonical_report(lesson.validation_report)
             != frozen_report_json
+            or _has_audio_urls(lesson)
             or _runtime_semantics(lesson)
             != _runtime_semantics(expected_lesson)
+            or prepared.model_dump_json() != frozen_prepared_json
+            or (
+                prepared.teaching_progression.model_dump_json()
+                if prepared.teaching_progression is not None
+                else None
+            )
+            != frozen_progression_json
         ):
             raise LessonGenerationFailure(
                 "compile_failed", "课堂编译完整性检查失败。"
@@ -444,12 +497,15 @@ class LessonGenerationService:
             cue_provenance=[
                 RuntimeCueProvenanceRecord(
                     episode_id=item.episode_id,
+                    lesson_step_id=item.lesson_step_id,
                     clause_id=item.clause_id,
                     original_performance_cue_id=(
                         item.original_performance_cue_id
                     ),
                     runtime_cue_id=item.runtime_cue_id,
+                    display_text=item.display_text,
                     spoken_text=item.spoken_text,
+                    response_id=item.response_id,
                 )
                 for item in prepared_draft_run.cue_provenance
             ],

@@ -16,6 +16,7 @@ from app.schemas import (
     TransferItem,
 )
 from app.preparation_models import GenerationRecord
+from app.problem_focus import compile_problem_focus_targets
 from app.store import MemoryStore
 from tests.test_preparation_models import (
     prepared_lesson,
@@ -23,7 +24,7 @@ from tests.test_preparation_models import (
 )
 
 
-def runtime_lesson() -> RuntimeLesson:
+def runtime_lesson(*, include_interaction: bool = False) -> RuntimeLesson:
     return RuntimeLesson(
         lesson_id="lesson-persisted-1",
         problem=ProblemInput(
@@ -41,37 +42,46 @@ def runtime_lesson() -> RuntimeLesson:
             RuntimeBeat(
                 beat_id="beat-check",
                 purpose="检查配方后的结果",
-                narration="请选出配方后的等式。",
+                narration="我们把等式两边同时减一。" * 3,
                 board_actions=[],
-                layer="interaction",
+                layer="base",
                 sync_cues=[
                     RuntimeSyncCue(
                         cue_id=f"runtime-authored-{index}",
+                        teaching_step_id="teaching-step-001",
+                        display_text="等式两边同时减一",
                         spoken_text="我们把等式两边同时减一。",
                     )
                     for index in range(1, 4)
                 ],
-                interaction=Interaction(
-                    interaction_id="interaction-private-answer",
-                    kind="choice",
-                    prompt="x²-6x+5=0 配方后应该得到哪个等式？",
-                    expected_answer="option-correct",
-                    options=[
-                        InteractionOption(
-                            option_id="option-correct",
-                            label="(x-3)²=4",
-                            feedback="正确。",
-                        ),
-                        InteractionOption(
-                            option_id="option-wrong",
-                            label="(x-3)²=5",
-                            feedback="再检查常数项。",
-                        ),
-                    ],
+                interaction=(
+                    Interaction(
+                        interaction_id="interaction-private-answer",
+                        kind="choice",
+                        prompt="x²-6x+5=0 配方后应该得到哪个等式？",
+                        expected_answer="option-correct",
+                        options=[
+                            InteractionOption(
+                                option_id="option-correct",
+                                label="(x-3)²=4",
+                                feedback="正确。",
+                            ),
+                            InteractionOption(
+                                option_id="option-wrong",
+                                label="(x-3)²=5",
+                                feedback="再检查常数项。",
+                            ),
+                        ],
+                    )
+                    if include_interaction
+                    else None
                 ),
             )
         ],
-        summary="配方时要保持等式平衡。",
+        problem_focus_targets=compile_problem_focus_targets(
+            "x²-6x+5=0"
+        ),
+        summary="我们把等式两边同时减一。",
         transfer_item=TransferItem(
             problem_text="x²-4x-5=0",
             expected_answer="x=-1 或 x=5",
@@ -105,6 +115,11 @@ def private_generation_record(
     prepared = prepared_lesson()
     prepared["rubric_version"] = "0.1"
     prepared["teaching_progression"] = teaching_progression_payload()
+    prepared["teaching_script"]["title"] = lesson.title
+    prepared["teaching_script"]["learning_goal"] = lesson.learning_goal
+    for clause in prepared["teaching_script"]["clauses"]:
+        clause["lesson_step_id"] = "teaching-step-001"
+        clause["display_text"] = "等式两边同时减一"
     prepared["artifact_history"] = [
         {
             "artifact_type": artifact_type,
@@ -162,9 +177,11 @@ def private_generation_record(
             "cue_provenance": [
                 {
                     "episode_id": "episode-1",
+                    "lesson_step_id": "teaching-step-001",
                     "clause_id": clause_id,
                     "original_performance_cue_id": f"performance-{index}",
                     "runtime_cue_id": f"runtime-authored-{index}",
+                    "display_text": "等式两边同时减一",
                     "spoken_text": "我们把等式两边同时减一。",
                 }
                 for index, clause_id in enumerate(
@@ -617,11 +634,37 @@ def test_store_requires_exact_positive_integer_artifact_versions(value):
         MemoryStore().save_lesson(lesson, private_generation_record(lesson))
 
 
+@pytest.mark.parametrize("field", ("lesson_step_id", "display_text"))
+def test_current_seven_artifact_record_requires_complete_provenance(field):
+    lesson = runtime_lesson()
+    record = private_generation_record(lesson)
+    provenance = list(record.cue_provenance)
+    provenance[0] = provenance[0].model_copy(update={field: None})
+    forged = record.model_copy(update={"cue_provenance": provenance})
+
+    with pytest.raises(ValueError, match="matches preparation"):
+        MemoryStore().save_lesson(lesson, forged)
+
+
 def test_historical_rubric_0_1_record_remains_readable_privately(
     tmp_path,
 ):
     database_path = tmp_path / "historical.sqlite3"
     lesson = runtime_lesson()
+    historical_beat = lesson.beats[0].model_copy(
+        update={
+            "sync_cues": [
+                cue.model_copy(
+                    update={
+                        "teaching_step_id": None,
+                        "display_text": None,
+                    }
+                )
+                for cue in lesson.beats[0].sync_cues
+            ]
+        }
+    )
+    lesson = lesson.model_copy(update={"beats": [historical_beat]})
     report = dict(lesson.validation_report)
     report["pedagogy_rubric_version"] = "0.1"
     report["artifact_versions"] = {
@@ -636,6 +679,10 @@ def test_historical_rubric_0_1_record_remains_readable_privately(
     prepared = record_payload["prepared_lesson"]
     prepared["rubric_version"] = "0.1"
     prepared["teaching_progression"] = None
+    for item in record_payload["cue_provenance"]:
+        item.pop("lesson_step_id", None)
+        item.pop("display_text", None)
+        item.pop("response_id", None)
     revisions = {
         revision["artifact_type"]: revision
         for revision in prepared["artifact_history"]
@@ -697,7 +744,7 @@ def test_sqlite_store_restores_private_interaction_answer_after_restart(
     tmp_path,
 ):
     database_path = tmp_path / "lessons.sqlite3"
-    lesson = runtime_lesson()
+    lesson = runtime_lesson(include_interaction=True)
     MemoryStore(database_path).save_lesson(lesson)
 
     interaction = MemoryStore(database_path).get_interaction(

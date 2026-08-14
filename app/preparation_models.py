@@ -642,10 +642,13 @@ class RuntimeCueProvenanceRecord(SchemaModel):
     """Private authored-clause link to one compiled runtime cue."""
 
     episode_id: GeneratedId
+    lesson_step_id: Optional[GeneratedId] = None
     clause_id: GeneratedId
     original_performance_cue_id: GeneratedId
     runtime_cue_id: GeneratedId
+    display_text: Optional[NarrativeBoardContent] = None
     spoken_text: CueSpokenText
+    response_id: Optional[GeneratedId] = None
 
 
 class GenerationRecord(SchemaModel):

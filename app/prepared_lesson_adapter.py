@@ -56,10 +56,13 @@ class CueProvenanceRecord:
     """Immutable private link from an authored clause to its runtime cue."""
 
     episode_id: str
+    lesson_step_id: Optional[str]
     clause_id: str
     original_performance_cue_id: str
     runtime_cue_id: str
+    display_text: Optional[str]
     spoken_text: str
+    response_id: Optional[str]
 
     def __post_init__(self) -> None:
         for value in (
@@ -75,6 +78,27 @@ class CueProvenanceRecord:
                 raise PreparedLessonAdaptationError(
                     "provenance ids must be generated ids"
                 )
+        for value in (self.lesson_step_id, self.response_id):
+            if (
+                value is not None
+                and (
+                    type(value) is not str
+                    or _GENERATED_ID_PATTERN.fullmatch(value) is None
+                )
+            ):
+                raise PreparedLessonAdaptationError(
+                    "optional provenance ids must be generated ids"
+                )
+        if (
+            self.display_text is not None
+            and (
+                type(self.display_text) is not str
+                or not self.display_text.strip()
+            )
+        ):
+            raise PreparedLessonAdaptationError(
+                "provenance display text must be nonblank"
+            )
         if type(self.spoken_text) is not str or not self.spoken_text.strip():
             raise PreparedLessonAdaptationError(
                 "provenance spoken text must be nonblank"
@@ -113,8 +137,17 @@ class PreparedDraftRun:
             )
 
         clauses = prepared.teaching_script.clauses
-        expected_clause_ids = tuple(
+        response_clauses = [
+            (response, clause)
+            for response in prepared.teaching_script.response_scripts
+            for clause in response.clauses
+        ]
+        expected_main_clause_ids = tuple(
             clause.clause_id for clause in clauses
+        )
+        expected_clause_ids = (
+            *expected_main_clause_ids,
+            *(clause.clause_id for _response, clause in response_clauses),
         )
         if any(
             type(clause_id) is not str
@@ -138,7 +171,7 @@ class PreparedDraftRun:
             raise PreparedLessonAdaptationError(
                 "runtime cue assignment must contain generated ids"
             )
-        if set(runtime_cue_by_clause) != set(expected_clause_ids):
+        if set(runtime_cue_by_clause) != set(expected_main_clause_ids):
             raise PreparedLessonAdaptationError(
                 "runtime cue assignment must be a complete clause mapping"
             )
@@ -159,18 +192,37 @@ class PreparedDraftRun:
                 "performance cue membership must be complete"
             )
 
-        normalized = tuple(
+        normalized_main = tuple(
             CueProvenanceRecord(
                 episode_id=clause.episode_id,
+                lesson_step_id=clause.lesson_step_id,
                 clause_id=clause.clause_id,
                 original_performance_cue_id=original_cue_by_clause[
                     clause.clause_id
                 ],
                 runtime_cue_id=runtime_cue_by_clause[clause.clause_id],
+                display_text=clause.display_text,
                 spoken_text=clause.spoken_text,
+                response_id=None,
             )
             for clause in clauses
         )
+        normalized_responses = tuple(
+            CueProvenanceRecord(
+                episode_id=clause.episode_id,
+                lesson_step_id=clause.lesson_step_id,
+                clause_id=clause.clause_id,
+                original_performance_cue_id=original_cue_by_clause[
+                    clause.clause_id
+                ],
+                runtime_cue_id=clause.clause_id,
+                display_text=clause.display_text,
+                spoken_text=clause.spoken_text,
+                response_id=response.response_id,
+            )
+            for response, clause in response_clauses
+        )
+        normalized = normalized_main + normalized_responses
 
         runtime_cues = {
             cue.cue_id: cue
@@ -187,14 +239,14 @@ class PreparedDraftRun:
             for cue in cues
         }
         mapped_runtime_ids = {
-            item.runtime_cue_id for item in normalized
+            item.runtime_cue_id for item in normalized_main
         }
         if mapped_runtime_ids != set(runtime_cues):
             raise PreparedLessonAdaptationError(
                 "provenance runtime cue ids must exactly match the draft"
             )
         grouped_text = {cue_id: [] for cue_id in runtime_cues}
-        for item in normalized:
+        for item in normalized_main:
             grouped_text[item.runtime_cue_id].append(item.spoken_text)
         if any(
             "".join(grouped_text[cue_id]) != cue.spoken_text
@@ -202,6 +254,60 @@ class PreparedDraftRun:
         ):
             raise PreparedLessonAdaptationError(
                 "grouped provenance text must equal runtime cue narration"
+            )
+
+        runtime_interactions = [
+            *draft.fixed_section_interactions_after_cue.values(),
+            *(
+                moment.interaction
+                for moment in draft.moments
+                if moment.interaction is not None
+            ),
+        ]
+        support_entries = [
+            (interaction.interaction_id, option.option_id, cue)
+            for interaction in runtime_interactions
+            for option in interaction.options
+            for cue in option.support_cues
+        ]
+        support_cues = {
+            cue.cue_id: cue
+            for _interaction_id, _option_id, cue in support_entries
+        }
+        support_bindings = {
+            cue.cue_id: (interaction_id, option_id)
+            for interaction_id, option_id, cue in support_entries
+        }
+        if len(support_cues) != len(support_entries):
+            raise PreparedLessonAdaptationError(
+                "support provenance runtime cue ids must be unique"
+            )
+        if {
+            item.runtime_cue_id for item in normalized_responses
+        } != set(support_cues):
+            raise PreparedLessonAdaptationError(
+                "support provenance must exactly match the draft"
+            )
+        expected_support_bindings = {
+            clause.clause_id: (
+                response.interaction_id,
+                response.option_id,
+            )
+            for response, clause in response_clauses
+        }
+        if support_bindings != expected_support_bindings:
+            raise PreparedLessonAdaptationError(
+                "support provenance response binding must match the draft"
+            )
+        if any(
+            support_cues[item.runtime_cue_id].display_text
+            != item.display_text
+            or support_cues[item.runtime_cue_id].spoken_text
+            != item.spoken_text
+            for item in normalized_responses
+        ):
+            raise PreparedLessonAdaptationError(
+                "support provenance text must equal runtime support cues"
             )
 
         instance = object.__new__(cls)

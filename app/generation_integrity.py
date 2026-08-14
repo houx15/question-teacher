@@ -1,8 +1,9 @@
 import json
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.preparation_models import GenerationRecord
+from app.problem_focus import compile_problem_focus_targets
 from app.schemas import FIXED_RUNTIME_CUE_IDS, RuntimeLesson
 
 
@@ -134,6 +135,301 @@ def _latest_artifact_versions(
     return latest
 
 
+def _performance_cues_by_clause(prepared: object) -> Dict[str, object]:
+    result = {}
+    for cue in prepared.performance_score.cues:
+        for clause_id in cue.clause_ids:
+            if clause_id in result:
+                raise ValueError(
+                    "generation record performance cue membership changed"
+                )
+            result[clause_id] = cue
+    return result
+
+
+def _bound_actions(
+    cue: object,
+    phase: str,
+    clause_ids: List[str],
+) -> list:
+    included = set(clause_ids)
+    return [
+        item.action
+        for item in getattr(cue, phase)
+        if item.clause_id in included
+    ]
+
+
+def _layer_by_clause(prepared: object) -> Dict[str, str]:
+    transitions = {
+        item.after_clause_id: item
+        for item in prepared.performance_score.overlay_transitions
+    }
+    active_layer = "base"
+    result = {}
+    for clause in prepared.teaching_script.clauses:
+        result[clause.clause_id] = active_layer
+        transition = transitions.get(clause.clause_id)
+        if transition is not None:
+            active_layer = (
+                transition.layer
+                if transition.action == "enter"
+                else "base"
+            )
+    return result
+
+
+def _validate_current_runtime_semantics(
+    lesson: RuntimeLesson,
+    record: GenerationRecord,
+) -> None:
+    prepared = record.prepared_lesson
+    script = prepared.teaching_script
+    main_clauses = list(script.clauses)
+    response_pairs = [
+        (response, clause)
+        for response in script.response_scripts
+        for clause in response.clauses
+    ]
+    provenance = record.cue_provenance
+    expected_clause_ids = [
+        *[clause.clause_id for clause in main_clauses],
+        *[clause.clause_id for _response, clause in response_pairs],
+    ]
+    if [item.clause_id for item in provenance] != expected_clause_ids:
+        raise ValueError("cue provenance clause order changed")
+
+    performance_by_clause = _performance_cues_by_clause(prepared)
+    response_by_clause = {
+        clause.clause_id: response
+        for response, clause in response_pairs
+    }
+    all_clauses = {
+        clause.clause_id: clause
+        for clause in [
+            *main_clauses,
+            *[clause for _response, clause in response_pairs],
+        ]
+    }
+    if set(performance_by_clause) != set(all_clauses):
+        raise ValueError("cue provenance no longer matches preparation")
+    for item in provenance:
+        clause = all_clauses[item.clause_id]
+        response = response_by_clause.get(item.clause_id)
+        if (
+            item.lesson_step_id is None
+            or item.display_text is None
+            or item.episode_id != clause.episode_id
+            or item.lesson_step_id != clause.lesson_step_id
+            or item.display_text != clause.display_text
+            or item.spoken_text != clause.spoken_text
+            or item.original_performance_cue_id
+            != performance_by_clause[item.clause_id].cue_id
+            or item.response_id
+            != (response.response_id if response is not None else None)
+        ):
+            raise ValueError("cue provenance no longer matches preparation")
+
+    runtime_cues = [
+        cue for beat in lesson.beats for cue in beat.sync_cues
+    ]
+    runtime_by_id = {cue.cue_id: cue for cue in runtime_cues}
+    if len(runtime_by_id) != len(runtime_cues):
+        raise ValueError("compiled runtime cue ids must be unique")
+    authored_runtime_ids = set(runtime_by_id) - set(
+        FIXED_RUNTIME_CUE_IDS.values()
+    )
+    main_provenance = [
+        item for item in provenance if item.response_id is None
+    ]
+    if {
+        item.runtime_cue_id for item in main_provenance
+    } != authored_runtime_ids:
+        raise ValueError("compiled authored cue ids changed")
+
+    beat_by_cue_id = {
+        cue.cue_id: beat
+        for beat in lesson.beats
+        for cue in beat.sync_cues
+    }
+    grouped = {}
+    for item in main_provenance:
+        grouped.setdefault(item.runtime_cue_id, []).append(item)
+    layers = _layer_by_clause(prepared)
+    for cue_id, items in grouped.items():
+        runtime_cue = runtime_by_id[cue_id]
+        clause_ids = [item.clause_id for item in items]
+        original_ids = {
+            item.original_performance_cue_id for item in items
+        }
+        expected_layers = {layers[item] for item in clause_ids}
+        if len(original_ids) != 1 or len(expected_layers) != 1:
+            raise ValueError("compiled authored cue grouping changed")
+        performance_cue = performance_by_clause[clause_ids[0]]
+        if (
+            runtime_cue.teaching_step_id != items[0].lesson_step_id
+            or runtime_cue.display_text
+            != "".join(item.display_text or "" for item in items)
+            or runtime_cue.spoken_text
+            != "".join(item.spoken_text for item in items)
+            or beat_by_cue_id[cue_id].layer
+            != next(iter(expected_layers))
+            or runtime_cue.lead_actions
+            != _bound_actions(performance_cue, "lead_actions", clause_ids)
+            or runtime_cue.start_actions
+            != _bound_actions(performance_cue, "start_actions", clause_ids)
+            or runtime_cue.end_actions
+            != _bound_actions(performance_cue, "end_actions", clause_ids)
+        ):
+            raise ValueError("compiled authored cue semantics changed")
+
+    runtime_interaction_pairs = [
+        (beat, beat.interaction)
+        for beat in lesson.beats
+        if beat.interaction is not None
+        and beat.interaction.interaction_id != "near-transfer"
+    ]
+    runtime_interactions = {
+        interaction.interaction_id: (beat, interaction)
+        for beat, interaction in runtime_interaction_pairs
+    }
+    if len(runtime_interactions) != len(runtime_interaction_pairs):
+        raise ValueError("compiled interaction ids must be unique")
+    if set(runtime_interactions) != {
+        item.interaction_id
+        for item in prepared.interaction_plan.interactions
+    }:
+        raise ValueError("compiled interaction binding changed")
+    provenance_by_clause = {
+        item.clause_id: item for item in provenance
+    }
+    for planned in prepared.interaction_plan.interactions:
+        beat, runtime = runtime_interactions[planned.interaction_id]
+        boundary_clause_id = planned.after_clause_id
+        if planned.teaching_step_id is not None:
+            matching = [
+                clause.clause_id
+                for clause in main_clauses
+                if clause.lesson_step_id == planned.teaching_step_id
+            ]
+            if matching:
+                boundary_clause_id = matching[-1]
+        if (
+            boundary_clause_id is None
+            or provenance_by_clause[boundary_clause_id].runtime_cue_id
+            not in {cue.cue_id for cue in beat.sync_cues}
+        ):
+            raise ValueError("compiled interaction binding changed")
+        expected_responses = {
+            response.option_id: response
+            for response in script.response_scripts
+            if response.interaction_id == planned.interaction_id
+        }
+        if (
+            runtime.kind != "choice"
+            or runtime.prompt != planned.prompt
+            or runtime.expected_answer != planned.correct_option_id
+            or runtime.hints
+            != ([planned.hint] if planned.hint is not None else [])
+            or runtime.explanation_after_correct != ""
+            or runtime.advance_after_response is not True
+            or [option.option_id for option in runtime.options]
+            != [option.option_id for option in planned.options]
+            or [option.label for option in runtime.options]
+            != [option.display_text for option in planned.options]
+            or any(option.feedback is not None for option in runtime.options)
+        ):
+            raise ValueError("compiled interaction semantics changed")
+        for option in runtime.options:
+            response = expected_responses.get(option.option_id)
+            if response is None or [
+                cue.cue_id for cue in option.support_cues
+            ] != [clause.clause_id for clause in response.clauses]:
+                raise ValueError("compiled support cue binding changed")
+            for support_cue, clause in zip(
+                option.support_cues, response.clauses
+            ):
+                item = provenance_by_clause[clause.clause_id]
+                performance_cue = performance_by_clause[clause.clause_id]
+                if (
+                    item.runtime_cue_id != support_cue.cue_id
+                    or item.response_id != response.response_id
+                    or support_cue.display_text != item.display_text
+                    or support_cue.spoken_text != item.spoken_text
+                    or support_cue.lead_actions
+                    != _bound_actions(
+                        performance_cue,
+                        "lead_actions",
+                        [clause.clause_id],
+                    )
+                    or support_cue.start_actions
+                    != _bound_actions(
+                        performance_cue,
+                        "start_actions",
+                        [clause.clause_id],
+                    )
+                    or support_cue.end_actions
+                    != _bound_actions(
+                        performance_cue,
+                        "end_actions",
+                        [clause.clause_id],
+                    )
+                ):
+                    raise ValueError("compiled support cue semantics changed")
+
+    if lesson.problem_focus_targets != compile_problem_focus_targets(
+        lesson.problem.problem_text
+    ):
+        raise ValueError("compiled problem focus targets changed")
+    if (
+        lesson.title != script.title
+        or lesson.learning_goal != script.learning_goal
+        or lesson.summary
+        != "".join(
+            clause.spoken_text
+            for clause in main_clauses
+            if clause.clause_id in script.closing_summary_clause_ids
+        )
+    ):
+        raise ValueError("compiled lesson script semantics changed")
+
+    legacy_action_types = {"write", "transform", "focus", "reveal"}
+    for beat in lesson.beats:
+        if beat.narration != "".join(
+            cue.spoken_text for cue in beat.sync_cues
+        ):
+            raise ValueError("compiled beat narration changed")
+        expected_board_actions = [
+            action
+            for cue in beat.sync_cues
+            for action in cue.start_actions
+            if action.surface == "board"
+            and action.type in legacy_action_types
+        ]
+        actual_board_actions = [
+            action.model_dump(mode="python")
+            for action in beat.board_actions
+        ]
+        projected_actions = [
+            {
+                key: value
+                for key, value in action.model_dump(mode="python").items()
+                if key
+                in {
+                    "type",
+                    "target",
+                    "content",
+                    "source",
+                    "relation_target",
+                    "annotation",
+                }
+            }
+            for action in expected_board_actions
+        ]
+        if actual_board_actions != projected_actions:
+            raise ValueError("compiled legacy board actions changed")
+
+
 def validate_lesson_generation_pair(
     lesson: object,
     generation_record: object,
@@ -201,6 +497,13 @@ def validate_lesson_generation_pair(
     ):
         raise ValueError("generation record artifact versions mismatch")
 
+    if not historical_legacy:
+        _validate_current_runtime_semantics(
+            validated_lesson,
+            validated_record,
+        )
+        return validated_lesson, validated_record
+
     runtime_cues = [
         cue for beat in validated_lesson.beats for cue in beat.sync_cues
     ]
@@ -259,6 +562,8 @@ def audio_neutral_lesson_json(lesson: object) -> str:
         interaction["correct_audio_url"] = None
         for option in interaction["options"]:
             option["feedback_audio_url"] = None
+            for support_cue in option.get("support_cues", []):
+                support_cue["audio_url"] = None
     return json.dumps(
         payload,
         ensure_ascii=False,

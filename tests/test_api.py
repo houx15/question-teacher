@@ -24,6 +24,7 @@ from app.config import Settings
 from app.generation import LessonGenerationService, LessonInputError
 from app.audio_service import LessonAudioService
 from app.preparation_models import GenerationRecord
+from app.problem_focus import compile_problem_focus_targets
 from app.main import PROJECT_ROOT, create_app
 from app.math_engine import MathEngine
 from app.llm_client import ModelResponseError, ModelStructureError
@@ -210,6 +211,11 @@ def generation_record_for(lesson):
     prepared = prepared_lesson()
     prepared["rubric_version"] = "0.1"
     prepared["teaching_progression"] = teaching_progression_payload()
+    prepared["teaching_script"]["title"] = lesson.title
+    prepared["teaching_script"]["learning_goal"] = lesson.learning_goal
+    for clause in prepared["teaching_script"]["clauses"]:
+        clause["lesson_step_id"] = "teaching-step-001"
+        clause["display_text"] = "等式两边同时减一"
     artifact_roles = [
         ("solution_trace", "reference_analyst"),
         ("reasoning_trajectory", "teaching_designer"),
@@ -267,9 +273,11 @@ def generation_record_for(lesson):
             "cue_provenance": [
                 {
                     "episode_id": "episode-1",
+                    "lesson_step_id": "teaching-step-001",
                     "clause_id": clause_id,
                     "original_performance_cue_id": f"performance-{index}",
                     "runtime_cue_id": f"runtime-authored-{index}",
+                    "display_text": "等式两边同时减一",
                     "spoken_text": "我们把等式两边同时减一。",
                 }
                 for index, clause_id in enumerate(
@@ -297,6 +305,8 @@ class BundleGenerator:
                 "sync_cues": [
                     RuntimeSyncCue(
                         cue_id=f"runtime-authored-{index}",
+                        teaching_step_id="teaching-step-001",
+                        display_text="等式两边同时减一",
                         spoken_text="我们把等式两边同时减一。",
                     )
                     for index in range(1, 4)
@@ -305,7 +315,19 @@ class BundleGenerator:
         )
         lesson = lesson.model_copy(
             update={
-                "beats": [beat],
+                "beats": [
+                    beat.model_copy(
+                        update={
+                            "narration": (
+                                "我们把等式两边同时减一。" * 3
+                            )
+                        }
+                    )
+                ],
+                "problem_focus_targets": compile_problem_focus_targets(
+                    problem.problem_text
+                ),
+                "summary": "我们把等式两边同时减一。",
                 "validation_report": {
                     "teaching_route_fingerprint": "route-api-1",
                     "pedagogy_rubric_version": "0.1",
@@ -1322,7 +1344,7 @@ def test_all_interaction_audio_url_fields_are_allowed_audio_changes():
                 on_stage=on_stage,
             )
             interaction = Interaction(
-                interaction_id="audio-interaction",
+                interaction_id="near-transfer",
                 kind="choice",
                 prompt="请选择。",
                 expected_answer="option-a",
