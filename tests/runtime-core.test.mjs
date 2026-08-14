@@ -862,6 +862,28 @@ test("correct and needs-review answers unlock the interaction", () => {
 });
 
 
+test("wrong transfer answers unlock navigation to the next beat", () => {
+  const runtime = new LessonRuntime([
+    {
+      beat_id: "transfer-beat",
+      next_beat_id: "after-transfer",
+      interaction: {
+        interaction_id: "transfer-check",
+        kind: "transfer",
+      },
+    },
+    { beat_id: "after-transfer", next_beat_id: null },
+  ]);
+
+  const outcome = runtime.recordAnswer({ classification: "incorrect" });
+
+  assert.equal(outcome.canContinue, true);
+  assert.equal(runtime.interactionComplete(), true);
+  assert.equal(runtime.next(), true);
+  assert.equal(runtime.current().beat_id, "after-transfer");
+});
+
+
 test("interaction kinds route to deterministic controls", () => {
   assert.equal(classifyInteractionControl({ kind: "choice" }), "options");
   assert.equal(classifyInteractionControl({ kind: "point_select" }), "board");
@@ -982,9 +1004,14 @@ test("wrong adaptive option presents authored support and advances automatically
     },
   ];
   const presentation = resolveInteractionPresentation({
-    result: { classification: "incorrect" },
+    result: { classification: "incorrect", support_cues: supportCues },
     interaction: { advance_after_response: true },
-    selectedOption: { option_id: "option-b", support_cues: supportCues },
+    selectedOption: {
+      option_id: "option-b",
+      support_cues: [
+        { cue_id: "untrusted", spoken_text: "不应采信。" },
+      ],
+    },
     outcome: { classification: "incorrect", canContinue: true },
   });
 

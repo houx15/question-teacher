@@ -13,7 +13,7 @@ import {
   resolveInteractionPresentation,
   runSupportCueSequence,
   scheduleBoardActions,
-} from "./runtime-core.mjs?v=20260807-3";
+} from "./runtime-core.mjs?v=20260814-1";
 import { CuePlayer } from "./cue-player.mjs?v=20260807-3";
 import {
   mathTextToPlainText,
@@ -1073,7 +1073,6 @@ async function submitInteraction(interaction, answer, selectedOption, ui) {
     const presentation = resolveInteractionPresentation({
       result,
       interaction,
-      selectedOption,
       outcome,
     });
     if (Array.isArray(presentation.supportCues)) {

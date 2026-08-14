@@ -489,7 +489,7 @@ def test_structured_runtime_public_payload_contains_support_without_private_bind
     )
 
     assert interaction["advance_after_response"] is True
-    assert all(option["support_cues"] for option in interaction["options"])
+    assert all("support_cues" not in option for option in interaction["options"])
     for private_field in (
         "expected_answer",
         "canonical_answer",

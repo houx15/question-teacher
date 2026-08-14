@@ -38,6 +38,7 @@ from app.schemas import (
     RuntimeBeat,
     RuntimeLesson,
     RuntimeSyncCue,
+    SupportSyncCue,
     TransferItem,
     TransferOption,
 )
@@ -2420,23 +2421,39 @@ def test_public_compiled_diagnostic_transfer_hides_answer_key():
 
 def test_choice_evaluation_returns_only_submitted_option_feedback():
     store = MemoryStore()
+    correct_option = InteractionOption(
+        option_id="correct-option",
+        label="正确选项",
+        feedback="correct-private-feedback",
+        feedback_audio_url="/audio/correct-private.mp3",
+        support_cues=[
+            SupportSyncCue(
+                cue_id="correct-support",
+                display_text="correct-support-secret",
+                spoken_text="正确后的支持讲解。",
+            )
+        ],
+    )
+    wrong_option = InteractionOption(
+        option_id="wrong-option",
+        label="错误选项",
+        feedback="wrong-private-feedback",
+        feedback_audio_url="/audio/wrong-private.mp3",
+        support_cues=[
+            SupportSyncCue(
+                cue_id="wrong-support",
+                display_text="wrong-support-secret",
+                spoken_text="错误后的定向支持讲解。",
+            )
+        ],
+    )
     lesson, interaction = save_interaction_lesson(
         store,
         kind="choice",
         expected="correct-option",
         options=[
-            InteractionOption(
-                option_id="correct-option",
-                label="正确选项",
-                feedback="correct-private-feedback",
-                feedback_audio_url="/audio/correct-private.mp3",
-            ),
-            InteractionOption(
-                option_id="wrong-option",
-                label="错误选项",
-                feedback="wrong-private-feedback",
-                feedback_audio_url="/audio/wrong-private.mp3",
-            ),
+            correct_option,
+            wrong_option,
         ],
     )
     client, _, _ = build_client(store=store)
@@ -2458,6 +2475,14 @@ def test_choice_evaluation_returns_only_submitted_option_feedback():
             "answer": "correct-option",
         },
     )
+    unselected_response = client.post(
+        "/api/interactions/evaluate",
+        json={
+            "lesson_id": lesson.lesson_id,
+            "interaction_id": interaction.interaction_id,
+            "answer": "unknown-option",
+        },
+    )
 
     public_serialized = json.dumps(
         public_response.json(),
@@ -2467,18 +2492,29 @@ def test_choice_evaluation_returns_only_submitted_option_feedback():
     assert "wrong-private-feedback" not in public_serialized
     assert "correct-private.mp3" not in public_serialized
     assert "wrong-private.mp3" not in public_serialized
+    assert "correct-support-secret" not in public_serialized
+    assert "wrong-support-secret" not in public_serialized
+    assert all(
+        "support_cues" not in option
+        for option in public_response.json()["beats"][0]["interaction"]["options"]
+    )
     assert wrong_response.json() == {
         "classification": "incorrect",
         "feedback": "wrong-private-feedback",
         "feedback_audio_url": "/audio/wrong-private.mp3",
+        "support_cues": wrong_option.model_dump(mode="json")["support_cues"],
     }
     assert "correct-private" not in wrong_response.text
     assert correct_response.json() == {
         "classification": "correct",
         "feedback": "correct-private-feedback",
         "feedback_audio_url": "/audio/correct-private.mp3",
+        "support_cues": correct_option.model_dump(mode="json")["support_cues"],
     }
     assert "wrong-private" not in correct_response.text
+    assert "wrong-support-secret" not in correct_response.text
+    assert "correct-support-secret" not in wrong_response.text
+    assert unselected_response.json() == {"classification": "incorrect"}
 
 
 @pytest.mark.parametrize("kind", ["choice", "point_select"])
@@ -2514,7 +2550,10 @@ def test_choice_and_point_select_use_trimmed_exact_comparison(kind):
         },
     )
 
-    assert correct.json() == {"classification": "correct"}
+    expected_correct = {"classification": "correct"}
+    if kind == "choice":
+        expected_correct["support_cues"] = []
+    assert correct.json() == expected_correct
     assert incorrect.json() == {"classification": "incorrect"}
 
 

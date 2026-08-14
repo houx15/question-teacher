@@ -202,8 +202,7 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
             for option in interaction.get("options", []):
                 option.pop("feedback", None)
                 option.pop("feedback_audio_url", None)
-                if not option.get("support_cues"):
-                    option.pop("support_cues", None)
+                option.pop("support_cues", None)
     return payload
 
 
@@ -488,6 +487,10 @@ def create_api_router(services: ApiServices) -> APIRouter:
             "classification": "correct" if correct else "incorrect",
         }
         if selected_option is not None:
+            result["support_cues"] = [
+                cue.model_dump(mode="json")
+                for cue in selected_option.support_cues
+            ]
             if selected_option.feedback is not None:
                 result["feedback"] = selected_option.feedback
             if selected_option.feedback_audio_url is not None:

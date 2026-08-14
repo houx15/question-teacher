@@ -1416,24 +1416,36 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260807-4"' in html
+    assert 'src="/static/lesson.js?v=20260814-1"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
 
 def test_versioned_lesson_module_remains_cacheable():
-    response = page_client().get("/static/lesson.js")
+    client = page_client()
+    html_response = client.get("/lesson/example")
+    response = client.get("/static/lesson.js?v=20260814-1")
+    runtime_response = client.get(
+        "/static/runtime-core.mjs?v=20260814-1"
+    )
 
+    assert html_response.headers["cache-control"] == "no-cache"
     assert response.status_code == 200
-    cache_directives = {
-        directive.partition("=")[0].strip().lower()
-        for directive in response.headers.get(
-            "cache-control",
-            "",
-        ).split(",")
-        if directive.strip()
-    }
-    assert cache_directives.isdisjoint({"no-cache", "no-store"})
+    assert (
+        '} from "./runtime-core.mjs?v=20260814-1";'
+        in response.text
+    )
+    for asset_response in (response, runtime_response):
+        assert asset_response.status_code == 200
+        cache_directives = {
+            directive.partition("=")[0].strip().lower()
+            for directive in asset_response.headers.get(
+                "cache-control",
+                "",
+            ).split(",")
+            if directive.strip()
+        }
+        assert cache_directives.isdisjoint({"no-cache", "no-store"})
 
 
 def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
@@ -1461,7 +1473,7 @@ def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
 def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
     source = page_client().get("/static/lesson.js").text
 
-    assert '} from "./runtime-core.mjs?v=20260807-3";' in source
+    assert '} from "./runtime-core.mjs?v=20260814-1";' in source
     assert 'import { CuePlayer } from "./cue-player.mjs?v=20260807-3";' in source
     assert "applySyncVisualAction" in source
     assert "let cuePlayer = null;" in source

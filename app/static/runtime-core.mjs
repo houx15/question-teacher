@@ -491,7 +491,6 @@ export function isNativeInteractiveTarget(target) {
 export function resolveInteractionPresentation({
   result = {},
   interaction = {},
-  selectedOption = null,
   outcome = {},
 } = {}) {
   const classification = result?.classification || outcome?.classification;
@@ -504,8 +503,8 @@ export function resolveInteractionPresentation({
     };
   }
 
-  const supportCues = Array.isArray(selectedOption?.support_cues)
-    ? selectedOption.support_cues
+  const supportCues = Array.isArray(result?.support_cues)
+    ? result.support_cues
     : [];
   if (supportCues.length > 0 && outcome?.canContinue === true) {
     const firstCue = supportCues[0];
@@ -660,6 +659,7 @@ export class LessonRuntime {
     const canContinue = (
       classification === "correct"
       || classification === "needs_review"
+      || beat?.interaction?.kind === "transfer"
       || beat?.interaction?.advance_after_response === true
     );
     if (canContinue) {
