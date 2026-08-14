@@ -540,13 +540,21 @@ def _contains_private_canonical_answer(
 
 
 def _canonical_is_public(option: object) -> bool:
-    return normalize_grounded_choice_option_label(
+    display_identity = normalize_cross_artifact_math_identity(
+        option.display_text
+    )
+    canonical_identity = normalize_cross_artifact_math_identity(
         option.canonical_answer
-    ) == normalize_grounded_choice_option_label(option.display_text)
+    )
+    return bool(
+        display_identity
+        and canonical_identity
+        and display_identity == canonical_identity
+    )
 
 
 _SLASH_FRACTION_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9_.])(\d+)/(\d+)(?![A-Za-z0-9_.])"
+    r"(?<![A-Za-z0-9_.])(\d+)\s*/\s*(\d+)(?![A-Za-z0-9_.])"
 )
 
 
@@ -621,11 +629,38 @@ def _response_evidence_units(response: object) -> List[str]:
     return units
 
 
+def _semantic_unit_cores(units: Sequence[str]) -> List[str]:
+    parents = list(range(len(units)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    for left in range(len(units)):
+        for right in range(left + 1, len(units)):
+            if units[left] in units[right] or units[right] in units[left]:
+                left_root = find(left)
+                right_root = find(right)
+                if left_root != right_root:
+                    parents[right_root] = left_root
+
+    cores = {}
+    for index, unit in enumerate(units):
+        root = find(index)
+        current = cores.get(root)
+        if current is None or len(unit) < len(current):
+            cores[root] = unit
+    return list(cores.values())
+
+
 def _has_distinct_response_anchor_evidence(
     units: Sequence[str],
     first_anchor: str,
     second_anchor: str,
 ) -> bool:
+    units = _semantic_unit_cores(units)
     first_units = set()
     second_units = set()
     for index, unit in enumerate(units):
