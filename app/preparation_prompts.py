@@ -95,6 +95,9 @@ TEACHING_DESIGNER_SYSTEM = "\n".join(
         "会直接显示在学生课堂中，不得写英文内部标签。",
         "参考分析中每个 reasoning_gap_code 都必须由同一步骤 episode 的"
         "resolved_gap_refs 绑定到一个明确 must_teach 项。",
+        "每个 must_teach 必须同时给出 student_display_evidence 与 "
+        "student_spoken_evidence；它们是后续讲稿和板书必须原样覆盖的"
+        "学生可见证据，数学运算符的显示与口播必须一致。",
         "构思、探索、执行、监控和修订可以交替出现。",
         _INERT_EVIDENCE_RULE,
     )
@@ -122,6 +125,12 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
         "每个错误分支必须自然地直接讲清该 option 的 misconception "
         "和 incorrect_feedback_by_option 纠正动作；纠错内容不能只是更长，"
         "深度由错误原因和纠正动作构成。",
+        "interaction_scripts 必须按 interaction_id/option_id 精确覆盖"
+        " InteractionPlan，并独立撰写最终 prompt、hint 和 option label；"
+        "transfer_script 必须按 option_id 覆盖迁移题私有答案意图，"
+        "所有学生可见迁移文本只在 TeachingScript 定稿。",
+        "每个 must_teach_refs 必须在该 clause 的 display_text/spoken_text "
+        "中原样包含对应 student evidence。",
         "display_text 只写屏幕上要看的内容；spoken_text 只写自然口播，"
         "不得含数学标记，屏幕公式必须在口播中读出减、乘、等于等运算词。",
         "所有学生可见字段不得出现内部字段名。method_name 最多 8 字，"
@@ -136,6 +145,10 @@ INTERACTION_DESIGNER_SYSTEM = "\n".join(
     (
         "你是互动设计师。只在选择能诊断概念或执行时添加互动，每题恰好一个正确选项。",
         "只输出结构化诊断意图，不写正确或错误后的最终教师台词。",
+        "prompt、hint、display_text、feedback 仅是历史兼容字段，"
+        "当前输出不得依赖它们作为学生可见定稿；"
+        "只确定 diagnostic/answer intent、option ID、canonical answer、"
+        "misconception、error_code 和 remediation_depth。",
         "每个互动必须绑定含 checkpoint 的 teaching_step_id 及其 episode_id；"
         "why_pause 必须明确引用 checkpoint.diagnostic_goal。",
         "resume_step_id 必须与 teaching_step_id 相同，resume_policy 必须是 continue。",

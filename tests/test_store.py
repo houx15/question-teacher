@@ -14,6 +14,7 @@ from app.schemas import (
     RuntimeLesson,
     RuntimeSyncCue,
     TransferItem,
+    TransferOption,
 )
 from app.preparation_models import GenerationRecord
 from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
@@ -87,6 +88,27 @@ def runtime_lesson(*, include_interaction: bool = False) -> RuntimeLesson:
             problem_text="x²-4x-5=0",
             expected_answer="x=-1 或 x=5",
             method_signal="先把常数项移到右边，再配方。",
+            options=[
+                TransferOption(
+                    option_id="transfer-a",
+                    label="x=-1 或 x=5",
+                    canonical_answer="x=-1 或 x=5",
+                    feedback="正确。",
+                ),
+                TransferOption(
+                    option_id="transfer-b",
+                    label="x=1 或 x=5",
+                    canonical_answer="x=1 或 x=5",
+                    feedback="再检查常数项的符号。",
+                ),
+                TransferOption(
+                    option_id="transfer-c",
+                    label="x=-1 或 x=-5",
+                    canonical_answer="x=-1 或 x=-5",
+                    feedback="再检查配方后的两个根。",
+                ),
+            ],
+            correct_option_id="transfer-a",
         ),
         validation_report={
             "math_status": "verified",
@@ -118,6 +140,28 @@ def private_generation_record(
     prepared["teaching_progression"] = teaching_progression_payload()
     prepared["teaching_script"]["title"] = lesson.title
     prepared["teaching_script"]["learning_goal"] = lesson.learning_goal
+    prepared["interaction_plan"]["transfer_item"] = {
+        "problem_text": lesson.transfer_item.problem_text,
+        "expected_answer": lesson.transfer_item.expected_answer,
+        "method_signal": lesson.transfer_item.method_signal,
+        "options": [
+            option.model_dump(mode="json")
+            for option in lesson.transfer_item.options
+        ],
+        "correct_option_id": lesson.transfer_item.correct_option_id,
+    }
+    prepared["teaching_script"]["transfer_script"] = {
+        "problem_text": lesson.transfer_item.problem_text,
+        "method_signal": lesson.transfer_item.method_signal,
+        "options": [
+            {
+                "option_id": option.option_id,
+                "label": option.label,
+                "feedback": option.feedback,
+            }
+            for option in lesson.transfer_item.options
+        ],
+    }
     for clause in prepared["teaching_script"]["clauses"]:
         clause["lesson_step_id"] = "teaching-step-001"
         clause["display_text"] = "等式两边同时减一"

@@ -775,6 +775,86 @@ def test_audio_service_voices_support_cues_from_spoken_text(tmp_path):
     assert lesson.model_dump(mode="python") == original_dump
 
 
+def test_audio_service_keeps_first_and_middle_beat_support_cues_bound(tmp_path):
+    lesson = cue_runtime_lesson()
+
+    def interaction(suffix, spoken_text):
+        return Interaction(
+            interaction_id="interaction-%s" % suffix,
+            kind="choice",
+            prompt="选择当前判断。",
+            expected_answer="option-%s" % suffix,
+            options=[
+                InteractionOption(
+                    option_id="option-%s" % suffix,
+                    label="判断%s" % suffix,
+                    support_cues=[
+                        SupportSyncCue(
+                            cue_id="support-%s" % suffix,
+                            display_text="支持%s" % suffix,
+                            spoken_text=spoken_text,
+                        )
+                    ],
+                )
+            ],
+        )
+
+    beats = [
+        lesson.beats[0].model_copy(
+            update={"interaction": interaction("first", "第一步支持。")}
+        ),
+        lesson.beats[1].model_copy(
+            update={"interaction": interaction("middle", "中间步支持。")}
+        ),
+        lesson.beats[0].model_copy(
+            deep=True,
+            update={
+                "beat_id": "beat-last",
+                "interaction": None,
+                "sync_cues": [
+                    RuntimeSyncCue(
+                        cue_id="cue-last",
+                        spoken_text="最后一步。",
+                    )
+                ],
+            },
+        ),
+    ]
+    lesson = lesson.model_copy(update={"beats": beats})
+
+    voiced = run(
+        LessonAudioService(FakeSpeechClient(), tmp_path).attach_audio(lesson)
+    )
+
+    for beat_index, expected_text in ((0, "第一步支持。"), (1, "中间步支持。")):
+        beat = voiced.beats[beat_index]
+        runtime_interaction = beat.interaction
+        option = runtime_interaction.options[0]
+        cue = option.support_cues[0]
+        assert cue.spoken_text == expected_text
+        expected_id = support_cue_asset_id(
+            beat.beat_id,
+            runtime_interaction.interaction_id,
+            option.option_id,
+            cue.cue_id,
+        )
+        assert cue.audio_url == "/audio/%s/%s.mp3" % (
+            lesson.lesson_id,
+            expected_id,
+        )
+    assert voiced.beats[2].interaction is None
+
+
+def test_support_asset_id_is_stable_distinct_and_below_name_max():
+    longest = "x" * 64
+    first = support_cue_asset_id(longest, longest, longest, longest)
+    second = support_cue_asset_id(longest, longest, longest, "y" * 64)
+
+    assert first == support_cue_asset_id(longest, longest, longest, longest)
+    assert first != second
+    assert len((first + ".mp3").encode("utf-8")) < 255
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["missing", "external", "cross_lesson", "swapped", "cross_option"],

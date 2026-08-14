@@ -816,6 +816,69 @@ def _validate_structured_case_evidence(
         for response in prepared.teaching_script.response_scripts
         for clause in response.clauses
     ]
+    must_teach = {
+        item.content: item
+        for episode in prepared.reasoning_trajectory.episodes
+        for item in episode.must_teach
+    }
+    actions_by_clause = {}
+    completed_steps = set()
+    for cue in prepared.performance_score.cues:
+        for field in ("lead_actions", "start_actions", "end_actions"):
+            for binding in getattr(cue, field):
+                action = binding.action
+                if (
+                    action.type in {"write", "transform"}
+                    and action.surface == "board"
+                ):
+                    actions_by_clause.setdefault(binding.clause_id, []).append(
+                        action.content or ""
+                    )
+                if action.type == "complete_step":
+                    completed_steps.add(action.teaching_step_id)
+    for content in case["required_must_teach"]:
+        item = must_teach.get(content)
+        if (
+            item is None
+            or not item.student_display_evidence
+            or not item.student_spoken_evidence
+        ):
+            raise GoldenEvidenceError(
+                "required must-teach structured evidence is missing"
+            )
+        evidence_clauses = [
+            clause for clause in clauses
+            if item.must_teach_id in clause.must_teach_refs
+            and item.student_display_evidence in (clause.display_text or "")
+            and item.student_spoken_evidence in clause.spoken_text
+        ]
+        if not evidence_clauses or not any(
+            item.student_display_evidence in action_content
+            for clause in evidence_clauses
+            for action_content in actions_by_clause.get(clause.clause_id, [])
+        ):
+            raise GoldenEvidenceError(
+                "required must-teach script and board evidence is missing"
+            )
+
+    if completed_steps != {step.step_id for step in progression.steps}:
+        raise GoldenEvidenceError("teaching step completion evidence is missing")
+
+    responses = list(prepared.teaching_script.response_scripts)
+    if not any(
+        response.classification == "correct"
+        and response.depth == "brief"
+        for response in responses
+    ):
+        raise GoldenEvidenceError("brief correct response evidence is missing")
+    if not any(
+        response.classification == "incorrect"
+        and response.depth in {"conceptual", "worked"}
+        and response.clauses
+        for response in responses
+    ):
+        raise GoldenEvidenceError("deeper wrong-answer support evidence is missing")
+
     for expected in case["required_spoken_forms"]:
         if not any(
             expected["display"] in clause.display_text
@@ -1039,9 +1102,16 @@ def _contract_metrics(
         ),
     }
 
-    script_clause_ids = {
-        clause.clause_id for clause in prepared.teaching_script.clauses
-    }
+    response_scripts = list(
+        getattr(prepared.teaching_script, "response_scripts", []) or []
+    )
+    response_clauses = [
+        clause
+        for response in response_scripts
+        for clause in response.clauses
+    ]
+    all_clauses = list(prepared.teaching_script.clauses) + response_clauses
+    script_clause_ids = {clause.clause_id for clause in all_clauses}
     all_actions = []
     valid_actions = 0
     for cue in prepared.performance_score.cues:
@@ -1073,15 +1143,6 @@ def _contract_metrics(
     } & step_ids
     step_metric = _ratio_metric("covered", len(covered_step_ids), len(step_ids))
 
-    response_scripts = list(
-        getattr(prepared.teaching_script, "response_scripts", []) or []
-    )
-    response_clauses = [
-        clause
-        for response in response_scripts
-        for clause in response.clauses
-    ]
-    all_clauses = list(prepared.teaching_script.clauses) + response_clauses
     aligned = 0
     alignment_total = 0
     for clause in all_clauses:

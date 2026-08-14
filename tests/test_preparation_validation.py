@@ -212,6 +212,8 @@ def episode_payload(index, step_id):
                 "must_teach_id": "must-%d" % (index + 1),
                 "content": "解释%s" % step_id,
                 "why_it_matters": "学生需要理解依赖",
+                "student_display_evidence": "解释当前这一步为什么成立",
+                "student_spoken_evidence": "我们解释当前这一步为什么成立。",
             }
         ],
         "likely_misconceptions": [],
@@ -364,6 +366,27 @@ def script_payload():
             }
             for option_id in ("option-a", "option-b", "option-c")
         ],
+        "interaction_scripts": [
+            {
+                "interaction_id": "interaction-1",
+                "prompt": "下一步应处理哪个已知条件？",
+                "hint": "想想根的定义。",
+                "options": [
+                    {"option_id": "option-a", "label": "代入已知根"},
+                    {"option_id": "option-b", "label": "分别求m和n"},
+                    {"option_id": "option-c", "label": "忽略根条件"},
+                ],
+            }
+        ],
+        "transfer_script": {
+            "problem_text": "另一题仍用参数根求关系",
+            "method_signal": "先代入已知根",
+            "options": [
+                {"option_id": "transfer-a", "label": r"\(p-q=\frac{1}{2}\)", "feedback": "正确"},
+                {"option_id": "transfer-b", "label": r"\(p-q=2\)", "feedback": "检查除法"},
+                {"option_id": "transfer-c", "label": r"\(p+q=\frac{1}{2}\)", "feedback": "检查目标"},
+            ],
+        },
         "closing_summary_clause_ids": ["clause-7"],
     }
 
@@ -866,6 +889,62 @@ def test_parameter_root_full_traceability_matrix_validates():
         )
     ]
     validate_prepared_lesson(prepared, route(), targets)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    (
+        ("missing_display_evidence", "must_teach_evidence_missing"),
+        ("missing_interaction_script", "interaction_script_coverage_invalid"),
+        ("missing_transfer_script", "transfer_script_missing"),
+    ),
+)
+def test_current_rubric_fails_closed_on_new_student_evidence_ownership(
+    mutation,
+    code,
+):
+    payload = prepared_payload()
+    if mutation == "missing_display_evidence":
+        payload["reasoning_trajectory"]["episodes"][0]["must_teach"][0].pop(
+            "student_display_evidence"
+        )
+    elif mutation == "missing_interaction_script":
+        payload["teaching_script"]["interaction_scripts"] = []
+    else:
+        payload["teaching_script"]["transfer_script"] = None
+    prepared = PreparedLesson.model_validate(payload)
+
+    assert_code(
+        code,
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value", "code"),
+    (
+        ("problem_text", "{{highlight target}}", "choice_formula_invalid"),
+        ("method_signal", r"先看 \(m-n\)", "transfer_script_content_invalid"),
+        ("feedback", r"所以 \(m-n=1\)", "transfer_script_content_invalid"),
+    ),
+)
+def test_current_transfer_script_rejects_unsafe_public_text(
+    field,
+    unsafe_value,
+    code,
+):
+    payload = prepared_payload()
+    transfer = payload["teaching_script"]["transfer_script"]
+    if field == "feedback":
+        transfer["options"][0][field] = unsafe_value
+    else:
+        transfer[field] = unsafe_value
+    prepared = PreparedLesson.model_validate(payload)
+
+    assert_code(
+        code,
+        lambda: validate_prepared_lesson(prepared, route(), []),
+    )
 
 
 @pytest.mark.parametrize(

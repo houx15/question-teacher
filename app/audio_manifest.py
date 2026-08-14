@@ -1,3 +1,5 @@
+import hashlib
+
 from app.schemas import RuntimeLesson
 
 
@@ -44,9 +46,18 @@ def support_cue_asset_id(
     option_id: str,
     cue_id: str,
 ) -> str:
+    # Length-prefix every component so that the digest input is unambiguous.
+    # The readable prefix is deliberately taken only from the already bounded
+    # digest: provider-authored identifiers never contribute to filename
+    # length or filesystem metacharacters.
+    components = (beat_id, interaction_id, option_id, cue_id)
+    canonical = "".join(
+        "%d:%s" % (len(value.encode("utf-8")), value)
+        for value in components
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return validated_audio_asset_id(
-        "support-%s-%s-%s-%s"
-        % (beat_id, interaction_id, option_id, cue_id)
+        "support-cue-%s" % digest[:40]
     )
 
 

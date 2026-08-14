@@ -473,11 +473,180 @@ def validate_teaching_script(
                 must_teach_id,
                 "Must-teach item has no script-clause evidence.",
             )
+    _validate_must_teach_script_evidence(script, trajectory)
+    _validate_authored_student_interactions(script, interaction_plan)
     _validate_response_scripts(
         script,
         interaction_plan,
         episode_steps,
     )
+
+
+def _contains_evidence(container: str, evidence: str) -> bool:
+    return contains_bounded_answer_token(container, evidence) or (
+        normalize_cross_artifact_math_identity(evidence)
+        in normalize_cross_artifact_math_identity(container)
+    )
+
+
+def _validate_must_teach_script_evidence(
+    script: TeachingScript,
+    trajectory: ReasoningTrajectory,
+) -> None:
+    items = {
+        item.must_teach_id: item
+        for episode in trajectory.episodes
+        for item in episode.must_teach
+    }
+    clauses_by_ref: Dict[str, List[object]] = {item_id: [] for item_id in items}
+    for clause in script.clauses:
+        for item_id in clause.must_teach_refs:
+            clauses_by_ref.setdefault(item_id, []).append(clause)
+    for item_id, item in items.items():
+        if (
+            item.student_display_evidence is None
+            or item.student_spoken_evidence is None
+        ):
+            _fail(
+                "must_teach_evidence_missing",
+                item_id,
+                "Current must-teach items require student-visible display and spoken evidence.",
+            )
+        if not any(
+            _contains_evidence(
+                clause.display_text or "", item.student_display_evidence
+            )
+            and _contains_evidence(
+                clause.spoken_text, item.student_spoken_evidence
+            )
+            for clause in clauses_by_ref.get(item_id, [])
+        ):
+            _fail(
+                "must_teach_evidence_missing",
+                item_id,
+                "Must-teach evidence must appear in its bound student-visible script clause.",
+            )
+        try:
+            validate_display_spoken_alignment(
+                item.student_display_evidence,
+                item.student_spoken_evidence,
+            )
+        except MathSpeechError:
+            _fail(
+                "must_teach_evidence_alignment_invalid",
+                item_id,
+                "Must-teach display and spoken evidence are not aligned.",
+            )
+
+
+def _validate_authored_student_interactions(
+    script: TeachingScript,
+    plan: InteractionPlan,
+) -> None:
+    authored = {item.interaction_id: item for item in script.interaction_scripts}
+    planned = {item.interaction_id: item for item in plan.interactions}
+    if set(authored) != set(planned):
+        _fail(
+            "interaction_script_coverage_invalid",
+            "teaching_script",
+            "Teaching script must author every planned interaction exactly once.",
+        )
+    for interaction_id, private in planned.items():
+        public = authored[interaction_id]
+        public_options = {item.option_id: item for item in public.options}
+        private_options = {item.option_id: item for item in private.options}
+        if set(public_options) != set(private_options):
+            _fail(
+                "interaction_script_coverage_invalid",
+                interaction_id,
+                "Authored option IDs must exactly cover the private answer intent.",
+            )
+        labels = [item.label for item in public.options]
+        if (
+            not is_valid_generated_display_content(public.prompt)
+            or contains_internal_control_syntax(public.prompt)
+            or (
+                public.hint is not None
+                and (
+                    not is_valid_generated_display_content(public.hint)
+                    or contains_internal_control_syntax(public.hint)
+                    or contains_math_markup(public.hint)
+                )
+            )
+        ):
+            _fail(
+                "interaction_script_content_invalid",
+                interaction_id,
+                "Authored interaction prompt or spoken hint is unsafe.",
+            )
+        if not _labels_are_unique(labels) or any(
+            not is_valid_generated_display_content(label) for label in labels
+        ):
+            _fail(
+                "choice_formula_invalid",
+                interaction_id,
+                "Authored interaction options must be unique safe display content.",
+            )
+        correct = private_options[private.correct_option_id]
+        correct_label = public_options[private.correct_option_id].label
+        visible = "|".join((public.prompt, public.hint or ""))
+        if contains_explicit_choice_answer_leak(
+            visible, correct.option_id, correct_label
+        ) or contains_explicit_choice_answer_leak(
+            visible, correct.option_id, correct.canonical_answer
+        ):
+            _fail(
+                "interaction_answer_leakage",
+                interaction_id,
+                "Authored prompt or hint exposes the private correct answer binding.",
+            )
+
+    transfer = script.transfer_script
+    if transfer is None:
+        _fail(
+            "transfer_script_missing",
+            "teaching_script",
+            "Current teaching script must own final transfer text.",
+        )
+    planned_transfer = plan.transfer_item
+    public_transfer_options = {item.option_id: item for item in transfer.options}
+    private_transfer_options = {
+        item.option_id: item for item in planned_transfer.options
+    }
+    if set(public_transfer_options) != set(private_transfer_options):
+        _fail(
+            "transfer_script_coverage_invalid",
+            "transfer_item",
+            "Authored transfer option IDs must exactly cover private answer intent.",
+        )
+    transfer_labels = [item.label for item in transfer.options]
+    transfer_display_values = [transfer.problem_text, *transfer_labels]
+    if (
+        not _labels_are_unique(transfer_labels)
+        or any(
+            not is_valid_generated_display_content(item)
+            or contains_internal_control_syntax(item)
+            for item in transfer_display_values
+        )
+    ):
+        _fail(
+            "choice_formula_invalid",
+            "transfer_item",
+            "Authored transfer problem and options must be safe display content.",
+        )
+    transfer_spoken_values = [
+        transfer.method_signal,
+        *(item.feedback for item in transfer.options),
+    ]
+    if any(
+        contains_math_markup(item) or contains_internal_control_syntax(item)
+        for item in transfer_spoken_values
+    ):
+        _fail(
+            "transfer_script_content_invalid",
+            "transfer_item",
+            "Authored transfer hints and feedback must be safe spoken content.",
+        )
 
 
 def _validate_authored_clause_language(clause: object) -> None:
@@ -2737,6 +2906,7 @@ def validate_prepared_lesson(
         prepared.teaching_script,
         prepared.interaction_plan,
     )
+    _validate_must_teach_board_evidence(prepared)
     validate_simulation_report(
         prepared.simulation_report,
         prepared.reasoning_trajectory,
@@ -2760,6 +2930,44 @@ def validate_prepared_lesson(
             "review",
             "Prepared lesson requires an approved review.",
         )
+
+
+def _validate_must_teach_board_evidence(prepared: PreparedLesson) -> None:
+    items = {
+        item.must_teach_id: item
+        for episode in prepared.reasoning_trajectory.episodes
+        for item in episode.must_teach
+    }
+    clause_refs = {
+        clause.clause_id: set(clause.must_teach_refs)
+        for clause in prepared.teaching_script.clauses
+    }
+    action_contents: Dict[str, List[str]] = {}
+    for cue in prepared.performance_score.cues:
+        for phase in (cue.lead_actions, cue.start_actions, cue.end_actions):
+            for bound in phase:
+                if (
+                    bound.action.surface == "board"
+                    and bound.action.type in {"write", "transform"}
+                    and bound.action.content
+                ):
+                    action_contents.setdefault(bound.clause_id, []).append(
+                        bound.action.content
+                    )
+    for item_id, item in items.items():
+        matching_clauses = [
+            clause_id
+            for clause_id, refs in clause_refs.items()
+            if item_id in refs
+        ]
+        if item.student_display_evidence is None or not any(
+            action_contents.get(clause_id) for clause_id in matching_clauses
+        ):
+            _fail(
+                "must_teach_board_evidence_missing",
+                item_id,
+                "Every current must-teach item requires a board write bound to its evidence clause.",
+            )
 
 
 def _validate_artifact_history(

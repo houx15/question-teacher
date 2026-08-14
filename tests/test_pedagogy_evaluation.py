@@ -211,28 +211,90 @@ def test_golden_fixture_covers_reviewed_breadth_without_templated_expectations()
 def _structured_evidence_record(case):
     clauses = [
         SimpleNamespace(
-            display_text=expected["display"],
-            spoken_text=expected["spoken_contains"],
+            clause_id="clause-%d" % index,
+            display_text=content,
+            spoken_text=content,
+            must_teach_refs=["must-%d" % index],
         )
-        for expected in case["required_spoken_forms"]
+        for index, content in enumerate(case["required_must_teach"], start=1)
+    ]
+    clauses[3].display_text += " n≠0"
+    clauses[3].spoken_text += " n 不等于零"
+    clauses[4].display_text += " m-n"
+    clauses[4].spoken_text = "n 减 m 与 m 减 n 互为相反数"
+    items = [
+        SimpleNamespace(
+            must_teach_id="must-%d" % index,
+            content=content,
+            student_display_evidence=content,
+            student_spoken_evidence=clauses[index - 1].spoken_text,
+        )
+        for index, content in enumerate(case["required_must_teach"], start=1)
     ]
     options = [
         SimpleNamespace(error_code=error_code)
         for error_code in case["required_error_codes"]
     ]
     prepared = SimpleNamespace(
+        reasoning_trajectory=SimpleNamespace(
+            episodes=[SimpleNamespace(must_teach=items)]
+        ),
         teaching_progression=SimpleNamespace(
             steps=[
-                SimpleNamespace(directory_label=label)
-                for label in case["required_step_labels"]
+                SimpleNamespace(
+                    step_id="step-%d" % index,
+                    directory_label=label,
+                )
+                for index, label in enumerate(case["required_step_labels"], start=1)
             ]
         ),
         teaching_script=SimpleNamespace(
             clauses=clauses,
-            response_scripts=[],
+            response_scripts=[
+                SimpleNamespace(
+                    classification="correct",
+                    depth="brief",
+                    clauses=[SimpleNamespace(must_teach_refs=[])],
+                ),
+                SimpleNamespace(
+                    classification="incorrect",
+                    depth="worked",
+                    clauses=[SimpleNamespace(must_teach_refs=[])],
+                ),
+            ],
         ),
         interaction_plan=SimpleNamespace(
             interactions=[SimpleNamespace(options=options)]
+        ),
+        performance_score=SimpleNamespace(
+            cues=[
+                SimpleNamespace(
+                    lead_actions=[],
+                    start_actions=[
+                        SimpleNamespace(
+                            clause_id=clause.clause_id,
+                            action=SimpleNamespace(
+                                type="write",
+                                surface="board",
+                                content=items[index - 1].student_display_evidence,
+                                teaching_step_id="step-%d" % index,
+                            ),
+                        )
+                    ],
+                    end_actions=[
+                        SimpleNamespace(
+                            clause_id=clause.clause_id,
+                            action=SimpleNamespace(
+                                type="complete_step",
+                                surface="board",
+                                content=None,
+                                teaching_step_id="step-%d" % index,
+                            ),
+                        )
+                    ],
+                )
+                for index, clause in enumerate(clauses, start=1)
+            ]
         ),
     )
     return SimpleNamespace(prepared_lesson=prepared)
@@ -247,11 +309,42 @@ def test_parameter_root_structured_evidence_fails_closed(mutation):
             "第一步：缺少根的意义"
         )
     elif mutation == "spoken":
-        record.prepared_lesson.teaching_script.clauses[0].spoken_text = "m n"
+        record.prepared_lesson.teaching_script.clauses[4].spoken_text = "m n"
     else:
         record.prepared_lesson.interaction_plan.interactions[0].options[
             0
         ].error_code = "other-error"
+
+    with pytest.raises(evaluation.GoldenEvidenceError):
+        evaluation._validate_structured_case_evidence(case, record)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "must_teach_1",
+        "must_teach_2",
+        "must_teach_3",
+        "must_teach_4",
+        "must_teach_5",
+        "minus_not_spoken",
+        "wrong_support_not_deeper",
+        "step_never_completed",
+    ),
+)
+def test_parameter_root_eight_required_mutations_fail_closed(mutation):
+    case = _load_cases()[0]
+    record = _structured_evidence_record(case)
+    prepared = record.prepared_lesson
+    if mutation.startswith("must_teach_"):
+        index = int(mutation.rsplit("_", 1)[1]) - 1
+        prepared.teaching_script.clauses[index].must_teach_refs = []
+    elif mutation == "minus_not_spoken":
+        prepared.teaching_script.clauses[4].spoken_text = "n m 互为相反数"
+    elif mutation == "wrong_support_not_deeper":
+        prepared.teaching_script.response_scripts[1].depth = "brief"
+    else:
+        prepared.performance_score.cues[2].end_actions = []
 
     with pytest.raises(evaluation.GoldenEvidenceError):
         evaluation._validate_structured_case_evidence(case, record)
@@ -376,6 +469,59 @@ def _single_case():
         "acceptable_excerpt_patterns": ["两边同时减一"],
         "unacceptable_excerpt_patterns": ["直接移过去"],
     }]
+
+
+def test_contract_metric_accepts_action_bound_to_response_clause():
+    bundle = _fake_bundle()
+    prepared = bundle.generation_record.prepared_lesson
+    response_clause = SimpleNamespace(
+        clause_id="response-clause-1",
+        must_teach_refs=[],
+        display_text="错误原因",
+        spoken_text="我们拆解这个错误原因。",
+        lesson_step_id=None,
+    )
+    prepared.teaching_script.response_scripts = [
+        SimpleNamespace(
+            interaction_id="interaction-1",
+            option_id="option-wrong",
+            classification="incorrect",
+            depth="worked",
+            clauses=[response_clause],
+        )
+    ]
+    prepared.interaction_plan = SimpleNamespace(interactions=[])
+    prepared.performance_score.cues.append(
+        SimpleNamespace(
+            clause_ids=[response_clause.clause_id],
+            lead_actions=[],
+            start_actions=[
+                SimpleNamespace(
+                    clause_id=response_clause.clause_id,
+                    action=SimpleNamespace(
+                        surface="board",
+                        type="write",
+                        teaching_step_id=None,
+                    ),
+                )
+            ],
+            end_actions=[],
+        )
+    )
+
+    metrics = evaluation._contract_metrics(
+        bundle.lesson,
+        bundle.generation_record,
+        duration_ms=1,
+        rubric_version="0.1",
+        call_count=7,
+    )
+
+    assert metrics["clause_action_binding"] == {
+        "valid": 2,
+        "total": 2,
+        "ratio": 1.0,
+    }
 
 
 def _canonical_sha256(payload):

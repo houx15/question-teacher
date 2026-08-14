@@ -103,6 +103,12 @@ def runtime_lesson(
             "problem_text": "2x=4",
             "expected_answer": "x=2",
             "method_signal": "保持等式平衡",
+            "options": [
+                {"option_id": "transfer-a", "label": "x=2", "canonical_answer": "x=2", "feedback": "正确"},
+                {"option_id": "transfer-b", "label": "x=1", "canonical_answer": "x=1", "feedback": "再算一次"},
+                {"option_id": "transfer-c", "label": "x=4", "canonical_answer": "x=4", "feedback": "注意等式两边"},
+            ],
+            "correct_option_id": "transfer-a",
         },
         validation_report={"math_status": "verified"},
     )
@@ -230,6 +236,33 @@ def generation_record_for(lesson):
     prepared["teaching_progression"] = teaching_progression_payload()
     prepared["teaching_script"]["title"] = lesson.title
     prepared["teaching_script"]["learning_goal"] = lesson.learning_goal
+    prepared["interaction_plan"]["transfer_item"] = {
+        "problem_text": lesson.transfer_item.problem_text,
+        "expected_answer": lesson.transfer_item.expected_answer,
+        "method_signal": lesson.transfer_item.method_signal,
+        "options": [
+            {
+                "option_id": option.option_id,
+                "label": option.label,
+                "canonical_answer": option.canonical_answer,
+                "feedback": option.feedback,
+            }
+            for option in lesson.transfer_item.options
+        ],
+        "correct_option_id": lesson.transfer_item.correct_option_id,
+    }
+    prepared["teaching_script"]["transfer_script"] = {
+        "problem_text": lesson.transfer_item.problem_text,
+        "method_signal": lesson.transfer_item.method_signal,
+        "options": [
+            {
+                "option_id": option.option_id,
+                "label": option.label,
+                "feedback": option.feedback,
+            }
+            for option in lesson.transfer_item.options
+        ],
+    }
     for clause in prepared["teaching_script"]["clauses"]:
         clause["lesson_step_id"] = "teaching-step-001"
         clause["display_text"] = "等式两边同时减一"
@@ -3017,6 +3050,17 @@ def _parameter_root_preparation_client():
         "学生能在平方错误后借助中间步骤修正并继续。",
     ]
     trajectory = trajectory_payload()
+    for episode, clause_id in zip(
+        trajectory["episodes"],
+        ("clause-open", "clause-2", "clause-3", "clause-4", "clause-close"),
+    ):
+        evidence = episode["must_teach"][0]
+        evidence["student_display_evidence"] = clause_by_id[clause_id][
+            "display_text"
+        ]
+        evidence["student_spoken_evidence"] = clause_by_id[clause_id][
+            "spoken_text"
+        ]
     trajectory["episodes"][1]["likely_misconceptions"] = [
         "把根代给参数",
         "还未代入就约分",

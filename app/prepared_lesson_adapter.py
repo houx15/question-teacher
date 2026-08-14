@@ -414,6 +414,18 @@ def _runtime_interaction(
     script: TeachingScript,
     performance_cues_by_clause: dict,
 ) -> Interaction:
+    authored = next(
+        (
+            item for item in script.interaction_scripts
+            if item.interaction_id == planned.interaction_id
+        ),
+        None,
+    )
+    if authored is None:
+        raise PreparedLessonAdaptationError(
+            "current interaction has no authored student-visible script"
+        )
+    authored_options = {item.option_id: item for item in authored.options}
     responses = {
         response.option_id: response
         for response in script.response_scripts
@@ -422,12 +434,12 @@ def _runtime_interaction(
     return Interaction(
         interaction_id=planned.interaction_id,
         kind="choice",
-        prompt=planned.prompt,
+        prompt=authored.prompt,
         expected_answer=planned.correct_option_id,
         options=[
             InteractionOption(
                 option_id=option.option_id,
-                label=option.display_text,
+                label=authored_options[option.option_id].label,
                 support_cues=[
                     SupportSyncCue(
                         cue_id=clause.clause_id,
@@ -460,7 +472,7 @@ def _runtime_interaction(
             )
             for option in planned.options
         ],
-        hints=[planned.hint] if planned.hint is not None else [],
+        hints=[authored.hint] if authored.hint is not None else [],
         explanation_after_correct="",
         advance_after_response=True,
     )
@@ -712,21 +724,29 @@ def _lesson_moments(prepared: PreparedLesson, body: list) -> List[LessonMoment]:
 
 
 def _transfer_item(prepared: PreparedLesson) -> TransferItem:
-    source = prepared.interaction_plan.transfer_item
+    private = prepared.interaction_plan.transfer_item
+    source = prepared.teaching_script.transfer_script
+    if source is None:
+        raise PreparedLessonAdaptationError(
+            "current transfer item has no authored student-visible script"
+        )
+    private_options = {item.option_id: item for item in private.options}
     return TransferItem(
         problem_text=source.problem_text,
-        expected_answer=source.expected_answer,
+        expected_answer=private.expected_answer,
         method_signal=source.method_signal,
         options=[
             TransferOption(
                 option_id=option.option_id,
                 label=option.label,
-                canonical_answer=option.canonical_answer,
+                canonical_answer=private_options[
+                    option.option_id
+                ].canonical_answer,
                 feedback=option.feedback,
             )
             for option in source.options
         ],
-        correct_option_id=source.correct_option_id,
+        correct_option_id=private.correct_option_id,
     )
 
 

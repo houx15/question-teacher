@@ -74,6 +74,27 @@ class LessonAudioService:
             )
         return lesson_dir, destination
 
+    def _validate_filename_length(
+        self,
+        lesson_id: str,
+        asset_id: str,
+    ) -> None:
+        root = self.audio_root.resolve()
+        try:
+            name_max = os.pathconf(root, "PC_NAME_MAX")
+        except (OSError, ValueError):
+            name_max = 255
+        destination_name = audio_asset_filename(asset_id)
+        # mkstemp appends an implementation-generated token to this prefix.
+        temporary_name = ".%s-%s.tmp" % (asset_id, "x" * 16)
+        if any(
+            len(name.encode("utf-8")) > name_max
+            for name in (lesson_id, destination_name, temporary_name)
+        ):
+            raise SpeechGenerationError(
+                "Audio asset filename exceeds filesystem limit"
+            )
+
     @staticmethod
     def _support_asset_id(
         beat_id: str,
@@ -142,6 +163,7 @@ class LessonAudioService:
 
         def plan_asset(asset_id: str) -> None:
             self._validate_identifier(asset_id)
+            self._validate_filename_length(lesson.lesson_id, asset_id)
             if asset_id in planned_asset_ids:
                 raise SpeechGenerationError(
                     "Duplicate audio asset identifier"
@@ -378,7 +400,7 @@ class LessonAudioService:
                 )
 
             fully_voiced_beats = []
-            for beat in voiced_beats:
+            for beat_index, beat in enumerate(voiced_beats):
                 interaction = beat.interaction
                 if interaction is not None:
                     hint_audio_urls = []

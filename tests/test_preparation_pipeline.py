@@ -185,6 +185,13 @@ def trajectory_payload(
     modes=("plan", "execute", "monitor", "revise", "execute"),
     trajectory_type="hybrid",
 ):
+    evidence_spoken = (
+        "先找到题目要求的关系。",
+        "代入后先观察它与目标的关系。",
+        "注意n不等于零，这一步才能约去因式。",
+        "约去之后检查新关系是否能继续。",
+        "最后整理并回到m减n这个目标。",
+    )
     step_groups = (
         ["substitute-root"],
         ["connect-target"],
@@ -220,6 +227,8 @@ def trajectory_payload(
                         "must_teach_id": "must-%d" % (index + 1),
                         "content": "当前决定与依据",
                         "why_it_matters": "学生需要跟上为什么",
+                        "student_display_evidence": "说明当前一步的依据与作用",
+                        "student_spoken_evidence": evidence_spoken[index],
                     }
                 ],
                 "likely_misconceptions": [],
@@ -343,6 +352,7 @@ def downstream_response_scripts(interactions):
 
 
 def downstream_script_payload(interactions=None):
+    interactions = interactions or []
     clause_specs = (
         ("clause-open", "episode-1", ["must-1"], "先找到题目要求的关系。", ["m-n"]),
         ("clause-method", "episode-1", [], "根一定满足原方程，所以先代入。", ["x=2n"]),
@@ -391,7 +401,34 @@ def downstream_script_payload(interactions=None):
         "opening_clause_ids": ["clause-open"],
         "method_introduction_clause_ids": ["clause-method"],
         "clauses": clauses,
-        "response_scripts": downstream_response_scripts(interactions or []),
+        "response_scripts": downstream_response_scripts(interactions),
+        "interaction_scripts": [
+            {
+                "interaction_id": interaction["interaction_id"],
+                "prompt": interaction["prompt"],
+                "hint": interaction.get("hint"),
+                "options": [
+                    {
+                        "option_id": option["option_id"],
+                        "label": option["display_text"],
+                    }
+                    for option in interaction["options"]
+                ],
+            }
+            for interaction in interactions
+        ],
+        "transfer_script": {
+            "problem_text": downstream_transfer_payload()["problem_text"],
+            "method_signal": downstream_transfer_payload()["method_signal"],
+            "options": [
+                {
+                    "option_id": option["option_id"],
+                    "label": option["label"],
+                    "feedback": option["feedback"],
+                }
+                for option in downstream_transfer_payload()["options"]
+            ],
+        },
         "closing_summary_clause_ids": ["clause-close"],
     }
 

@@ -684,6 +684,7 @@ def test_adapter_allows_zero_interactions_and_merges_adjacent_free_episodes():
     payload = prepared_payload()
     payload["interaction_plan"]["interactions"] = []
     payload["teaching_script"]["response_scripts"] = []
+    payload["teaching_script"]["interaction_scripts"] = []
     payload["performance_score"]["cues"] = [
         cue
         for cue in payload["performance_score"]["cues"]
@@ -700,6 +701,22 @@ def test_adapter_allows_zero_interactions_and_merges_adjacent_free_episodes():
 
     assert all(moment.interaction is None for moment in draft.moments)
     assert len(draft.moments) < len(prepared.reasoning_trajectory.episodes)
+
+
+def test_legacy_public_marker_in_private_plan_never_reaches_current_runtime():
+    payload = prepared_payload()
+    marker = "PRIVATE-PLAN-PUBLIC-DRAFT-MARKER"
+    interaction = payload["interaction_plan"]["interactions"][0]
+    interaction["prompt"] = marker
+    interaction["hint"] = marker
+    interaction["options"][1]["display_text"] = marker
+    payload["interaction_plan"]["transfer_item"]["problem_text"] = marker
+
+    draft = prepared_lesson_to_draft(
+        source_problem(), PreparedLesson.model_validate(payload), route()
+    )
+
+    assert marker not in draft.model_dump_json()
 
 
 def test_adapter_requires_symbolic_steps_only_for_symbolic_route():
@@ -1199,9 +1216,15 @@ def test_prepared_draft_factory_rejects_grouped_runtime_text_mismatch():
     payload["teaching_script"]["clauses"][0]["spoken_text"] = (
         "先观察题目中的目标。"
     )
+    payload["reasoning_trajectory"]["episodes"][0]["must_teach"][0][
+        "student_spoken_evidence"
+    ] = "先观察题目中的目标。"
     payload["teaching_script"]["clauses"][1]["spoken_text"] = (
         "再说明为什么可以代入。"
     )
+    payload["reasoning_trajectory"]["episodes"][1]["must_teach"][0][
+        "student_spoken_evidence"
+    ] = "再说明为什么可以代入。"
     prepared = PreparedLesson.model_validate(payload)
     run = prepared_adapter.prepared_lesson_to_draft_with_provenance(
         source_problem(), prepared, route()
@@ -1291,6 +1314,7 @@ def test_adapter_splits_more_than_five_adjacent_free_cues_into_moments():
     payload = prepared_payload()
     payload["interaction_plan"]["interactions"] = []
     payload["teaching_script"]["response_scripts"] = []
+    payload["teaching_script"]["interaction_scripts"] = []
     payload["performance_score"]["cues"] = [
         cue
         for cue in payload["performance_score"]["cues"]

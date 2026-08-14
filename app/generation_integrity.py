@@ -313,8 +313,14 @@ def _validate_current_runtime_semantics(
     provenance_by_clause = {
         item.clause_id: item for item in provenance
     }
+    authored_interactions = {
+        item.interaction_id: item for item in script.interaction_scripts
+    }
     for planned in prepared.interaction_plan.interactions:
         beat, runtime = runtime_interactions[planned.interaction_id]
+        authored = authored_interactions.get(planned.interaction_id)
+        if authored is None:
+            raise ValueError("compiled interaction ownership changed")
         boundary_clause_id = planned.after_clause_id
         if planned.teaching_step_id is not None:
             matching = [
@@ -337,16 +343,16 @@ def _validate_current_runtime_semantics(
         }
         if (
             runtime.kind != "choice"
-            or runtime.prompt != planned.prompt
+            or runtime.prompt != authored.prompt
             or runtime.expected_answer != planned.correct_option_id
             or runtime.hints
-            != ([planned.hint] if planned.hint is not None else [])
+            != ([authored.hint] if authored.hint is not None else [])
             or runtime.explanation_after_correct != ""
             or runtime.advance_after_response is not True
             or [option.option_id for option in runtime.options]
             != [option.option_id for option in planned.options]
             or [option.label for option in runtime.options]
-            != [option.display_text for option in planned.options]
+            != [option.label for option in authored.options]
             or any(option.feedback is not None for option in runtime.options)
         ):
             raise ValueError("compiled interaction semantics changed")
@@ -386,6 +392,29 @@ def _validate_current_runtime_semantics(
                     )
                 ):
                     raise ValueError("compiled support cue semantics changed")
+
+    transfer_script = script.transfer_script
+    private_transfer = prepared.interaction_plan.transfer_item
+    if transfer_script is None or (
+        lesson.transfer_item.problem_text != transfer_script.problem_text
+        or lesson.transfer_item.method_signal != transfer_script.method_signal
+        or lesson.transfer_item.expected_answer != private_transfer.expected_answer
+        or lesson.transfer_item.correct_option_id != private_transfer.correct_option_id
+        or [item.option_id for item in lesson.transfer_item.options]
+        != [item.option_id for item in transfer_script.options]
+        or [item.label for item in lesson.transfer_item.options]
+        != [item.label for item in transfer_script.options]
+        or [item.feedback for item in lesson.transfer_item.options]
+        != [item.feedback for item in transfer_script.options]
+        or [item.canonical_answer for item in lesson.transfer_item.options]
+        != [
+            {item.option_id: item for item in private_transfer.options}[
+                authored.option_id
+            ].canonical_answer
+            for authored in transfer_script.options
+        ]
+    ):
+        raise ValueError("compiled transfer semantics changed")
 
     if lesson.problem_focus_targets != compile_problem_focus_targets(
         lesson.problem.problem_text

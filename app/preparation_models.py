@@ -19,8 +19,11 @@ from app.schemas import (
     BoardLineRole,
     CueSpokenText,
     GeneratedId,
+    GeneratedFeedbackText,
+    GeneratedHintText,
     GeneratedLabelText,
     GeneratedMathAnswer,
+    GeneratedProblemText,
     GeneratedTransferItem,
     MethodIntroduction,
     NarrativeBoardContent,
@@ -157,6 +160,8 @@ class MustTeachItem(SchemaModel):
     must_teach_id: GeneratedId
     content: NonEmptyString
     why_it_matters: NonEmptyString
+    student_display_evidence: Optional[NarrativeBoardContent] = None
+    student_spoken_evidence: Optional[CueSpokenText] = None
 
 
 class ResolvedReasoningGap(SchemaModel):
@@ -305,6 +310,46 @@ class ResponseScript(SchemaModel):
     clauses: List[ScriptClause] = Field(min_length=1, max_length=8)
 
 
+class AuthoredInteractionOption(SchemaModel):
+    option_id: GeneratedId
+    label: GeneratedLabelText
+
+
+class AuthoredInteraction(SchemaModel):
+    interaction_id: GeneratedId
+    prompt: GeneratedHintText
+    hint: Optional[GeneratedHintText] = None
+    options: List[AuthoredInteractionOption] = Field(min_length=3, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> "AuthoredInteraction":
+        _require_unique(
+            [item.option_id for item in self.options],
+            "authored interaction option ids",
+        )
+        return self
+
+
+class AuthoredTransferOption(SchemaModel):
+    option_id: GeneratedId
+    label: GeneratedLabelText
+    feedback: GeneratedFeedbackText
+
+
+class AuthoredTransferItem(SchemaModel):
+    problem_text: GeneratedProblemText
+    method_signal: GeneratedHintText
+    options: List[AuthoredTransferOption] = Field(min_length=3, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> "AuthoredTransferItem":
+        _require_unique(
+            [item.option_id for item in self.options],
+            "authored transfer option ids",
+        )
+        return self
+
+
 class TeachingScript(SchemaModel):
     title: NonEmptyString
     learning_goal: NonEmptyString
@@ -322,6 +367,10 @@ class TeachingScript(SchemaModel):
     response_scripts: List[ResponseScript] = Field(
         default_factory=list, max_length=MAX_PREPARATION_ITEMS
     )
+    interaction_scripts: List[AuthoredInteraction] = Field(
+        default_factory=list, max_length=3
+    )
+    transfer_script: Optional[AuthoredTransferItem] = None
     closing_summary_clause_ids: List[GeneratedId] = Field(
         min_length=1, max_length=MAX_PREPARATION_ITEMS
     )
@@ -335,6 +384,10 @@ class TeachingScript(SchemaModel):
             for response in self.response_scripts
             for clause in response.clauses
         ]
+        _require_unique(
+            [item.interaction_id for item in self.interaction_scripts],
+            "authored interaction ids",
+        )
         _require_unique(clause_ids, "clause ids")
         _require_unique(response_ids, "response ids")
         _require_unique(response_clause_ids, "response clause ids")
@@ -369,7 +422,12 @@ class TeachingScript(SchemaModel):
 
 class PlannedInteractionOption(SchemaModel):
     option_id: GeneratedId
-    display_text: NonEmptyString
+    display_text: NonEmptyString = Field(
+        description=(
+            "Private diagnostic answer-intent draft retained for rubric 0.1 "
+            "loading; current student-visible labels belong to TeachingScript."
+        )
+    )
     canonical_answer: NonEmptyString
     misconception: Optional[NonEmptyString] = None
     error_code: Optional[GeneratedId] = None
@@ -384,14 +442,25 @@ class PlannedInteraction(SchemaModel):
     why_pause: Optional[NonEmptyString] = None
     diagnostic_target: NonEmptyString
     diagnostic_kind: DiagnosticKind
-    prompt: NonEmptyString
+    prompt: NonEmptyString = Field(
+        description=(
+            "Private diagnostic prompt draft retained for historical loading; "
+            "never a current public runtime source."
+        )
+    )
     options: List[PlannedInteractionOption] = Field(min_length=3, max_length=4)
     correct_option_id: GeneratedId
     correct_feedback: Optional[NonEmptyString] = None
     incorrect_feedback_by_option: Dict[GeneratedId, NonEmptyString] = Field(
         default_factory=dict
     )
-    hint: Optional[NonEmptyString] = None
+    hint: Optional[NonEmptyString] = Field(
+        default=None,
+        description=(
+            "Private hint intent retained for historical loading; current "
+            "student-visible hints belong to TeachingScript."
+        ),
+    )
     resume_clause_id: Optional[GeneratedId] = None
     resume_step_id: Optional[GeneratedId] = None
     resume_policy: Literal["continue", "retry"] = "retry"
