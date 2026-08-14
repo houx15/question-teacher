@@ -51,6 +51,36 @@ def current_pair():
     return lesson, record
 
 
+def legacy_six_artifact_pair(rubric_version="0.1"):
+    lesson, record = current_pair()
+    payload = record.model_dump(mode="python")
+    prepared = payload["prepared_lesson"]
+    prepared["rubric_version"] = rubric_version
+    prepared["teaching_progression"] = None
+    revisions = {
+        item["artifact_type"]: item
+        for item in prepared["artifact_history"]
+    }
+    legacy_order = (
+        "solution_trace",
+        "reasoning_trajectory",
+        "teaching_script",
+        "interaction_plan",
+        "performance_score",
+        "simulation_report",
+    )
+    prepared["artifact_history"] = [
+        revisions[artifact_type] for artifact_type in legacy_order
+    ]
+    report = dict(lesson.validation_report)
+    report["pedagogy_rubric_version"] = rubric_version
+    report["artifact_versions"] = {
+        artifact_type: 1 for artifact_type in legacy_order
+    }
+    lesson = lesson.model_copy(update={"validation_report": report})
+    return lesson, GenerationRecord.model_validate(payload)
+
+
 def test_current_generation_record_accepts_exact_seven_artifact_initial_build():
     lesson, record = current_pair()
 
@@ -63,6 +93,51 @@ def test_current_generation_record_accepts_exact_seven_artifact_initial_build():
         revision.artifact_type
         for revision in validated_record.prepared_lesson.artifact_history
     ) == ARTIFACT_ORDER
+
+
+def test_historical_rubric_0_1_six_artifact_record_is_readable_only_privately():
+    lesson, record = legacy_six_artifact_pair()
+
+    validate_lesson_generation_pair(
+        lesson, record, require_current_rubric=False
+    )
+    with pytest.raises(ValueError, match="teaching progression missing"):
+        validate_lesson_generation_pair(
+            lesson, record, require_current_rubric=True
+        )
+
+
+def test_unknown_historical_rubric_cannot_select_legacy_six_artifact_shape():
+    lesson, record = legacy_six_artifact_pair("unknown-rubric")
+
+    with pytest.raises(ValueError, match="artifact history invalid"):
+        validate_lesson_generation_pair(
+            lesson, record, require_current_rubric=False
+        )
+
+
+def test_current_record_accepts_simulation_only_repair_suffix():
+    lesson, record = current_pair()
+    payload = record.model_dump(mode="python")
+    payload["prepared_lesson"]["repair_count"] = 1
+    payload["prepared_lesson"]["artifact_history"].append(
+        {
+            "artifact_type": "simulation_report",
+            "version": 2,
+            "responsible_role": "student_simulator",
+        }
+    )
+    report = dict(lesson.validation_report)
+    report["repair_count"] = 1
+    report["artifact_versions"] = {
+        **report["artifact_versions"],
+        "simulation_report": 2,
+    }
+
+    validate_lesson_generation_pair(
+        lesson.model_copy(update={"validation_report": report}),
+        GenerationRecord.model_validate(payload),
+    )
 
 
 def test_current_generation_record_rejects_wrong_progression_owner():

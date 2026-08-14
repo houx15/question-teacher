@@ -406,6 +406,7 @@ REVIEW_ROLE_ARTIFACT = {
     "interaction_designer": "interaction_plan",
     "script_teacher": "teaching_script",
     "classroom_director": "performance_score",
+    "student_simulator": "simulation_report",
 }
 
 
@@ -440,6 +441,7 @@ def review_finding(role, criterion="learner_follows_why"):
         "script_teacher": ("teaching_script", "clause-open"),
         "interaction_designer": ("interaction_plan", "interaction_plan"),
         "classroom_director": ("performance_score", "cue-clause-open"),
+        "student_simulator": ("simulation_report", "episode-1"),
     }
     artifact_type, artifact_id = artifact_by_role[role]
     artifact_index = REVIEW_ARTIFACT_ORDER.index(artifact_type)
@@ -833,6 +835,18 @@ def test_interaction_before_final_script_progression_runs_in_dependency_order():
                 "simulation_report": 2,
             },
         ),
+        (
+            "student_simulator",
+            {
+                "solution_trace": 1,
+                "reasoning_trajectory": 1,
+                "teaching_progression": 1,
+                "teaching_script": 1,
+                "interaction_plan": 1,
+                "performance_score": 1,
+                "simulation_report": 2,
+            },
+        ),
     ],
 )
 def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
@@ -874,12 +888,11 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
     ] == REVIEW_ARTIFACT_ORDER + REVIEW_ARTIFACT_ORDER[repaired_start:]
     assert [call.role for call in fake.calls].count("student_simulator") == 2
     assert [call.role for call in fake.calls].count("lesson_reviewer") == 2
-    repair_call = [
+    repair_calls = [
         call
         for call in fake.calls
         if call.role == responsible_role and "repair_request" in call.user
-    ][0]
-    repair = prompt_payload(repair_call)["repair_request"]
+    ]
     artifact_order = [
         "solution_trace",
         "reasoning_trajectory",
@@ -888,10 +901,14 @@ def test_each_repair_route_retains_upstream_and_rebuilds_only_downstream(
         "teaching_script",
         "performance_score",
     ]
-    assert set(repair["retained_artifacts"]) == set(
-        artifact_order[: artifact_order.index(finding["artifact_type"]) + 1]
-    )
-    assert repair["finding_ids"] == [finding["finding_id"]]
+    if responsible_role != "student_simulator":
+        repair = prompt_payload(repair_calls[0])["repair_request"]
+        assert set(repair["retained_artifacts"]) == set(
+            artifact_order[
+                : artifact_order.index(finding["artifact_type"]) + 1
+            ]
+        )
+        assert repair["finding_ids"] == [finding["finding_id"]]
     repaired_revision = next(
         revision
         for revision in reversed(run.audit.history)
@@ -1839,6 +1856,51 @@ def test_multiple_interactions_in_one_episode_fail_before_performance_stage():
     assert captured.value.role == "interaction_designer"
     assert [call.role for call in fake.calls].count("interaction_designer") == 1
     assert "classroom_director" not in [call.role for call in fake.calls]
+
+
+def test_script_cross_validation_failure_preserves_issued_interaction_audit():
+    interaction = downstream_planned_interaction()
+    duplicate = downstream_planned_interaction("interaction-2")
+    fake = client(
+        interaction={
+            "interactions": [interaction, duplicate],
+            "transfer_item": downstream_transfer_payload(),
+        }
+    )
+
+    with pytest.raises(PreparationFailure) as captured:
+        asyncio.run(
+            LessonPreparationPipeline(fake).prepare_with_audit(
+                problem(), route(), focus_targets()
+            )
+        )
+
+    audit = captured.value.audit
+    assert audit.versions["interaction_plan"] == 1
+    assert "interaction_plan" not in audit.active_versions
+    assert any(
+        item.artifact_type == "interaction_plan" and item.version == 1
+        for item in audit.history
+    )
+    interaction_call = next(
+        call
+        for call in audit.role_calls
+        if call.output_artifact_type == "interaction_plan"
+    )
+    assert interaction_call.output_artifact_version == 1
+    assert interaction_call.failure_category == "interaction_plan_failed"
+    script_call = next(
+        call for call in audit.role_calls if call.role == "script_teacher"
+    )
+    assert script_call.input_artifact_versions["interaction_plan"] == 1
+    issued = {
+        (item.artifact_type, item.version) for item in audit.history
+    }
+    assert all(
+        (artifact_type, version) in issued
+        for call in audit.role_calls
+        for artifact_type, version in call.input_artifact_versions.items()
+    )
 
 
 def test_pipeline_removes_resume_clause_from_concealed_control_metadata():

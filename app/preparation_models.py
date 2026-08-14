@@ -2,7 +2,7 @@ from typing import Annotated, Dict, List, Literal, Optional
 
 from pydantic import (
     Field,
-    PositiveInt,
+    StrictInt,
     StringConstraints,
     field_validator,
     model_validator,
@@ -44,9 +44,11 @@ PedagogicalFunction = Literal["focus", "question", "explain", "decide", "execute
 DiagnosticKind = Literal["conception", "execution"]
 TeachingPhase = Literal["construct", "explore", "execute", "check"]
 ArtifactType = Literal["solution_trace", "reasoning_trajectory", "teaching_progression", "interaction_plan", "teaching_script", "performance_score", "simulation_report"]
-ResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director"]
+ResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator"]
 RoleName = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator", "lesson_reviewer"]
 ArtifactResponsibleRole = Literal["reference_analyst", "teaching_designer", "script_teacher", "interaction_designer", "classroom_director", "student_simulator"]
+StrictPositiveInt = Annotated[StrictInt, Field(gt=0)]
+StrictNonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 ROLE_CALL_TOKEN_USAGE_KEYS = frozenset(
     {
         "prompt_tokens",
@@ -62,6 +64,9 @@ MAX_DETAIL_ITEMS = 64
 MAX_MATH_REFERENCE_ITEMS = 2048
 MAX_VISUAL_ACTION_ITEMS = 2048
 MAX_ARTIFACT_HISTORY_ITEMS = 64
+# Initial eight calls plus eight full eight-call repair suffixes, each with at
+# most one fresh-context reviewer call: 8 + 8 * (8 + 1) = 80.
+MAX_ROLE_CALL_RECORDS = 80
 MAX_SIMULATION_EVIDENCE_ITEMS = 16
 MAX_REVIEW_ARTIFACT_ITEMS = 6
 MAX_SIMULATION_SERIALIZED_BYTES = 128 * 1024
@@ -530,7 +535,7 @@ class LessonReviewDecision(SchemaModel):
 
 class ArtifactRevision(SchemaModel):
     artifact_type: ArtifactType
-    version: PositiveInt
+    version: StrictPositiveInt
     responsible_role: ArtifactResponsibleRole
     finding_ids: List[GeneratedId] = Field(
         default_factory=list, max_length=MAX_DETAIL_ITEMS
@@ -547,7 +552,7 @@ class PreparedLesson(SchemaModel):
     performance_score: PerformanceScore
     simulation_report: SimulationReport
     review: LessonReviewDecision
-    repair_count: int = Field(ge=0)
+    repair_count: StrictNonNegativeInt
     artifact_history: List[ArtifactRevision] = Field(
         min_length=5, max_length=MAX_ARTIFACT_HISTORY_ITEMS
     )
@@ -555,11 +560,11 @@ class PreparedLesson(SchemaModel):
 
 class RoleCallRecord(SchemaModel):
     role: RoleName
-    input_artifact_versions: Dict[ArtifactType, PositiveInt] = Field(default_factory=dict)
+    input_artifact_versions: Dict[ArtifactType, StrictPositiveInt] = Field(default_factory=dict)
     output_artifact_type: Optional[ArtifactType] = None
-    output_artifact_version: Optional[PositiveInt] = None
-    duration_ms: int = Field(ge=0)
-    retry_count: int = Field(ge=0)
+    output_artifact_version: Optional[StrictPositiveInt] = None
+    duration_ms: StrictNonNegativeInt
+    retry_count: StrictNonNegativeInt
     failure_category: Optional[NonEmptyString] = None
     token_usage: Optional[Dict[str, int]] = None
     review_finding_ids: List[GeneratedId] = Field(default_factory=list)
@@ -607,7 +612,7 @@ class GenerationRecord(SchemaModel):
     route_fingerprint: NonEmptyString
     prepared_lesson: PreparedLesson
     role_calls: List[RoleCallRecord] = Field(
-        min_length=7, max_length=MAX_ARTIFACT_HISTORY_ITEMS
+        min_length=7, max_length=MAX_ROLE_CALL_RECORDS
     )
     cue_provenance: List[RuntimeCueProvenanceRecord] = Field(
         min_length=1, max_length=MAX_PREPARATION_ITEMS

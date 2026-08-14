@@ -579,7 +579,8 @@ class LessonPreparationPipeline:
             )
             repair_count += 1
             await self._emit(on_stage, "模拟学生并审核课程")
-            await self._simulate_student(state)
+            if artifact_type != "simulation_report":
+                await self._simulate_student(state)
             await self._review_lesson(state, review_context_id)
 
         if state.review is None or state.review.status != "approved":
@@ -863,7 +864,7 @@ class LessonPreparationPipeline:
                 script,
             )
         except PreparationValidationError:
-            self._reject_accepted_artifact(
+            self._deactivate_invalidated_artifact(
                 state,
                 "interaction_plan",
                 "interaction_designer",
@@ -1006,6 +1007,7 @@ class LessonPreparationPipeline:
     async def _simulate_student(
         self,
         state: PreparationState,
+        finding_ids: Optional[List[str]] = None,
     ) -> SimulationReport:
         self._require_active_state(state)
         if (
@@ -1053,6 +1055,7 @@ class LessonPreparationPipeline:
             artifact_type="simulation_report",
             responsible_role="student_simulator",
             artifact=report,
+            finding_ids=finding_ids,
         )
         return report
 
@@ -1136,7 +1139,7 @@ class LessonPreparationPipeline:
         findings: List[ReviewFinding],
         context: PreparationContext,
     ) -> None:
-        repairable = ARTIFACT_DEPENDENCY_ORDER[:-1]
+        repairable = ARTIFACT_DEPENDENCY_ORDER
         if artifact_type not in repairable:
             raise RuntimeError("unknown repair artifact")
         self._require_active_state(state)
@@ -1251,6 +1254,8 @@ class LessonPreparationPipeline:
                 repair,
                 finding_ids,
             )
+        elif artifact_type == "simulation_report":
+            await self._simulate_student(state, finding_ids=finding_ids)
 
     @staticmethod
     def _deactivate_artifacts(
@@ -1267,7 +1272,7 @@ class LessonPreparationPipeline:
         state: PreparationState,
         findings: List[ReviewFinding],
     ) -> Dict[str, object]:
-        artifact_types = list(ARTIFACT_DEPENDENCY_ORDER[:-1])
+        artifact_types = list(ARTIFACT_DEPENDENCY_ORDER)
         artifact_index = artifact_types.index(artifact_type)
         retained = {}
         for retained_type in artifact_types[: artifact_index + 1]:
@@ -1577,7 +1582,7 @@ class LessonPreparationPipeline:
         state.role_calls = role_calls
 
     @staticmethod
-    def _reject_accepted_artifact(
+    def _deactivate_invalidated_artifact(
         state: PreparationState,
         artifact_type: str,
         role: str,
@@ -1597,25 +1602,8 @@ class LessonPreparationPipeline:
             raise RuntimeError("rejected artifact has no model call record")
         record_index = matching[-1]
         payload = state.role_calls[record_index].model_dump(mode="python")
-        payload.update(
-            output_artifact_type=None,
-            output_artifact_version=None,
-            failure_category=category,
-        )
+        payload["failure_category"] = category
         state.role_calls[record_index] = RoleCallRecord.model_validate(payload)
-        state.history = [
-            item
-            for item in state.history
-            if not (
-                item.artifact_type == artifact_type
-                and item.version == current_version
-            )
-        ]
-        previous_version = current_version - 1
-        if previous_version:
-            state.versions[artifact_type] = previous_version
-        else:
-            state.versions.pop(artifact_type, None)
         state.active_versions.pop(artifact_type, None)
         setattr(state, artifact_type, None)
 

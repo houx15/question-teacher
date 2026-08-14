@@ -36,6 +36,7 @@ _LEGACY_ARTIFACT_ROLES = {
     artifact_type: _AUTHORITATIVE_ARTIFACT_ROLES[artifact_type]
     for artifact_type in _LEGACY_ARTIFACT_ORDER
 }
+_LEGACY_PRE_PROGRESSION_RUBRIC_VERSION = "0.1"
 
 
 def _model_payload(value: object) -> object:
@@ -53,7 +54,7 @@ def _latest_artifact_versions(
     historical_legacy = (
         allow_legacy
         and record.prepared_lesson.rubric_version
-        != PEDAGOGY_RUBRIC_VERSION
+        == _LEGACY_PRE_PROGRESSION_RUBRIC_VERSION
         and record.prepared_lesson.teaching_progression is None
     )
     artifact_order = (
@@ -94,8 +95,6 @@ def _latest_artifact_versions(
             raise ValueError(
                 "generation record artifact history invalid"
             ) from None
-        if start == len(artifact_order) - 1:
-            raise ValueError("generation record artifact history invalid")
         expected_types = artifact_order[start:]
         segment = history[cursor : cursor + len(expected_types)]
         if tuple(item.artifact_type for item in segment) != expected_types:
@@ -138,6 +137,16 @@ def validate_lesson_generation_pair(
     if (
         prepared.rubric_version == PEDAGOGY_RUBRIC_VERSION
         and prepared.teaching_progression is None
+        and (
+            require_current_rubric
+            or tuple(
+                item.artifact_type
+                for item in prepared.artifact_history[
+                    : len(_LEGACY_ARTIFACT_ORDER)
+                ]
+            )
+            != _LEGACY_ARTIFACT_ORDER
+        )
     ):
         raise ValueError("generation record teaching progression missing")
     for field in (

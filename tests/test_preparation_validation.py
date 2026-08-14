@@ -1884,7 +1884,7 @@ def test_interaction_finding_rejects_later_script_teacher_responsibility():
     )
 
 
-def test_script_finding_accepts_earlier_interaction_designer_responsibility():
+def test_script_finding_rejects_non_owner_interaction_designer_responsibility():
     trace, trajectory, script, plan, score, report, _ = models()
     progression = TeachingProgression.model_validate(progression_payload())
     decision = LessonReviewDecision.model_validate(
@@ -1913,6 +1913,52 @@ def test_script_finding_accepts_earlier_interaction_designer_responsibility():
                 "interaction_plan",
             ],
             "approval_summary": "从讲稿开始修订",
+        }
+    )
+
+    assert_code(
+        "review_responsibility_invalid",
+        lambda: validate_review_decision(
+            decision,
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+            progression=progression,
+        ),
+    )
+
+
+def test_simulation_finding_accepts_exact_student_simulator_owner():
+    trace, trajectory, script, plan, score, report, _ = models()
+    progression = TeachingProgression.model_validate(progression_payload())
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-simulation-owner",
+                    "severity": "material",
+                    "artifact_type": "simulation_report",
+                    "artifact_id": "episode-1",
+                    "criterion": "learner_follows_why",
+                    "evidence": "episode-1 的模拟证据不足。",
+                    "responsible_role": "student_simulator",
+                    "requested_change": "重新模拟该课堂结果。",
+                    "invalidated_downstream_artifacts": [],
+                }
+            ],
+            "retained_artifacts": [
+                "solution_trace",
+                "reasoning_trajectory",
+                "teaching_progression",
+                "interaction_plan",
+                "teaching_script",
+                "performance_score",
+            ],
+            "approval_summary": "仅重新模拟学生表现",
         }
     )
 
@@ -2377,6 +2423,26 @@ def test_prepared_history_accepts_dependency_suffix_for_each_repair_cycle():
         PreparedLesson.model_validate(payload),
         route(),
         [],
+    )
+
+
+def test_prepared_history_accepts_simulation_only_repair_suffix():
+    payload = prepared_payload()
+    payload["repair_count"] = 1
+    payload["artifact_history"].append(
+        revision("simulation_report", 2)
+    )
+
+    validate_prepared_lesson(
+        PreparedLesson.model_validate(payload),
+        route(),
+        [],
+        active_versions={
+            item["artifact_type"]: (
+                2 if item["artifact_type"] == "simulation_report" else 1
+            )
+            for item in payload["artifact_history"][:7]
+        },
     )
 
 

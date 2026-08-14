@@ -38,6 +38,7 @@ from tests.generation_fakes import (
 from tests.preparation_fakes import PreparationFakeClient
 from tests.test_preparation_pipeline import (
     RAW_REFERENCE_MARKER,
+    client as preparation_client,
     downstream_interaction_payload,
     downstream_review_payload,
     downstream_score_payload,
@@ -890,6 +891,72 @@ def test_generate_bundle_uses_approved_preparation_and_keeps_private_evidence_ou
         for beat in bundle.lesson.beats
         for cue in beat.sync_cues
     )
+
+
+def test_generation_record_accepts_eight_full_solution_trace_repairs():
+    artifact_ids = [
+        "substitute-root",
+        "connect-target",
+        "use-nonzero",
+        "return-target",
+        "assumption-nonzero",
+        "assumption-root",
+        "substitute-root",
+        "connect-target",
+    ]
+    findings = []
+    for index, artifact_id in enumerate(artifact_ids):
+        findings.append(
+            {
+                "finding_id": "finding-trace-budget-%d" % index,
+                "severity": "material",
+                "artifact_type": "solution_trace",
+                "artifact_id": artifact_id,
+                "criterion": (
+                    "current_emphasis_correct"
+                    if index >= 6
+                    else "authoritative_math_alignment"
+                ),
+                "evidence": "%s 需要修订。" % artifact_id,
+                "responsible_role": "reference_analyst",
+                "requested_change": "修订溯源步骤。",
+                "invalidated_downstream_artifacts": [
+                    "reasoning_trajectory",
+                    "teaching_progression",
+                    "interaction_plan",
+                    "teaching_script",
+                    "performance_score",
+                    "simulation_report",
+                ],
+            }
+        )
+    reviews = [
+        downstream_review_payload("revision_required", [finding])
+        for finding in findings
+    ] + [downstream_review_payload()]
+    fake = preparation_client(
+        traces=[trace_payload() for _ in range(9)],
+        trajectories=[trajectory_payload() for _ in range(9)],
+        progressions=[teaching_progression_payload() for _ in range(9)],
+        interactions=[downstream_interaction_payload() for _ in range(9)],
+        scripts=[downstream_script_payload() for _ in range(9)],
+        performances=[downstream_score_payload() for _ in range(9)],
+        simulations=[downstream_simulation_payload() for _ in range(9)],
+        reviews=reviews,
+    )
+    client = CompositeGenerationClient(FakeClient([]), fake)
+    service = LessonGenerationService(client, MathEngine())
+
+    async def grounded_route(source_problem, on_stage):
+        del source_problem, on_stage
+        return preparation_route()
+
+    service._build_grounded_teaching_route = grounded_route
+
+    bundle = asyncio.run(service.generate_bundle(preparation_problem()))
+
+    assert bundle.generation_record.prepared_lesson.repair_count == 8
+    assert len(bundle.generation_record.role_calls) == 72
 
 
 def test_model_authored_review_summary_remains_private():

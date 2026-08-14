@@ -41,13 +41,6 @@ ActionKey = Tuple[str, str]
 MAX_PERFORMANCE_CLAUSES = MAX_PREPARATION_ITEMS
 MAX_PERFORMANCE_ACTIONS = 2048
 MAX_PERFORMANCE_MATH_REFERENCES = 2048
-_REVIEW_ROLE_ORDER = {
-    "reference_analyst": 0,
-    "teaching_designer": 1,
-    "interaction_designer": 2,
-    "script_teacher": 3,
-    "classroom_director": 4,
-}
 _ARTIFACT_DEPENDENCY_ORDER = (
     "solution_trace",
     "reasoning_trajectory",
@@ -1453,10 +1446,8 @@ def validate_review_decision(
                 "Review finding must cite an existing concrete artifact ID.",
             )
         if (
-            _REVIEW_ROLE_ORDER[finding.responsible_role]
-            > _REVIEW_ROLE_ORDER[
-                _ARTIFACT_HISTORY_ROLES[finding.artifact_type]
-            ]
+            finding.responsible_role
+            != _ARTIFACT_HISTORY_ROLES[finding.artifact_type]
         ):
             _fail(
                 "review_responsibility_invalid",
@@ -1654,7 +1645,7 @@ def _validate_artifact_history(
             )
 
     cursor = initial_count
-    repairable = _ARTIFACT_DEPENDENCY_ORDER[:-1]
+    repairable = _ARTIFACT_DEPENDENCY_ORDER
     for _ in range(prepared.repair_count):
         if cursor >= len(history) or history[cursor].artifact_type not in repairable:
             _fail(

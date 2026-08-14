@@ -82,6 +82,26 @@ class RecordingModelClient:
         self.system_prompts.append(system_prompt)
         return await self.delegate.complete_json(system_prompt, user_prompt)
 
+    async def complete_model_with_metadata(
+        self,
+        system_prompt,
+        user_prompt,
+        model_type,
+    ):
+        self.system_prompts.append(system_prompt)
+        structured_method = getattr(
+            self.delegate,
+            "complete_model_with_metadata",
+            None,
+        )
+        if callable(structured_method):
+            return await structured_method(
+                system_prompt,
+                user_prompt,
+                model_type,
+            )
+        return await self.delegate.complete_json(system_prompt, user_prompt)
+
     async def close(self):
         return await self.delegate.close()
 

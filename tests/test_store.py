@@ -617,13 +617,13 @@ def test_store_requires_exact_positive_integer_artifact_versions(value):
         MemoryStore().save_lesson(lesson, private_generation_record(lesson))
 
 
-def test_historical_record_remains_readable_after_current_rubric_upgrade(
+def test_historical_rubric_0_1_record_remains_readable_privately(
     tmp_path,
 ):
     database_path = tmp_path / "historical.sqlite3"
     lesson = runtime_lesson()
     report = dict(lesson.validation_report)
-    report["pedagogy_rubric_version"] = "legacy-0.0"
+    report["pedagogy_rubric_version"] = "0.1"
     report["artifact_versions"] = {
         artifact_type: version
         for artifact_type, version in report["artifact_versions"].items()
@@ -634,7 +634,7 @@ def test_historical_record_remains_readable_after_current_rubric_upgrade(
         mode="python"
     )
     prepared = record_payload["prepared_lesson"]
-    prepared["rubric_version"] = "legacy-0.0"
+    prepared["rubric_version"] = "0.1"
     prepared["teaching_progression"] = None
     revisions = {
         revision["artifact_type"]: revision
@@ -679,7 +679,7 @@ def test_historical_record_remains_readable_after_current_rubric_upgrade(
             "lesson_id": new_lesson.lesson_id,
         }
     )
-    with pytest.raises(ValueError, match="prepared rubric version invalid"):
+    with pytest.raises(ValueError, match="teaching progression missing"):
         restarted.save_lesson(new_lesson, old_record)
 
 

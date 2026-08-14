@@ -603,6 +603,25 @@ def test_simulation_revision_can_record_the_student_simulator_role():
     assert revision.responsible_role == "student_simulator"
 
 
+def test_artifact_revision_rejects_boolean_version_from_raw_mapping():
+    with pytest.raises(ValidationError):
+        ArtifactRevision.model_validate(
+            {
+                "artifact_type": "simulation_report",
+                "version": True,
+                "responsible_role": "student_simulator",
+            }
+        )
+
+
+def test_prepared_lesson_rejects_boolean_repair_count_from_raw_mapping():
+    payload = prepared_lesson()
+    payload["repair_count"] = False
+
+    with pytest.raises(ValidationError):
+        PreparedLesson.model_validate(payload)
+
+
 def test_artifact_revision_cannot_attribute_authoring_to_the_reviewer():
     with pytest.raises(ValidationError):
         ArtifactRevision.model_validate(
@@ -668,6 +687,40 @@ def test_role_call_input_artifact_versions_must_be_positive(version):
         "role": "lesson_reviewer", "input_artifact_versions": {"solution_trace": version},
         "duration_ms": 0, "retry_count": 0,
     }
+    with pytest.raises(ValidationError):
+        RoleCallRecord.model_validate(payload)
+
+
+def test_role_call_rejects_boolean_input_artifact_version_from_raw_mapping():
+    payload = {
+        "role": "lesson_reviewer",
+        "input_artifact_versions": {"solution_trace": True},
+        "duration_ms": 0,
+        "retry_count": 0,
+    }
+
+    with pytest.raises(ValidationError):
+        RoleCallRecord.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("output_artifact_version", True),
+        ("duration_ms", False),
+        ("retry_count", True),
+    ],
+)
+def test_role_call_rejects_boolean_private_numeric_fields(field, value):
+    payload = {
+        "role": "reference_analyst",
+        "output_artifact_type": "solution_trace",
+        "output_artifact_version": 1,
+        "duration_ms": 0,
+        "retry_count": 0,
+    }
+    payload[field] = value
+
     with pytest.raises(ValidationError):
         RoleCallRecord.model_validate(payload)
 

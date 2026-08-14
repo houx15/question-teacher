@@ -42,6 +42,53 @@ PREPARATION_SYSTEM_PROMPTS = [
 ]
 
 
+def test_smoke_recording_client_proxies_structured_model_completion():
+    class StructuredDelegate:
+        def __init__(self):
+            self.calls = []
+
+        async def complete_model_with_metadata(
+            self, system_prompt, user_prompt, model_type
+        ):
+            self.calls.append((system_prompt, user_prompt, model_type))
+            return {"structured": True}
+
+        async def complete_json(self, _system_prompt, _user_prompt):
+            raise AssertionError("structured delegate must not use JSON fallback")
+
+    delegate = StructuredDelegate()
+    client = smoke_live.RecordingModelClient(delegate)
+
+    result = asyncio.run(
+        client.complete_model_with_metadata("system-a", "user-a", dict)
+    )
+
+    assert result == {"structured": True}
+    assert delegate.calls == [("system-a", "user-a", dict)]
+    assert client.system_prompts == ["system-a"]
+
+
+def test_smoke_recording_client_explicitly_falls_back_to_json_completion():
+    class JsonOnlyDelegate:
+        def __init__(self):
+            self.calls = []
+
+        async def complete_json(self, system_prompt, user_prompt):
+            self.calls.append((system_prompt, user_prompt))
+            return {"fallback": True}
+
+    delegate = JsonOnlyDelegate()
+    client = smoke_live.RecordingModelClient(delegate)
+
+    result = asyncio.run(
+        client.complete_model_with_metadata("system-b", "user-b", dict)
+    )
+
+    assert result == {"fallback": True}
+    assert delegate.calls == [("system-b", "user-b")]
+    assert client.system_prompts == ["system-b"]
+
+
 def page_client():
     return TestClient(create_app())
 
