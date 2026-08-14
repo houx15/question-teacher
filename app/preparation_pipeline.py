@@ -400,7 +400,7 @@ class PreparedLessonRun:
 
 
 class LessonPreparationPipeline:
-    MAX_STRUCTURE_ATTEMPTS = 2
+    MAX_STRUCTURE_ATTEMPTS = 3
     MAX_REPAIR_CYCLES = 8
 
     def __init__(

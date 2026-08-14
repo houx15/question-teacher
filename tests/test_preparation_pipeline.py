@@ -1566,11 +1566,11 @@ def test_oversized_model_text_fails_as_audited_invalid_structure(role):
     if role == "student_simulator":
         invalid = downstream_simulation_payload()
         invalid["episode_results"][0]["evidence"] = ["证" * 1001]
-        simulations = [invalid, invalid]
+        simulations = [invalid, invalid, invalid]
     else:
         invalid = downstream_review_payload()
         invalid["approval_summary"] = "结" * 2_000_000
-        reviews = [invalid, invalid]
+        reviews = [invalid, invalid, invalid]
     fake = client(simulations=simulations, reviews=reviews)
 
     with pytest.raises(PreparationFailure) as captured:
@@ -2646,7 +2646,11 @@ def test_preparation_prefers_provider_native_structured_output():
         (
             "reference_analyst",
             {
-                "reference_analyst": [{}, {"still": "invalid"}],
+                "reference_analyst": [
+                    {},
+                    {"still": "invalid"},
+                    {"third": "invalid"},
+                ],
                 "teaching_designer": [trajectory_payload()],
             },
         ),
@@ -2654,12 +2658,12 @@ def test_preparation_prefers_provider_native_structured_output():
             "teaching_designer",
             {
                 "reference_analyst": [trace_payload()],
-                "teaching_designer": [{}, []],
+                "teaching_designer": [{}, [], {"third": "invalid"}],
             },
         ),
     ],
 )
-def test_second_invalid_structure_fails_with_safe_role(failing_role, responses):
+def test_third_invalid_structure_fails_with_safe_role(failing_role, responses):
     pipeline = LessonPreparationPipeline(PreparationFakeClient(responses))
 
     with pytest.raises(PreparationFailure) as captured:
@@ -2677,7 +2681,7 @@ def test_second_invalid_structure_fails_with_safe_role(failing_role, responses):
     assert failure.audit.role_calls[-1].output_artifact_type is None
 
 
-def test_invalid_json_response_gets_the_same_single_structure_retry():
+def test_invalid_json_response_gets_a_bounded_structure_retry():
     fake = PreparationFakeClient(
         {
             "reference_analyst": [
@@ -2703,6 +2707,21 @@ def test_invalid_json_response_gets_the_same_single_structure_retry():
         "prompt_tokens": 10,
         "total_tokens": 10,
     }
+
+
+def test_two_invalid_structures_can_recover_on_the_third_attempt():
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [{}, [], trace_payload()],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    result = run_early(LessonPreparationPipeline(fake))
+
+    assert [call.role for call in fake.calls].count("reference_analyst") == 3
+    assert result.role_calls[0].retry_count == 2
+    assert result.role_calls[0].failure_category is None
 
 
 def test_real_openai_client_metadata_usage_reaches_pipeline_records():

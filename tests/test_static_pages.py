@@ -760,7 +760,7 @@ def test_live_smoke_accepts_one_fresh_final_review_call():
     )
 
 
-@pytest.mark.parametrize("review_call_count", [3, 4])
+@pytest.mark.parametrize("review_call_count", [3, 4, 5, 6])
 def test_live_smoke_accepts_bounded_review_retries_after_a_complete_repair(
     review_call_count,
 ):
@@ -773,7 +773,7 @@ def test_live_smoke_accepts_bounded_review_retries_after_a_complete_repair(
     )
 
 
-def test_live_smoke_rejects_three_reviews_without_a_repair_context():
+def test_live_smoke_rejects_four_reviews_without_a_repair_context():
     with pytest.raises(smoke_live.SmokeContractError):
         smoke_live.assert_model_call_contract(
             [
@@ -781,30 +781,34 @@ def test_live_smoke_rejects_three_reviews_without_a_repair_context():
                 LESSON_REVIEWER_SYSTEM,
                 LESSON_REVIEWER_SYSTEM,
                 LESSON_REVIEWER_SYSTEM,
+                LESSON_REVIEWER_SYSTEM,
             ]
         )
 
 
-def test_live_smoke_rejects_five_reviews_after_a_complete_repair():
+def test_live_smoke_rejects_seven_reviews_after_a_complete_repair():
     with pytest.raises(smoke_live.SmokeContractError):
         smoke_live.assert_model_call_contract(
             [
                 *PREPARATION_SYSTEM_PROMPTS,
                 *PREPARATION_SYSTEM_PROMPTS[5:7],
-                *([LESSON_REVIEWER_SYSTEM] * 5),
+                *([LESSON_REVIEWER_SYSTEM] * 7),
             ]
         )
 
 
+@pytest.mark.parametrize("call_count", [2, 3])
 @pytest.mark.parametrize("role_index", range(8))
-def test_live_smoke_accepts_one_structural_retry_for_each_role(role_index):
+def test_live_smoke_accepts_bounded_structural_retries_for_each_role(
+    role_index,
+    call_count,
+):
     role_prompt = PREPARATION_SYSTEM_PROMPTS[role_index]
 
     smoke_live.assert_model_call_contract(
         [
             *PREPARATION_SYSTEM_PROMPTS[:role_index],
-            role_prompt,
-            role_prompt,
+            *([role_prompt] * call_count),
             *PREPARATION_SYSTEM_PROMPTS[role_index + 1 :],
         ]
     )
@@ -820,10 +824,11 @@ def test_live_smoke_accepts_each_legal_targeted_repair_start(repair_start):
     )
 
 
-def test_live_smoke_rejects_a_third_structural_retry():
+def test_live_smoke_rejects_a_fourth_structural_attempt():
     with pytest.raises(smoke_live.SmokeContractError):
         smoke_live.assert_model_call_contract(
             [
+                PREPARATION_SYSTEM_PROMPTS[0],
                 PREPARATION_SYSTEM_PROMPTS[0],
                 PREPARATION_SYSTEM_PROMPTS[0],
                 *PREPARATION_SYSTEM_PROMPTS,
