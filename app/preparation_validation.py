@@ -44,8 +44,8 @@ MAX_PERFORMANCE_MATH_REFERENCES = 2048
 _REVIEW_ROLE_ORDER = {
     "reference_analyst": 0,
     "teaching_designer": 1,
-    "script_teacher": 2,
-    "interaction_designer": 3,
+    "interaction_designer": 2,
+    "script_teacher": 3,
     "classroom_director": 4,
 }
 _ARTIFACT_DEPENDENCY_ORDER = (

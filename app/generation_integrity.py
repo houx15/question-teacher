@@ -135,6 +135,11 @@ def validate_lesson_generation_pair(
         and prepared.rubric_version != PEDAGOGY_RUBRIC_VERSION
     ):
         raise ValueError("generation record prepared rubric version invalid")
+    if (
+        prepared.rubric_version == PEDAGOGY_RUBRIC_VERSION
+        and prepared.teaching_progression is None
+    ):
+        raise ValueError("generation record teaching progression missing")
     for field in (
         "teaching_route_fingerprint",
         "pedagogy_rubric_version",

@@ -1837,6 +1837,97 @@ def test_review_cannot_assign_a_role_later_than_the_cited_artifact_owner():
     )
 
 
+def test_interaction_finding_rejects_later_script_teacher_responsibility():
+    trace, trajectory, script, plan, score, report, _ = models()
+    progression = TeachingProgression.model_validate(progression_payload())
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-interaction-late-role",
+                    "severity": "material",
+                    "artifact_type": "interaction_plan",
+                    "artifact_id": "interaction-1",
+                    "criterion": "interaction_no_answer_leak",
+                    "evidence": "interaction-1 的选项提前泄露了答案",
+                    "responsible_role": "script_teacher",
+                    "requested_change": "重写选项以诊断理解且不泄露答案",
+                    "invalidated_downstream_artifacts": [
+                        "teaching_script",
+                        "performance_score",
+                        "simulation_report",
+                    ],
+                }
+            ],
+            "retained_artifacts": [
+                "solution_trace",
+                "reasoning_trajectory",
+                "teaching_progression",
+            ],
+            "approval_summary": "从互动方案开始修订",
+        }
+    )
+
+    assert_code(
+        "review_responsibility_invalid",
+        lambda: validate_review_decision(
+            decision,
+            trace,
+            trajectory,
+            script,
+            plan,
+            score,
+            report,
+            progression=progression,
+        ),
+    )
+
+
+def test_script_finding_accepts_earlier_interaction_designer_responsibility():
+    trace, trajectory, script, plan, score, report, _ = models()
+    progression = TeachingProgression.model_validate(progression_payload())
+    decision = LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-script-earlier-role",
+                    "severity": "material",
+                    "artifact_type": "teaching_script",
+                    "artifact_id": "clause-1",
+                    "criterion": "learner_follows_why",
+                    "evidence": "clause-1 没有覆盖互动后的恢复路径",
+                    "responsible_role": "interaction_designer",
+                    "requested_change": "补齐互动结果到讲稿的恢复路径",
+                    "invalidated_downstream_artifacts": [
+                        "performance_score",
+                        "simulation_report",
+                    ],
+                }
+            ],
+            "retained_artifacts": [
+                "solution_trace",
+                "reasoning_trajectory",
+                "teaching_progression",
+                "interaction_plan",
+            ],
+            "approval_summary": "从讲稿开始修订",
+        }
+    )
+
+    validate_review_decision(
+        decision,
+        trace,
+        trajectory,
+        script,
+        plan,
+        score,
+        report,
+        progression=progression,
+    )
+
+
 def test_review_retained_and_invalidated_artifacts_follow_dependency_order():
     trace, trajectory, script, plan, score, report, _ = models()
     base = {

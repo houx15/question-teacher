@@ -78,6 +78,22 @@ def test_current_generation_record_rejects_wrong_progression_owner():
         )
 
 
+@pytest.mark.parametrize("require_current_rubric", [True, False])
+def test_current_generation_record_requires_non_null_progression_even_with_seven_history(
+    require_current_rubric,
+):
+    lesson, record = current_pair()
+    payload = record.model_dump(mode="python")
+    payload["prepared_lesson"]["teaching_progression"] = None
+
+    with pytest.raises(ValueError, match="teaching progression missing"):
+        validate_lesson_generation_pair(
+            lesson,
+            GenerationRecord.model_validate(payload),
+            require_current_rubric=require_current_rubric,
+        )
+
+
 def test_current_generation_record_accepts_exact_repair_suffix_and_versions():
     lesson, record = current_pair()
     payload = record.model_dump(mode="python")
@@ -153,7 +169,7 @@ def test_current_generation_record_rejects_legacy_six_artifact_initial_build(
     }
     lesson = lesson.model_copy(update={"validation_report": report})
 
-    with pytest.raises(ValueError, match="artifact history invalid"):
+    with pytest.raises(ValueError, match="teaching progression missing"):
         validate_lesson_generation_pair(
             lesson,
             GenerationRecord.model_validate(payload),
