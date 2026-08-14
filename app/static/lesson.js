@@ -12,7 +12,7 @@ import {
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
-} from "./runtime-core.mjs?v=20260814-1";
+} from "./runtime-core.mjs?v=20260814-2";
 import { CuePlayer } from "./cue-player.mjs?v=20260814-1";
 import {
   mathTextToPlainText,
@@ -30,6 +30,8 @@ const dom = {
   problem: document.querySelector("#problem-text"),
   progressCurrent: document.querySelector("#progress-current"),
   progressTotal: document.querySelector("#progress-total"),
+  structuredBoard: document.querySelector("#structured-board"),
+  legacyBoard: document.querySelector("#legacy-board"),
   baseBoard: document.querySelector("#base-board"),
   layerStage: document.querySelector("#layer-stage"),
   interactionStage: document.querySelector("#interaction-stage"),
@@ -410,7 +412,7 @@ function syncStructuredLines(container, lines, registry) {
     let node = registry.get(line.target);
     if (!node) {
       node = createBoardNode(line.target);
-      node.classList.add("lesson-step-line");
+      node.classList.add("lesson-step__line");
       registry.set(line.target, node);
       window.setTimeout(() => node.classList.remove("is-new"), 500);
     }
@@ -431,12 +433,13 @@ function createStructuredStep(stepId) {
   section.dataset.teachingStepId = stepId;
 
   const main = document.createElement("div");
-  main.className = "lesson-step-content";
+  main.className = "lesson-step__content";
   section.append(main);
   return {
     section,
     main,
     header: null,
+    statusText: null,
     lines: new Map(),
     support: null,
     supportLines: new Map(),
@@ -450,23 +453,38 @@ function renderStructuredStep(record, step) {
   section.classList.toggle("is-active", step.status === "active");
   section.classList.toggle("is-completed", step.status === "completed");
   section.classList.toggle("is-supporting", step.status === "supporting");
+  if (["active", "supporting"].includes(step.status)) {
+    section.setAttribute("aria-current", "step");
+  } else {
+    section.removeAttribute("aria-current");
+  }
 
   if (step.label && !record.header) {
     const header = document.createElement("h2");
-    header.className = "lesson-step-header";
+    header.className = "lesson-step__header";
     header.id = `lesson-step-header-${step.stepId}`;
     const bullet = document.createElement("span");
-    bullet.className = "lesson-step-status-bullet";
+    bullet.className = "lesson-step__status-dot";
     bullet.setAttribute("aria-hidden", "true");
     const label = document.createElement("span");
-    label.className = "lesson-step-label";
-    header.append(bullet, label);
+    label.className = "lesson-step__label";
+    const statusText = document.createElement("span");
+    statusText.className = "lesson-step__status-text sr-only";
+    header.append(bullet, label, statusText);
     section.prepend(header);
     section.setAttribute("aria-labelledby", header.id);
     record.header = header;
+    record.statusText = statusText;
   }
   if (record.header) {
-    renderMathText(record.header.querySelector(".lesson-step-label"), step.label);
+    renderMathText(record.header.querySelector(".lesson-step__label"), step.label);
+    const statusLabels = {
+      questioning: "，正在思考",
+      active: "，当前步骤",
+      supporting: "，正在补充讲解",
+      completed: "，已完成",
+    };
+    record.statusText.textContent = statusLabels[step.status] || "";
   } else {
     section.setAttribute("aria-label", "正在形成的解题步骤");
   }
@@ -476,7 +494,7 @@ function renderStructuredStep(record, step) {
   if (step.support) {
     if (!record.support) {
       record.support = document.createElement("aside");
-      record.support.className = "lesson-step-support";
+      record.support.className = "lesson-step__support";
       record.support.setAttribute("aria-live", "polite");
       record.support.setAttribute("aria-label", "当前步骤的辅助讲解");
       section.append(record.support);
@@ -550,18 +568,24 @@ function clearBoardRegion(region) {
 
 function renderActiveBoards() {
   const structuredBoard = visualState.structuredBoard;
-  if (structuredBoard?.steps instanceof Map && structuredBoard.steps.size > 0) {
+  const hasStructuredBoard = (
+    structuredBoard?.steps instanceof Map
+    && structuredBoard.steps.size > 0
+  );
+  dom.structuredBoard.hidden = !hasStructuredBoard;
+  dom.legacyBoard.hidden = hasStructuredBoard;
+  if (hasStructuredBoard) {
     if ((boardRegistries.get(dom.baseBoard)?.size || 0) > 0) {
       clearBoardRegion(dom.baseBoard);
     }
-    renderStructuredBoard(structuredBoard, dom.baseBoard);
+    renderStructuredBoard(structuredBoard, dom.structuredBoard);
   } else {
-    if ((structuredBoardRegistries.get(dom.baseBoard)?.size || 0) > 0) {
-      clearBoardRegion(dom.baseBoard);
+    if ((structuredBoardRegistries.get(dom.structuredBoard)?.size || 0) > 0) {
+      clearBoardRegion(dom.structuredBoard);
     }
     renderBoard(runtime.baseBoard, dom.baseBoard);
   }
-  if (runtime.layerStack.length > 0) {
+  if (!hasStructuredBoard && runtime.layerStack.length > 0) {
     dom.layerStage.hidden = false;
     renderBoard(runtime.activeBoard, dom.layerStage);
   } else {
@@ -1034,9 +1058,11 @@ function clearPointSelection() {
 
 
 function enablePointSelection(onSelect) {
-  const activeRegion = runtime.layerStack.length > 0
-    ? dom.layerStage
-    : dom.baseBoard;
+  const activeRegion = !dom.structuredBoard.hidden
+    ? dom.structuredBoard
+    : runtime.layerStack.length > 0
+      ? dom.layerStage
+      : dom.baseBoard;
   const nodes = [...activeRegion.querySelectorAll(".board-object")]
     .filter((node) => node.getClientRects().length > 0);
   nodes.forEach((node) => {

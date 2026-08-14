@@ -1403,6 +1403,8 @@ def test_lesson_page_has_fullscreen_classroom_regions():
         "problem-display",
         "route-strip",
         "board-stage",
+        "structured-board",
+        "legacy-board",
         "base-board",
         "layer-stage",
         "narration-line",
@@ -1416,7 +1418,8 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260814-2"' in html
+    assert 'src="/static/lesson.js?v=20260814-3"' in html
+    assert 'href="/static/styles.css?v=20260814-1"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -1424,18 +1427,31 @@ def test_lesson_page_has_fullscreen_classroom_regions():
 def test_versioned_lesson_module_remains_cacheable():
     client = page_client()
     html_response = client.get("/lesson/example")
-    response = client.get("/static/lesson.js?v=20260814-2")
+    response = client.get("/static/lesson.js?v=20260814-3")
     runtime_response = client.get(
-        "/static/runtime-core.mjs?v=20260814-1"
+        "/static/runtime-core.mjs?v=20260814-2"
     )
+    board_response = client.get(
+        "/static/structured-board.mjs?v=20260814-1"
+    )
+    styles_response = client.get("/static/styles.css?v=20260814-1")
 
     assert html_response.headers["cache-control"] == "no-cache"
     assert response.status_code == 200
     assert (
-        '} from "./runtime-core.mjs?v=20260814-1";'
+        '} from "./runtime-core.mjs?v=20260814-2";'
         in response.text
     )
-    for asset_response in (response, runtime_response):
+    assert (
+        '} from "./structured-board.mjs?v=20260814-1";'
+        in runtime_response.text
+    )
+    for asset_response in (
+        response,
+        runtime_response,
+        board_response,
+        styles_response,
+    ):
         assert asset_response.status_code == 200
         cache_directives = {
             directive.partition("=")[0].strip().lower()
@@ -1473,7 +1489,7 @@ def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
 def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
     source = page_client().get("/static/lesson.js").text
 
-    assert '} from "./runtime-core.mjs?v=20260814-1";' in source
+    assert '} from "./runtime-core.mjs?v=20260814-2";' in source
     assert 'import { CuePlayer } from "./cue-player.mjs?v=20260814-1";' in source
     assert "applySyncVisualAction" in source
     assert "let cuePlayer = null;" in source
@@ -1512,10 +1528,15 @@ def test_lesson_runtime_renders_and_scrolls_the_continuous_structured_board():
     source = page_client().get("/static/lesson.js").text
 
     assert 'section.className = "lesson-step"' in source
-    assert 'header.className = "lesson-step-header"' in source
-    assert 'bullet.className = "lesson-step-status-bullet"' in source
-    assert 'record.support.className = "lesson-step-support"' in source
+    assert 'header.className = "lesson-step__header"' in source
+    assert 'bullet.className = "lesson-step__status-dot"' in source
+    assert 'statusText.className = "lesson-step__status-text sr-only"' in source
+    assert 'section.setAttribute("aria-current", "step")' in source
+    assert 'record.support.className = "lesson-step__support"' in source
     assert "syncStructuredLines(record.main, step.lines, record.lines)" in source
+    assert "dom.structuredBoard.hidden = !hasStructuredBoard" in source
+    assert "dom.legacyBoard.hidden = hasStructuredBoard" in source
+    assert "renderStructuredBoard(structuredBoard, dom.structuredBoard)" in source
     assert "requestedScrollStepId: null" in source
     assert 'const behavior = restoringSnapshot ? "auto" : "smooth"' in source
     assert 'requested.scrollIntoView({ behavior, block: "center" })' in source
@@ -1524,6 +1545,43 @@ def test_lesson_runtime_renders_and_scrolls_the_continuous_structured_board():
     ).text
     assert "cuePlayer.playCueSequence(" in source
     assert "runSupportCueSequence(" not in source
+
+
+def test_lesson_shell_uses_single_continuous_structured_board():
+    client = page_client()
+    html = client.get("/lesson/example").text
+    css = client.get("/static/styles.css?v=20260814-1").text
+
+    assert 'id="structured-board"' in html
+    assert 'tabindex="0"' in html
+    assert 'id="legacy-board"' in html
+    assert 'class="board-directory"' not in html
+    assert ".structured-board {" in css
+    assert ".lesson-step {" in css
+    assert ".lesson-step__header {" in css
+    assert ".lesson-step__status-dot {" in css
+    assert ".lesson-step__line {" in css
+    assert ".lesson-step__support {" in css
+    assert ".structured-board:focus-visible {" in css
+    assert "font-size: 16px;" in css
+    assert "font-size: 22px;" in css
+    assert "overflow-x: hidden;" in css
+    assert "overflow-y: auto;" in css
+    assert "scroll-margin-block: 28vh;" in css
+    assert "env(safe-area-inset-bottom)" in css
+    assert "-webkit-overflow-scrolling: touch;" in css
+
+
+def test_structured_board_module_cache_chain_is_versioned():
+    client = page_client()
+    html = client.get("/lesson/example").text
+    lesson_js = client.get("/static/lesson.js?v=20260814-3").text
+    runtime_js = client.get("/static/runtime-core.mjs?v=20260814-2").text
+
+    assert "lesson.js?v=20260814-3" in html
+    assert "styles.css?v=20260814-1" in html
+    assert "runtime-core.mjs?v=20260814-2" in lesson_js
+    assert "structured-board.mjs?v=20260814-1" in runtime_js
 
 
 def test_choice_submission_passes_selected_option_without_exposing_answer_key():
@@ -1624,7 +1682,9 @@ def test_point_select_prompt_does_not_block_board_pointer_or_keyboard_access():
     assert ".interaction-stage.is-point-select .interaction-card" in styles
     assert "pointer-events: auto" in styles
     assert 'node.setAttribute("role", "button")' in source
-    assert "const activeRegion = runtime.layerStack.length > 0" in source
+    assert "const activeRegion = !dom.structuredBoard.hidden" in source
+    assert "? dom.structuredBoard" in source
+    assert ": runtime.layerStack.length > 0" in source
     assert 'activeRegion.querySelectorAll(".board-object")' in source
     assert "node.getClientRects().length > 0" in source
     assert 'selectablePrefix.className = "sr-only board-selectable-prefix"' in source

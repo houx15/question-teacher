@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f4efe5">
     <title>拾光讲题 · 课堂</title>
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260814-1">
   </head>
   <body class="lesson-body">
     <div id="rotate-state" class="rotate-state" role="status">
@@ -62,17 +62,29 @@
         </div>
 
         <div id="board-stage" class="board-stage">
-          <section
-            id="base-board"
-            class="board-region base-board"
-            aria-label="主板书"
-          ></section>
-          <section
-            id="layer-stage"
-            class="board-region layer-stage"
-            aria-label="临时讲解图层"
+          <div
+            id="structured-board"
+            class="structured-board"
+            role="log"
+            tabindex="0"
+            aria-label="分步解题板书"
+            aria-live="polite"
+            aria-relevant="additions text"
             hidden
-          ></section>
+          ></div>
+          <div id="legacy-board" class="legacy-board">
+            <section
+              id="base-board"
+              class="board-region base-board"
+              aria-label="主板书"
+            ></section>
+            <section
+              id="layer-stage"
+              class="board-region layer-stage"
+              aria-label="临时讲解图层"
+              hidden
+            ></section>
+          </div>
           <section
             id="interaction-stage"
             class="interaction-stage"
@@ -178,6 +190,6 @@
       <div id="runtime-announcer" class="sr-only" aria-live="polite"></div>
     </main>
 
-    <script type="module" src="/static/lesson.js?v=20260814-2"></script>
+    <script type="module" src="/static/lesson.js?v=20260814-3"></script>
   </body>
 </html>
