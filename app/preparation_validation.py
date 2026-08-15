@@ -78,6 +78,205 @@ _ARTIFACT_HISTORY_ROLES = {
 MAX_REPAIR_CYCLES = 8
 
 
+def build_structured_performance_score(
+    progression: TeachingProgression,
+    script: TeachingScript,
+) -> PerformanceScore:
+    """Build the reliable tablet board lifecycle from authored lesson semantics."""
+    _require_exact(progression, TeachingProgression, "progression")
+    _require_exact(script, TeachingScript, "script")
+    steps = {item.step_id: item for item in progression.steps}
+    clauses_by_step: Dict[str, List[object]] = {}
+    for clause in script.clauses:
+        if clause.lesson_step_id is None:
+            _fail(
+                "structured_action_step_invalid",
+                clause.clause_id,
+                "Structured clauses require a teaching step.",
+            )
+        clauses_by_step.setdefault(clause.lesson_step_id, []).append(clause)
+
+    board_objects = []
+    cues = []
+    board_index = 0
+    for clause in script.clauses:
+        step_id = clause.lesson_step_id
+        step = steps.get(step_id or "")
+        if step is None:
+            _fail(
+                "structured_action_step_invalid",
+                clause.clause_id,
+                "Structured clauses require a known teaching step.",
+            )
+        step_clauses = clauses_by_step[step_id]
+        start_actions = []
+        end_actions = []
+        if clause is step_clauses[0]:
+            start_actions.extend(
+                [
+                    {
+                        "clause_id": clause.clause_id,
+                        "action": {
+                            "surface": "board",
+                            "type": "reveal_step_header",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                            "step_label": step.directory_label,
+                        },
+                    },
+                    {
+                        "clause_id": clause.clause_id,
+                        "action": {
+                            "surface": "board",
+                            "type": "scroll_to_step",
+                            "target": step_id,
+                            "teaching_step_id": step_id,
+                        },
+                    },
+                ]
+            )
+        authored_board_content = list(clause.math_references)
+        if not authored_board_content and clause.display_text is not None:
+            authored_board_content.append(clause.display_text)
+        for reference_index, reference in enumerate(authored_board_content):
+            board_index += 1
+            board_id = "board-main-%03d" % board_index
+            line_role = (
+                "knowledge_anchor"
+                if clause is step_clauses[0] and reference_index == 0
+                else "working"
+            )
+            board_objects.append(
+                {
+                    "board_object_id": board_id,
+                    "content": reference,
+                    "teaching_step_id": step_id,
+                    "line_role": line_role,
+                }
+            )
+            start_actions.append(
+                {
+                    "clause_id": clause.clause_id,
+                    "action": {
+                        "surface": "board",
+                        "type": "write",
+                        "target": board_id,
+                        "content": reference,
+                        "teaching_step_id": step_id,
+                        "board_role": line_role,
+                    },
+                }
+            )
+        if clause is step_clauses[-1]:
+            end_actions.append(
+                {
+                    "clause_id": clause.clause_id,
+                    "action": {
+                        "surface": "board",
+                        "type": "complete_step",
+                        "target": step_id,
+                        "teaching_step_id": step_id,
+                    },
+                }
+            )
+        cues.append(
+            {
+                "cue_id": "cue-main-%03d" % len(cues),
+                "clause_ids": [clause.clause_id],
+                "start_actions": start_actions,
+                "end_actions": end_actions,
+            }
+        )
+
+    support_index = 0
+    for response in script.response_scripts:
+        panel_id = None
+        if response.classification == "incorrect":
+            support_index += 1
+            panel_id = "support-panel-%03d" % support_index
+        for clause_index, clause in enumerate(response.clauses):
+            start_actions = []
+            end_actions = []
+            if response.classification == "incorrect":
+                board_id = "board-support-%03d-%03d" % (
+                    support_index,
+                    clause_index,
+                )
+                content = clause.display_text or clause.math_references[0]
+                board_objects.append(
+                    {
+                        "board_object_id": board_id,
+                        "content": content,
+                        "teaching_step_id": clause.lesson_step_id,
+                        "line_role": "support",
+                    }
+                )
+                if clause_index == 0:
+                    start_actions.append(
+                        {
+                            "clause_id": clause.clause_id,
+                            "action": {
+                                "surface": "board",
+                                "type": "open_supporting_explanation",
+                                "target": panel_id,
+                                "teaching_step_id": clause.lesson_step_id,
+                            },
+                        }
+                    )
+                start_actions.append(
+                    {
+                        "clause_id": clause.clause_id,
+                        "action": {
+                            "surface": "board",
+                            "type": "write",
+                            "target": board_id,
+                            "content": content,
+                            "teaching_step_id": clause.lesson_step_id,
+                            "board_role": "support",
+                        },
+                    }
+                )
+                if clause_index == len(response.clauses) - 1:
+                    end_actions.extend(
+                        [
+                            {
+                                "clause_id": clause.clause_id,
+                                "action": {
+                                    "surface": "board",
+                                    "type": "close_supporting_explanation",
+                                    "target": panel_id,
+                                    "teaching_step_id": clause.lesson_step_id,
+                                },
+                            },
+                            {
+                                "clause_id": clause.clause_id,
+                                "action": {
+                                    "surface": "board",
+                                    "type": "scroll_to_step",
+                                    "target": clause.lesson_step_id,
+                                    "teaching_step_id": clause.lesson_step_id,
+                                },
+                            },
+                        ]
+                    )
+            cues.append(
+                {
+                    "cue_id": "cue-response-%03d" % len(cues),
+                    "clause_ids": [clause.clause_id],
+                    "start_actions": start_actions,
+                    "end_actions": end_actions,
+                }
+            )
+
+    return PerformanceScore.model_validate(
+        {
+            "cues": cues,
+            "board_objects": board_objects,
+            "overlay_transitions": [],
+        }
+    )
+
+
 class PreparationValidationError(ValueError):
     def __init__(self, code: str, artifact_id: str, detail: str) -> None:
         super().__init__(detail)
@@ -268,6 +467,35 @@ def validate_reasoning_trajectory(
     resolved_gaps = set()
     last_position = -1
     for episode in trajectory.episodes:
+        for item in episode.must_teach:
+            if (
+                item.student_display_evidence is None
+                or item.student_spoken_evidence is None
+            ):
+                _fail(
+                    "must_teach_evidence_missing",
+                    item.must_teach_id,
+                    "Current must-teach items require student-visible display and spoken evidence.",
+                )
+            if not _contains_semantic_anchor(
+                item.student_display_evidence, item.content
+            ):
+                _fail(
+                    "must_teach_content_anchor_missing",
+                    item.must_teach_id,
+                    "Must-teach display evidence must preserve its authored content as a semantic anchor.",
+                )
+            try:
+                validate_display_spoken_alignment(
+                    item.student_display_evidence,
+                    item.student_spoken_evidence,
+                )
+            except MathSpeechError:
+                _fail(
+                    "must_teach_evidence_alignment_invalid",
+                    item.must_teach_id,
+                    "Must-teach display and spoken evidence are not aligned.",
+                )
         episode_must_teach_ids = {
             item.must_teach_id for item in episode.must_teach
         }
@@ -1202,9 +1430,24 @@ def normalize_performance_control_metadata(
                     response, clause = owner
                     action = bound["action"]
                     if action["surface"] == "problem":
-                        if action["target"] in {
-                            item.target_id for item in problem_targets
-                        }:
+                        problem_target = next(
+                            (
+                                item
+                                for item in problem_targets
+                                if item.target_id == action["target"]
+                            ),
+                            None,
+                        )
+                        if (
+                            problem_target is not None
+                            and any(
+                                contains_normalized_cross_artifact_math_identity(
+                                    reference,
+                                    problem_target.math_text,
+                                )
+                                for reference in clause.math_references
+                            )
+                        ):
                             normalized_actions.append(bound)
                         continue
                     if action["type"] in {
@@ -1226,6 +1469,13 @@ def normalize_performance_control_metadata(
                             == normalize_cross_artifact_math_identity(reference)
                             for reference in clause.math_references
                         )
+                        if clause.display_text is not None:
+                            main_reference = main_reference or (
+                                normalized_content
+                                == normalize_cross_artifact_math_identity(
+                                    clause.display_text
+                                )
+                            )
                         support_reference = (
                             response is not None
                             and action.get("board_role") == "support"
@@ -2076,7 +2326,14 @@ def _validate_legacy_performance_score(
     for position, clause in enumerate(script.clauses):
         references = tuple(
             normalize_cross_artifact_math_identity(item)
-            for item in clause.math_references
+            for item in (
+                *clause.math_references,
+                *(
+                    (clause.display_text,)
+                    if clause.display_text is not None
+                    else ()
+                ),
+            )
         )
         references_by_position.append(references)
         for reference in references:
@@ -2403,18 +2660,16 @@ def _validate_structured_performance_score(
             for clause in step_clauses
             if clause.pedagogical_function == "question"
         ]
-        if not question_positions:
+        activation_position = (
+            question_positions[0]
+            if question_positions
+            else clause_positions[step_clauses[0].clause_id]
+        )
+        if reveal[:3] <= (activation_position, 1, -1):
             _fail(
                 "structured_step_lifecycle_invalid",
                 step_id,
-                "Step header requires an authored guiding-question clause.",
-            )
-        question_position = question_positions[0]
-        if reveal[:3] <= (question_position, 1, -1):
-            _fail(
-                "structured_step_lifecycle_invalid",
-                step_id,
-                "Step header must follow its guiding question.",
+                "Step header must follow its authored step-opening clause.",
             )
         first_write = min(writes, key=lambda item: item[:3])
         activation_scrolls = [

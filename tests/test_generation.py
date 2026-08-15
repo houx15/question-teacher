@@ -550,6 +550,26 @@ def test_grounder_retry_names_only_safe_invalid_field_paths():
     assert "这是私密解释" not in client.user_prompts[1]
 
 
+def test_grounder_retry_explains_operation_operand_arity():
+    invalid = grounding_payload()
+    invalid["reasoning_steps"][0]["operation_kind"] = "substitute"
+    invalid["reasoning_steps"][0]["operands"] = []
+    client = FakeClient([invalid, grounding_payload()])
+
+    route = asyncio.run(
+        LessonGenerationService(client, MathEngine())._build_grounded_teaching_route(
+            grounded_source_problem(), None
+        )
+    )
+
+    assert route.mode == TeachingRouteMode.REFERENCE_GROUNDED
+    retry_prompt = client.user_prompts[1]
+    assert "reasoning_steps.0" in retry_prompt
+    assert "operation_kind 与 operands 数量" in retry_prompt
+    assert "算术操作恰好一个操作数" in retry_prompt
+    assert "化简、整理、结论等操作必须为零个" in retry_prompt
+
+
 def test_grounder_schema_retry_is_bounded_to_two_extra_attempts():
     client = FakeClient(
         [

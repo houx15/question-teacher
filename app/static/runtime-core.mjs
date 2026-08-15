@@ -2,7 +2,7 @@ import {
   applyStructuredBoardAction,
   cloneStructuredBoard,
   emptyStructuredBoard,
-} from "./structured-board.mjs?v=20260814-1";
+} from "./structured-board.mjs?v=20260815-1";
 
 
 const MIN_FALLBACK_MS = 2200;

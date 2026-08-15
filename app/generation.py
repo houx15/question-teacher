@@ -566,6 +566,9 @@ class LessonGenerationService:
                     + "、".join(invalid_paths)
                     + "。数学字段只能填写纯数学表达式，"
                     + "不得加入解释性文字或不受支持的 LaTeX 命令。"
+                    + "若路径位于 reasoning_steps，请同时检查 operation_kind "
+                    + "与 operands 数量：算术操作恰好一个操作数，代入等操作"
+                    + "为一至四个，化简、整理、结论等操作必须为零个。"
                 )
         try:
             brief = ReferenceSafetyPolicy.from_problem(

@@ -60,6 +60,26 @@ test("step grows from questioning to active to completed", () => {
 });
 
 
+test("revealing the next step completes the previously active step", () => {
+  let state = applyStructuredBoardAction(
+    emptyStructuredBoard(),
+    action("reveal_step_header", {step_label: "第一步"}),
+  );
+  state = applyStructuredBoardAction(
+    state,
+    action("reveal_step_header", {
+      target: "teaching-step-002",
+      teaching_step_id: "teaching-step-002",
+      step_label: "第二步",
+    }),
+  );
+
+  assert.equal(state.steps.get("teaching-step-001").status, "completed");
+  assert.equal(state.steps.get("teaching-step-002").status, "active");
+  assert.equal(state.activeStepId, "teaching-step-002");
+});
+
+
 test("a step created before its header remains in questioning state", () => {
   const state = applyStructuredBoardAction(
     emptyStructuredBoard(),

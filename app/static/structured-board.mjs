@@ -270,6 +270,12 @@ export function applyStructuredBoardAction(current, action) {
   state.steps.set(stepId, step);
 
   if (action.type === "reveal_step_header") {
+    if (state.activeStepId && state.activeStepId !== stepId) {
+      const previous = state.steps.get(state.activeStepId);
+      if (previous && previous.status === "active") {
+        previous.status = "completed";
+      }
+    }
     step.label = action.step_label;
     step.status = "active";
     state.activeStepId = stepId;

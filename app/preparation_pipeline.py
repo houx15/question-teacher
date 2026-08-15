@@ -63,6 +63,7 @@ from app.preparation_prompts import (
 )
 from app.preparation_validation import (
     PreparationValidationError,
+    build_structured_performance_score,
     blocking_signature,
     normalize_performance_control_metadata,
     validate_interaction_plan,
@@ -88,6 +89,87 @@ from app.teaching_progression_validation import (
 
 StageCallback = Callable[[str], Union[None, Awaitable[None]]]
 _ModelType = TypeVar("_ModelType", bound=BaseModel)
+_SAFE_STRUCTURE_TOKEN = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+
+def _schema_property_names(model_type: Type[BaseModel]) -> set[str]:
+    names: set[str] = set()
+    stack: List[object] = [model_type.model_json_schema()]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            properties = item.get("properties")
+            if isinstance(properties, dict):
+                names.update(
+                    key
+                    for key in properties
+                    if isinstance(key, str)
+                    and _SAFE_STRUCTURE_TOKEN.fullmatch(key)
+                )
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return names
+
+
+def _safe_validation_retry_guidance(
+    model_type: Type[BaseModel],
+    error: ValidationError,
+) -> str:
+    allowed_names = _schema_property_names(model_type)
+    issues = []
+    for item in error.errors()[:12]:
+        error_type = item.get("type")
+        if (
+            not isinstance(error_type, str)
+            or _SAFE_STRUCTURE_TOKEN.fullmatch(error_type) is None
+        ):
+            error_type = "validation_error"
+        path = []
+        for part in item.get("loc", ()):
+            if isinstance(part, int) and 0 <= part <= 9999:
+                path.append(str(part))
+            elif isinstance(part, str) and part in allowed_names:
+                path.append(part)
+            else:
+                path = []
+                break
+        location = ".".join(path) if path else "schema"
+        issue = "%s(%s)" % (location, error_type)
+        if issue not in issues:
+            issues.append(issue)
+    if not issues:
+        return "请逐项检查所有必填字段、类型和长度限制。"
+    guidance = "请修正这些字段问题：%s。" % "、".join(issues)
+    if model_type.__name__ == "PerformanceScore" and any(
+        phase in issue
+        for issue in issues
+        for phase in ("lead_actions", "start_actions", "end_actions")
+    ):
+        guidance += (
+            "lead_actions/start_actions/end_actions 的每一项必须是两层对象："
+            "外层仅放 clause_id 和 action，surface/type/target 等只能放在 action 内。"
+            "动作字段必须严格使用 system 中的受控模板；"
+            "步骤 reveal/scroll/complete 的 target 必须等于 teaching_step_id，"
+            "step-aware write 的 board_role 只能是 knowledge_anchor、working、"
+            "summary、error_tip、support 之一；lead focus/emphasize 不得带 content "
+            "或 board_role；未列字段必须省略或为 null。"
+        )
+    if model_type.__name__ == "PerformanceScore" and any(
+        issue.startswith("board_objects.") for issue in issues
+    ):
+        guidance += (
+            "board_objects 中字段名必须是 line_role，绝不能写 board_role；"
+            "对应 write 动作中才使用 board_role，且其值必须与对象 line_role 相同。"
+        )
+    return guidance
+
+
+def _safe_structure_error_guidance(error: ModelStructureError) -> str:
+    code = error.code
+    if not isinstance(code, str) or _SAFE_STRUCTURE_TOKEN.fullmatch(code) is None:
+        code = "invalid_structure"
+    return "结构错误类型：%s；请返回完整且可解析的 JSON 对象。" % code
 DEFAULT_PREPARATION_CAPABILITIES = {
     "interaction_kinds": ["choice"],
     "surfaces": ["problem", "board"],
@@ -170,14 +252,20 @@ def _normalize_review_control_metadata(
 def _normalize_script_section_metadata(
     script: TeachingScript,
     trajectory: ReasoningTrajectory,
+    progression: TeachingProgression,
 ) -> TeachingScript:
-    """Bind fixed script sections to boundary episodes, not invented ones."""
+    """Bind script metadata to authoritative episode and step ownership."""
     first_episode_id = trajectory.episodes[0].episode_id
     last_episode_id = trajectory.episodes[-1].episode_id
     must_teach_owner = {
         item.must_teach_id: episode.episode_id
         for episode in trajectory.episodes
         for item in episode.must_teach
+    }
+    episode_steps = {
+        episode_id: step.step_id
+        for step in progression.steps
+        for episode_id in step.episode_ids
     }
     opening_ids = {
         *script.opening_clause_ids,
@@ -204,6 +292,20 @@ def _normalize_script_section_metadata(
         ]
         if normalized_refs != clause["must_teach_refs"]:
             clause["must_teach_refs"] = normalized_refs
+            changed = True
+    all_clauses = list(payload["clauses"])
+    all_clauses.extend(
+        clause
+        for response in payload["response_scripts"]
+        for clause in response["clauses"]
+    )
+    for clause in all_clauses:
+        authoritative_step_id = episode_steps.get(clause["episode_id"])
+        if (
+            authoritative_step_id is not None
+            and clause["lesson_step_id"] != authoritative_step_id
+        ):
+            clause["lesson_step_id"] = authoritative_step_id
             changed = True
     if not changed:
         return script
@@ -664,7 +766,7 @@ class LessonPreparationPipeline:
     ) -> SolutionTrace:
         self._require_active_state(state)
         await self._emit(on_stage, "整理参考解析")
-        prompt = self._build_prompt(
+        base_prompt = self._build_prompt(
             state,
             "reference_analyst",
             solution_trace_prompt,
@@ -676,7 +778,7 @@ class LessonPreparationPipeline:
         trace = await self._complete_model(
             "reference_analyst",
             SOLUTION_TRACE_SYSTEM,
-            prompt,
+            base_prompt,
             SolutionTrace,
         )
         trace = _normalize_solution_trace_control_metadata(trace)
@@ -736,7 +838,7 @@ class LessonPreparationPipeline:
         if state.solution_trace is None:
             raise RuntimeError("solution trace must exist before trajectory design")
         await self._emit(on_stage, "设计解题思维轨迹")
-        prompt = self._build_prompt(
+        base_prompt = self._build_prompt(
             state,
             "teaching_designer",
             reasoning_trajectory_prompt,
@@ -745,25 +847,64 @@ class LessonPreparationPipeline:
             self.capabilities,
             repair,
         )
-        trajectory = await self._complete_model(
-            "teaching_designer",
-            TEACHING_DESIGNER_SYSTEM,
-            prompt,
-            ReasoningTrajectory,
-        )
-        try:
-            validate_reasoning_trajectory(trajectory, state.solution_trace)
-        except PreparationValidationError:
-            self._mark_last_call_failed(
-                state,
+        validation_error: Optional[PreparationValidationError] = None
+        for semantic_attempt in range(3):
+            attempt_prompt = base_prompt
+            if semantic_attempt and validation_error is not None:
+                correction_guidance = (
+                    "episode.source_step_ids 只能逐字复制输入 "
+                    "SolutionTrace.source_steps 的 source_step_id；"
+                    "按原顺序覆盖全部 source step，不得杜撰、改名或遗漏。"
+                )
+                if validation_error.code in {
+                    "must_teach_evidence_missing",
+                    "must_teach_content_anchor_missing",
+                    "must_teach_evidence_alignment_invalid",
+                }:
+                    correction_guidance = (
+                        "请重写该 must_teach：student_display_evidence 必须完整保留"
+                        "本项 content 原文作为语义锚点，可在前后补充自然解释；"
+                        "student_spoken_evidence 必须自然读出同一内容及所有数学运算。"
+                    )
+                attempt_prompt += (
+                    "\n上一次解题思维轨迹未通过确定性校验。"
+                    "请完整重写 ReasoningTrajectory，不要局部补丁。"
+                    "稳定错误码："
+                    + validation_error.code
+                    + "；对象："
+                    + validation_error.artifact_id
+                    + "。"
+                    + correction_guidance
+                    + "不要复述上一次输出。"
+                )
+            trajectory = await self._complete_model(
                 "teaching_designer",
-                "reasoning_design_failed",
+                TEACHING_DESIGNER_SYSTEM,
+                attempt_prompt,
+                ReasoningTrajectory,
             )
-            raise PreparationFailure(
-                category="reasoning_design_failed",
-                role="teaching_designer",
-                detail="解题思维轨迹未通过确定性校验。",
-            ) from None
+            try:
+                validate_reasoning_trajectory(trajectory, state.solution_trace)
+                break
+            except PreparationValidationError as error:
+                validation_error = error
+                self._mark_last_call_failed(
+                    state,
+                    "teaching_designer",
+                    "reasoning_design_failed",
+                )
+                if error.code not in {
+                    "episode_source_missing",
+                    "trace_step_uncovered",
+                    "must_teach_evidence_missing",
+                    "must_teach_content_anchor_missing",
+                    "must_teach_evidence_alignment_invalid",
+                } or semantic_attempt == 2:
+                    raise PreparationFailure(
+                        category="reasoning_design_failed",
+                        role="teaching_designer",
+                        detail="解题思维轨迹未通过确定性校验。",
+                    ) from None
         self._accept_artifact(
             state,
             artifact_type="reasoning_trajectory",
@@ -807,6 +948,16 @@ class LessonPreparationPipeline:
                     correction_guidance = (
                         "请重写该步骤的 why_now，点明已知条件、前一步结果或"
                         "当前学生困难与本步动作之间的具体因果。"
+                    )
+                elif validation_error.code in {
+                    "progression_evidence_target_duplicate",
+                    "progression_evidence_target_coverage_invalid",
+                }:
+                    correction_guidance = (
+                        "请先删除所有 evidence_target_ids 重复项，再把 "
+                        "problem_targets 中每个 target_id 分配给唯一一个负责步骤。"
+                        "检查所有步骤 evidence_target_ids 的并集与输入 target_id "
+                        "全集完全相同，且每个 ID 在整套推进中只出现一次。"
                     )
                 attempt_prompt += (
                     "\n上一次教学推进未通过确定性校验。"
@@ -870,40 +1021,111 @@ class LessonPreparationPipeline:
                 "progression and interaction plan must exist before script writing"
             )
         await self._emit(on_stage, "编写讲稿")
-        script = await self._complete_model(
+        base_prompt = self._build_prompt(
+            state,
             "script_teacher",
-            SCRIPT_TEACHER_SYSTEM,
-            self._build_prompt(
-                state,
+            teaching_script_prompt,
+            state.teaching_progression,
+            state.interaction_plan,
+            state.reasoning_trajectory,
+            repair,
+        )
+        validation_error: Optional[PreparationValidationError] = None
+        for semantic_attempt in range(3):
+            attempt_prompt = base_prompt
+            if semantic_attempt and validation_error is not None:
+                correction_guidance = (
+                    "请确保每条主线和 response clause 都有非空 "
+                    "display_text，并与本条 spoken_text 表达同一教学内容。"
+                )
+                if validation_error.code == "must_teach_evidence_missing":
+                    correction_guidance = (
+                        "请按 must_teach_id 找到输入 must_teach_evidence，"
+                        "在绑定该 ID 的同一 clause 中逐字包含对应的 "
+                        "student_display_evidence 和 student_spoken_evidence，"
+                        "不得改写、遗漏或放到其他 episode。"
+                    )
+                elif validation_error.code in {
+                    "response_semantic_anchor_missing",
+                    "response_remediation_insufficient",
+                }:
+                    correction_guidance = (
+                        "请找到该 response 对应的错误 option，在同一错误分支中"
+                        "分别直接包含该 option 的 misconception 原文和 "
+                        "incorrect_feedback_by_option 纠正动作原文。两项必须是"
+                        "可独立识别、互不重叠的语义单位，不得用泛化安慰或填充文字替代。"
+                    )
+                elif validation_error.code in {
+                    "response_classification_invalid",
+                    "response_depth_invalid",
+                    "response_error_code_invalid",
+                }:
+                    correction_guidance = (
+                        "请按 interaction_id 与 option_id 逐项重建 response："
+                        "正确项必须 classification=correct、depth=brief、"
+                        "error_code=null；错误项必须 classification=incorrect，"
+                        "并逐字复制该 option 的 error_code 与 remediation_depth，"
+                        "不得翻译、改名或自造。"
+                    )
+                elif validation_error.code == "response_private_answer_leakage":
+                    correction_guidance = (
+                        "请删除所有 response display_text/spoken_text 中的私有 "
+                        "canonical_answer、隐藏答案和正确结果。错误分支只使用"
+                        "公开 option label、本项 misconception 与 "
+                        "incorrect_feedback_by_option 纠正动作，不得复述答案值。"
+                    )
+                attempt_prompt += (
+                    "\n上一次讲稿未通过确定性校验。"
+                    "请完整重写 TeachingScript，不要局部补丁。"
+                    "稳定错误码："
+                    + validation_error.code
+                    + "；对象："
+                    + validation_error.artifact_id
+                    + "。"
+                    + correction_guidance
+                    + "不要复述上一次输出。"
+                )
+            script = await self._complete_model(
                 "script_teacher",
-                teaching_script_prompt,
-                state.teaching_progression,
-                state.interaction_plan,
-                repair,
-            ),
-            TeachingScript,
-        )
-        script = _normalize_script_section_metadata(
-            script, state.reasoning_trajectory
-        )
-        try:
-            validate_teaching_script(
+                SCRIPT_TEACHER_SYSTEM,
+                attempt_prompt,
+                TeachingScript,
+            )
+            script = _normalize_script_section_metadata(
                 script,
                 state.reasoning_trajectory,
                 state.teaching_progression,
-                state.interaction_plan,
             )
-        except PreparationValidationError:
-            self._mark_last_call_failed(
-                state,
-                "script_teacher",
-                "teaching_script_failed",
-            )
-            raise PreparationFailure(
-                category="teaching_script_failed",
-                role="script_teacher",
-                detail="讲稿未通过确定性校验。",
-            ) from None
+            try:
+                validate_teaching_script(
+                    script,
+                    state.reasoning_trajectory,
+                    state.teaching_progression,
+                    state.interaction_plan,
+                )
+                break
+            except PreparationValidationError as error:
+                validation_error = error
+                self._mark_last_call_failed(
+                    state,
+                    "script_teacher",
+                    "teaching_script_failed",
+                )
+                if error.code not in {
+                    "clause_display_missing",
+                    "must_teach_evidence_missing",
+                    "response_semantic_anchor_missing",
+                    "response_remediation_insufficient",
+                    "response_classification_invalid",
+                    "response_depth_invalid",
+                    "response_error_code_invalid",
+                    "response_private_answer_leakage",
+                } or semantic_attempt == 2:
+                    raise PreparationFailure(
+                        category="teaching_script_failed",
+                        role="script_teacher",
+                        detail="讲稿未通过确定性校验。",
+                    ) from None
         self._accept_artifact(
             state,
             artifact_type="teaching_script",
@@ -926,32 +1148,65 @@ class LessonPreparationPipeline:
                 "teaching progression must exist before interaction design"
             )
         await self._emit(on_stage, "设计互动")
-        prompt = self._build_prompt(
+        base_prompt = self._build_prompt(
             state,
             "interaction_designer",
             interaction_plan_prompt,
             state.teaching_progression,
             repair,
         )
-        plan = await self._complete_model(
-            "interaction_designer",
-            INTERACTION_DESIGNER_SYSTEM,
-            prompt,
-            InteractionPlan,
-        )
-        try:
-            validate_interaction_plan(plan, state.teaching_progression)
-        except PreparationValidationError:
-            self._mark_last_call_failed(
-                state,
+        validation_error: Optional[PreparationValidationError] = None
+        for semantic_attempt in range(2):
+            attempt_prompt = base_prompt
+            if semantic_attempt and validation_error is not None:
+                correction_guidance = (
+                    "请让 why_pause 逐字包含所属步骤的 "
+                    "checkpoint.diagnostic_goal，并解释为什么要在当前步骤"
+                    "暂停检查这个目标。"
+                )
+                if validation_error.code == "interaction_checkpoint_missing":
+                    correction_guidance = (
+                        "请先检查 TeachingProgression：每个 interaction 的 "
+                        "teaching_step_id 必须逐字引用一个 checkpoint 非空的步骤，"
+                        "episode_id 必须属于该同一步；没有 checkpoint 的步骤不得"
+                        "放互动。why_pause 再逐字包含该 checkpoint.diagnostic_goal。"
+                    )
+                attempt_prompt += (
+                    "\n上一次互动意图未通过确定性校验。"
+                    "请完整重写 InteractionPlan，不要局部补丁。"
+                    "稳定错误码："
+                    + validation_error.code
+                    + "；对象："
+                    + validation_error.artifact_id
+                    + "。"
+                    + correction_guidance
+                    + "不要复述上一次输出。"
+                )
+            plan = await self._complete_model(
                 "interaction_designer",
-                "interaction_plan_failed",
+                INTERACTION_DESIGNER_SYSTEM,
+                attempt_prompt,
+                InteractionPlan,
             )
-            raise PreparationFailure(
-                category="interaction_plan_failed",
-                role="interaction_designer",
-                detail="互动意图未通过确定性校验。",
-            ) from None
+            try:
+                validate_interaction_plan(plan, state.teaching_progression)
+                break
+            except PreparationValidationError as error:
+                validation_error = error
+                self._mark_last_call_failed(
+                    state,
+                    "interaction_designer",
+                    "interaction_plan_failed",
+                )
+                if error.code not in {
+                    "interaction_why_pause_invalid",
+                    "interaction_checkpoint_missing",
+                } or semantic_attempt:
+                    raise PreparationFailure(
+                        category="interaction_plan_failed",
+                        role="interaction_designer",
+                        detail="互动意图未通过确定性校验。",
+                    ) from None
         self._accept_artifact(
             state,
             artifact_type="interaction_plan",
@@ -979,7 +1234,7 @@ class LessonPreparationPipeline:
                 "teaching progression must exist before direction"
             )
         await self._emit(on_stage, "编排板书与高亮")
-        prompt = self._build_prompt(
+        base_prompt = self._build_prompt(
             state,
             "classroom_director",
             performance_score_prompt,
@@ -990,40 +1245,75 @@ class LessonPreparationPipeline:
             repair,
             state.teaching_progression,
         )
-        score = await self._complete_model(
-            "classroom_director",
-            CLASSROOM_DIRECTOR_SYSTEM,
-            prompt,
-            PerformanceScore,
-        )
-        try:
-            validate_performance_score(
-                score,
-                problem_focus_targets,
-                state.teaching_progression,
-                state.teaching_script,
-                state.interaction_plan,
-            )
-        except PreparationValidationError as initial_error:
-            if initial_error.code not in {
-                "overlay_transition_invalid",
-                "visual_action_too_early",
-            }:
-                self._mark_last_call_failed(
-                    state,
-                    "classroom_director",
-                    "performance_score_failed",
+        validation_error: Optional[PreparationValidationError] = None
+        retryable_codes = {
+            "visual_target_invalid",
+            "visual_action_too_early",
+            "overlay_transition_invalid",
+            "cue_clause_coverage_invalid",
+            "structured_step_lifecycle_invalid",
+            "structured_support_lifecycle_invalid",
+        }
+        for semantic_attempt in range(3):
+            attempt_prompt = base_prompt
+            if semantic_attempt and validation_error is not None:
+                correction_guidance = (
+                    "所有 problem 动作 target 只能逐字引用 problem_targets.target_id；"
+                    "所有普通 board 动作 target/source/relation_target 只能引用已声明"
+                    "且在当前时点已由 write/transform 创建的 board_object_id。"
+                    "write.content 必须与对应 board_object.content 完全一致；"
+                    "同一 cue 的 clear_focus/fade 只能关闭该 cue 已开启的 focus/emphasize。"
                 )
-                raise PreparationFailure(
-                    category="performance_score_failed",
-                    role="classroom_director",
-                    detail="板书与高亮编排未通过确定性校验。",
-                ) from None
-            score = normalize_performance_control_metadata(
-                score,
-                problem_focus_targets,
-                state.teaching_script,
-                state.teaching_progression,
+                if (
+                    validation_error.code == "visual_target_invalid"
+                    and "包含不允许的动作类型" in validation_error.detail
+                ):
+                    correction_guidance = (
+                        "严格按阶段重排动作：lead_actions 仅 focus/emphasize；"
+                        "start_actions 仅 write/transform/focus/emphasize/annotate/"
+                        "reveal/reveal_step_header/scroll_to_step/"
+                        "open_supporting_explanation；end_actions 仅 clear_focus/fade/"
+                        "write/reveal_step_header/complete_step/scroll_to_step/"
+                        "close_supporting_explanation。不得把 complete、close、fade、"
+                        "clear_focus 放进 start_actions。"
+                    )
+                if validation_error.code == "visual_action_too_early":
+                    correction_guidance = (
+                        "请按 cue 顺序重排动作：problem 的 focus/emphasize 只能绑定到"
+                        "其 clause.math_references 已明确包含该 problem target 数学内容的"
+                        "子句；如果当前子句尚未提到它，就删除该可选动作。board 对象必须"
+                        "先 write/transform 创建，之后的 cue 才能 focus/emphasize/"
+                        "annotate/fade；lead_actions 不得引用本 cue 才创建的对象。"
+                    )
+                elif validation_error.code == "overlay_transition_invalid":
+                    correction_guidance = (
+                        "请删除不必要的 overlay；如确需 overlay，enter 与 return 必须"
+                        "位于不同 cue 边界，中间至少一个 cue，且 overlay 内不得引用"
+                        "已经 return 的对象。"
+                    )
+                elif validation_error.code == "cue_clause_coverage_invalid":
+                    correction_guidance = (
+                        "请先列出 TeachingScript 的全部主线 clauses 与全部 response "
+                        "clauses，并按输入原顺序分配到 cues.clause_ids：每个 clause_id "
+                        "恰好出现一次，不得重复、遗漏、改名或新增。每个动作外层的 "
+                        "clause_id 必须属于所在 cue.clause_ids。"
+                    )
+                attempt_prompt += (
+                    "\n上一次板书编排未通过确定性校验。"
+                    "请完整重写 PerformanceScore，不要局部补丁。"
+                    "稳定错误码："
+                    + validation_error.code
+                    + "；对象："
+                    + validation_error.artifact_id
+                    + "。"
+                    + correction_guidance
+                    + "不要复述上一次输出。"
+                )
+            score = await self._complete_model(
+                "classroom_director",
+                CLASSROOM_DIRECTOR_SYSTEM,
+                attempt_prompt,
+                PerformanceScore,
             )
             try:
                 validate_performance_score(
@@ -1033,17 +1323,59 @@ class LessonPreparationPipeline:
                     state.teaching_script,
                     state.interaction_plan,
                 )
-            except PreparationValidationError:
-                self._mark_last_call_failed(
-                    state,
-                    "classroom_director",
-                    "performance_score_failed",
-                )
-                raise PreparationFailure(
-                    category="performance_score_failed",
-                    role="classroom_director",
-                    detail="板书与高亮编排未通过确定性校验。",
-                ) from None
+                break
+            except PreparationValidationError as initial_error:
+                validation_error = initial_error
+                if initial_error.code in {
+                    "overlay_transition_invalid",
+                    "visual_action_too_early",
+                }:
+                    score = normalize_performance_control_metadata(
+                        score,
+                        problem_focus_targets,
+                        state.teaching_script,
+                        state.teaching_progression,
+                    )
+                    try:
+                        validate_performance_score(
+                            score,
+                            problem_focus_targets,
+                            state.teaching_progression,
+                            state.teaching_script,
+                            state.interaction_plan,
+                        )
+                        break
+                    except PreparationValidationError as normalized_error:
+                        validation_error = normalized_error
+                if validation_error.code in retryable_codes:
+                    try:
+                        deterministic_score = build_structured_performance_score(
+                            state.teaching_progression,
+                            state.teaching_script,
+                        )
+                        validate_performance_score(
+                            deterministic_score,
+                            problem_focus_targets,
+                            state.teaching_progression,
+                            state.teaching_script,
+                            state.interaction_plan,
+                        )
+                        score = deterministic_score
+                        break
+                    except PreparationValidationError as fallback_error:
+                        validation_error = fallback_error
+                if semantic_attempt < 2:
+                    self._mark_last_call_failed(
+                        state,
+                        "classroom_director",
+                        "performance_score_failed",
+                    )
+                if validation_error.code not in retryable_codes or semantic_attempt == 2:
+                    raise PreparationFailure(
+                        category="performance_score_failed",
+                        role="classroom_director",
+                        detail="板书与高亮编排未通过确定性校验。",
+                    ) from None
         self._accept_artifact(
             state,
             artifact_type="performance_score",
@@ -1409,6 +1741,7 @@ class LessonPreparationPipeline:
             ) from None
         retry_count = 0
         token_usage: Optional[Dict[str, int]] = {}
+        structure_guidance = ""
         for attempt in range(self.MAX_STRUCTURE_ATTEMPTS):
             attempt_prompt = prompt
             if attempt:
@@ -1416,6 +1749,7 @@ class LessonPreparationPipeline:
                     prompt
                     + "\n上一次输出结构无效。"
                     + "请仅返回符合 Schema 的 JSON 对象。"
+                    + structure_guidance
                 )
             try:
                 structured_metadata_method = getattr(
@@ -1451,6 +1785,7 @@ class LessonPreparationPipeline:
                     payload = completion
                 model = model_type.model_validate(payload)
             except ModelStructureError as error:
+                structure_guidance = _safe_structure_error_guidance(error)
                 token_usage = self._merge_token_usage(
                     token_usage,
                     error.token_usage,
@@ -1471,7 +1806,11 @@ class LessonPreparationPipeline:
                     role=role,
                     detail="模型输出结构无效。",
                 ) from None
-            except ValidationError:
+            except ValidationError as error:
+                structure_guidance = _safe_validation_retry_guidance(
+                    model_type,
+                    error,
+                )
                 if attempt + 1 < self.MAX_STRUCTURE_ATTEMPTS:
                     retry_count += 1
                     continue

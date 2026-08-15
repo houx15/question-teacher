@@ -12,7 +12,7 @@ import {
   isNativeInteractiveTarget,
   resolveInteractionPresentation,
   scheduleBoardActions,
-} from "./runtime-core.mjs?v=20260814-2";
+} from "./runtime-core.mjs?v=20260815-1";
 import { CuePlayer } from "./cue-player.mjs?v=20260814-1";
 import {
   mathTextToPlainText,

@@ -95,6 +95,9 @@ TEACHING_DESIGNER_SYSTEM = "\n".join(
         "会直接显示在学生课堂中，不得写英文内部标签。",
         "参考分析中每个 reasoning_gap_code 都必须由同一步骤 episode 的"
         "resolved_gap_refs 绑定到一个明确 must_teach 项。",
+        "每个 episode.source_step_ids 只能逐字复制输入 SolutionTrace.source_steps "
+        "中的 source_step_id；所有 source step 必须按原顺序至少覆盖一次，"
+        "不得杜撰、改名或遗漏。",
         "每个 must_teach 必须同时给出 student_display_evidence 与 "
         "student_spoken_evidence；它们是后续讲稿和板书必须原样覆盖的"
         "学生可见证据。student_display_evidence 必须完整保留 content 作为"
@@ -114,6 +117,8 @@ TEACHING_PROGRESSION_SYSTEM = "\n".join(
         "之类的流程性转场。",
         "目录标题只能在学生形成思路后揭示，不得剧透答案或后续决定。",
         "ReasoningTrajectory 中每个 must_teach 都必须被某个步骤的 must_teach_refs 引用。",
+        "problem_targets 中每个 target_id 必须在所有步骤的 evidence_target_ids "
+        "中精确出现一次：同一步不得重复，跨步骤不得重复，也不得遗漏。",
         "checkpoint.misconception_ids 只能引用服务端给出的 "
         "misconception_vocabulary，且必须属于该步骤覆盖的 episode。",
         "只设计可审核的教学推进，不写最终教师台词。",
@@ -130,12 +135,26 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
         "每个错误分支必须自然地直接讲清该 option 的 misconception "
         "和 incorrect_feedback_by_option 纠正动作；纠错内容不能只是更长，"
         "深度由错误原因和纠正动作构成。",
+        "每个 response 必须精确绑定 interaction_id 与 option_id。正确项的 "
+        "classification=correct、depth=brief、error_code=null；错误项的 "
+        "classification=incorrect，error_code 与 remediation_depth 必须逐字复制"
+        "该 option 的 error_code 与 remediation_depth，不得翻译、改名或自造。",
+        "response 的学生可见 display_text/spoken_text 不得复制任何 option 的"
+        "私有 canonical_answer 或隐藏答案；错误分支只使用公开 option label、"
+        "本项 misconception 与 incorrect_feedback_by_option 纠正动作。",
         "interaction_scripts 必须按 interaction_id/option_id 精确覆盖"
         " InteractionPlan，并独立撰写最终 prompt、hint 和 option label；"
         "transfer_script 必须按 option_id 覆盖迁移题私有答案意图，"
         "所有学生可见迁移文本只在 TeachingScript 定稿。",
         "每个 must_teach_refs 必须在该 clause 的 display_text/spoken_text "
         "中原样包含对应 student evidence。",
+        "must_teach_evidence 是讲稿必须逐项覆盖的最小证据桥；按 "
+        "must_teach_id 与 episode_id 绑定，逐字复制其中 display/spoken evidence，"
+        "再在前后组织自然、顺畅的人话。",
+        "每条主线和 response clause 都必须复制所属 episode_id，并填写该 "
+        "episode 在 TeachingProgression 中唯一对应的 lesson_step_id；"
+        "不得遗漏、猜测或跨步骤绑定。",
+        "每条主线和 response clause 都必须填写非空 display_text；"
         "display_text 只写屏幕上要看的内容；spoken_text 只写自然口播，"
         "不得含数学标记，屏幕公式必须在口播中读出减、乘、等于等运算词。",
         "所有学生可见字段不得出现内部字段名。method_name 最多 8 字，"
@@ -155,7 +174,8 @@ INTERACTION_DESIGNER_SYSTEM = "\n".join(
         "只确定 diagnostic/answer intent、option ID、canonical answer、"
         "misconception、error_code 和 remediation_depth。",
         "每个互动必须绑定含 checkpoint 的 teaching_step_id 及其 episode_id；"
-        "why_pause 必须明确引用 checkpoint.diagnostic_goal。",
+        "why_pause 必须逐字包含 checkpoint.diagnostic_goal，并说明为什么要在"
+        "当前步骤暂停检查这个目标；不得只写泛化的提问或检查理由。",
         "resume_step_id 必须与 teaching_step_id 相同，resume_policy 必须是 continue。",
         "正确选项的 misconception、error_code、remediation_depth 都为 null；"
         "每个错误选项必须有独立 error_code、misconception，"
@@ -170,6 +190,10 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
     (
         "你是课堂导演。将语义动作绑定到精确子句 ID，不得改写口播文本。",
         "不输出像素、CSS 选择器或毫秒值。强调可选，且必须区分有意义的对象。",
+        "所有 cues.clause_ids 合并后必须按 TeachingScript 原顺序恰好覆盖"
+        "全部主线 clauses 与全部 response clauses 各一次：不得重复、遗漏、"
+        "改名或新增。每个 lead/start/end action 外层的 clause_id 必须属于"
+        "所在 cue.clause_ids。",
         "每个 teaching step 只能 reveal_step_header 和 complete_step 各一次；"
         "step_label 必须逐字复制 TeachingProgression.directory_label。",
         "步骤激活时输出 scroll_to_step。每个错误 response 必须从 "
@@ -177,10 +201,36 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
         "的 write，再 close_supporting_explanation 并 scroll_to_step。",
         "主线 write 必须逐字绑定 teaching_step_id 和 board_role；"
         "题干动作不得带步骤元数据，不得跨步骤或跨 response 移动动作。",
-        "lead_actions 只能是口播前的 focus/emphasize；"
-        "reveal、write、complete、support open/close 和 scroll 必须绑定其语义子句。",
+        "动作阶段必须严格遵守：lead_actions 只能是 focus/emphasize；"
+        "start_actions 只能是 write/transform/focus/emphasize/annotate/reveal/"
+        "reveal_step_header/scroll_to_step/open_supporting_explanation；"
+        "end_actions 只能是 clear_focus/fade/write/reveal_step_header/complete_step/"
+        "scroll_to_step/close_supporting_explanation。不得把 complete、close、fade、"
+        "clear_focus 放进 start_actions。所有动作必须绑定其语义子句。",
+        "严格按以下动作字段模板输出，模板未列出的可选字段必须省略或为 null："
+        "cues 的 lead_actions/start_actions/end_actions 中每一项必须是"
+        " {clause_id: 对应子句ID, action: {surface, type, target, ...}} 两层对象；"
+        "surface/type/target 等动作字段只能放在 action 内，不得与 clause_id 同层；"
+        "reveal_step_header 使用 surface=board、target=teaching_step_id、"
+        "teaching_step_id 与 target 完全相同、step_label=directory_label；"
+        "scroll_to_step/complete_step 使用 surface=board、target=teaching_step_id、"
+        "teaching_step_id 与 target 完全相同；"
+        "open_supporting_explanation/close_supporting_explanation 使用 "
+        "surface=board、teaching_step_id，并绑定当前错误 response；"
+        "step-aware write 使用 surface=board、target=board_object_id、content、"
+        "teaching_step_id，并且 board_role 只能是 knowledge_anchor、working、"
+        "summary、error_tip、support 之一，不得使用 main，也不得带 step_label；"
+        "board_objects 每项使用 board_object_id/content/layer/teaching_step_id/"
+        "line_role；这里字段名必须是 line_role，绝不能写 board_role。对应 write "
+        "动作才使用 board_role，且必须与对象的 line_role 完全相同；动作中不得写 line_role。"
+        "focus 只允许 surface/type/target，以及 board 场景可选 teaching_step_id；"
+        "emphasize 还必须带 emphasis_style=highlight/underline/red 之一，"
+        "可选 persistence=transient/trace；focus/emphasize 都不得带 content 或 board_role；"
+        "problem 的 focus/emphasize 不得带 teaching_step_id、step_label 或 board_role。",
+        "problem 的 focus/emphasize 只能绑定到当前 clause.math_references 已经明确"
+        "包含该 problem target 数学内容的子句；不得提前高亮后续才讲到的题干对象。",
         "write/transform 的 content 必须精确来自绑定子句已出现的 "
-        "math_references，并与对应 board_object.content 一致。",
+        "math_references 或 display_text，并与对应 board_object.content 一致。",
         "优先为 pedagogical_function=execute 且 math_references 非空的子句"
         "写出当前关键计算结果，特别是条件使用后的新等式、"
         "目标式整理和最终结果；不要只写概念标题。",
@@ -645,6 +695,7 @@ def interaction_plan_prompt(
 def teaching_script_prompt(
     teaching_progression: TeachingProgression,
     interaction_plan: InteractionPlan,
+    reasoning_trajectory: Optional[ReasoningTrajectory] = None,
     repair: Optional[_InputDict] = None,
 ) -> str:
     payload = {
@@ -659,6 +710,30 @@ def teaching_script_prompt(
             "interaction_plan",
         ),
     }
+    if reasoning_trajectory is not None:
+        trajectory = _artifact_payload(
+            reasoning_trajectory,
+            ReasoningTrajectory,
+            "reasoning_trajectory",
+        )
+        payload["must_teach_evidence"] = [
+            {
+                "episode_id": episode["episode_id"],
+                "items": [
+                    {
+                        "must_teach_id": item["must_teach_id"],
+                        "student_display_evidence": item[
+                            "student_display_evidence"
+                        ],
+                        "student_spoken_evidence": item[
+                            "student_spoken_evidence"
+                        ],
+                    }
+                    for item in episode["must_teach"]
+                ],
+            }
+            for episode in trajectory["episodes"]
+        ]
     return _prompt_envelope(
         "为主线和每个互动选项的结果写自然、顺畅、可朗读的最终 TeachingScript。",
         _with_repair(payload, repair),

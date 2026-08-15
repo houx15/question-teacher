@@ -1287,6 +1287,11 @@ def test_mid_repair_failure_keeps_issued_history_but_clears_inactive_downstream(
         simulations=[downstream_simulation_payload()],
         reviews=[downstream_review_payload("revision_required", [finding])],
     )
+    if isinstance(trajectory_failure, dict):
+        fake.responses_by_role["teaching_designer"][3:3] = [
+            trajectory_failure,
+            trajectory_failure,
+        ]
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
@@ -1348,16 +1353,10 @@ def test_every_repair_rebuild_boundary_preserves_truthful_active_versions(
         "transfer_item": downstream_transfer_payload(),
     }
     invalid_performance = downstream_score_payload()
-    invalid_performance["cues"][0]["lead_actions"] = [
-        {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "problem",
-                "type": "focus",
-                "target": "missing-problem-target",
-            },
-        }
-    ]
+    invalid_performance["board_objects"][0]["content"] = r"\(x=2n$"
+    invalid_performance["cues"][0]["end_actions"][2]["action"][
+        "content"
+    ] = r"\(x=2n$"
     invalid_simulation = downstream_simulation_payload()
     invalid_simulation["episode_results"] = invalid_simulation[
         "episode_results"
@@ -1436,6 +1435,10 @@ def test_every_repair_rebuild_boundary_preserves_truthful_active_versions(
             else downstream_review_payload(),
         ],
     )
+    if failure_role == "teaching_designer" and failure_kind == "deterministic":
+        fake.responses_by_role["teaching_designer"][3:3] = [failure, failure]
+    if failure_role == "classroom_director" and failure_kind == "deterministic":
+        fake.responses_by_role["classroom_director"].extend([failure, failure])
 
     with pytest.raises(PreparationFailure) as captured:
         asyncio.run(
@@ -1505,10 +1508,20 @@ def test_simulation_and_review_prompt_size_failures_are_safe_and_audited(
 def test_repair_projection_limit_failure_is_safe_and_audited(monkeypatch):
     original = preparation_pipeline.teaching_script_prompt
 
-    def bounded_repair_prompt(progression, interaction_plan, repair=None):
+    def bounded_repair_prompt(
+        progression,
+        interaction_plan,
+        reasoning_trajectory=None,
+        repair=None,
+    ):
         if repair is not None:
             raise ValueError("repair_request_evidence_text_limit")
-        return original(progression, interaction_plan, repair=repair)
+        return original(
+            progression,
+            interaction_plan,
+            reasoning_trajectory,
+            repair=repair,
+        )
 
     monkeypatch.setattr(
         preparation_pipeline,
@@ -1963,93 +1976,244 @@ def test_script_dependency_reordering_fails_without_structure_retry():
     }
 
 
-def test_non_discriminating_performance_emphasis_fails_deterministically():
-    invalid = downstream_score_payload()
-    invalid["board_objects"] = [
-        {"board_object_id": "only-board-object", "content": "m-n"}
+def test_script_step_binding_is_derived_from_authoritative_episode_owner():
+    script = downstream_script_payload()
+    script["clauses"][0]["lesson_step_id"] = None
+    fake = client(script=script)
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    accepted = result.prepared_lesson.teaching_script
+    assert accepted.clauses[0].episode_id == "episode-1"
+    assert accepted.clauses[0].lesson_step_id == "teaching-step-1"
+    assert [call.role for call in fake.calls].count("script_teacher") == 1
+
+
+def test_script_missing_display_gets_one_content_specific_rewrite():
+    invalid = downstream_script_payload()
+    invalid["clauses"][2]["display_text"] = None
+    fake = client(script=invalid)
+    fake.responses_by_role["script_teacher"].append(
+        downstream_script_payload()
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    script_calls = [call for call in fake.calls if call.role == "script_teacher"]
+    assert len(script_calls) == 2
+    rewrite_prompt = script_calls[1].user
+    assert "clause_display_missing" in rewrite_prompt
+    assert "每条主线和 response clause 都有非空 display_text" in rewrite_prompt
+    audited = [
+        call for call in result.audit.role_calls if call.role == "script_teacher"
     ]
-    invalid["cues"][0]["start_actions"] = [
-        {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "board",
-                "type": "write",
-                "target": "only-board-object",
-                "content": "m-n",
-            },
-        },
+    assert audited[0].failure_category == "teaching_script_failed"
+    assert audited[1].failure_category is None
+
+
+def test_script_missing_must_teach_evidence_gets_exact_bridge_rewrite():
+    invalid = downstream_script_payload()
+    invalid["clauses"][0]["display_text"] = "无关说明"
+    invalid["clauses"][0]["spoken_text"] = "这是一段无关说明。"
+    fake = client(script=invalid)
+    fake.responses_by_role["script_teacher"].append(
+        downstream_script_payload()
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    script_calls = [call for call in fake.calls if call.role == "script_teacher"]
+    assert len(script_calls) == 2
+    rewrite_prompt = script_calls[1].user
+    assert "must_teach_evidence_missing" in rewrite_prompt
+    assert "按 must_teach_id 找到输入 must_teach_evidence" in rewrite_prompt
+    assert "student_display_evidence 和 student_spoken_evidence" in rewrite_prompt
+    prompt_payload_value = prompt_payload(script_calls[0])
+    assert "must_teach_evidence" in prompt_payload_value
+    assert "reasoning_trajectory" not in prompt_payload_value
+    audited = [
+        call for call in result.audit.role_calls if call.role == "script_teacher"
+    ]
+    assert audited[0].failure_category == "teaching_script_failed"
+    assert audited[1].failure_category is None
+
+
+def test_script_missing_response_anchors_gets_one_targeted_rewrite():
+    interaction = {
+        "interactions": [downstream_planned_interaction()],
+        "transfer_item": downstream_transfer_payload(),
+    }
+    invalid = downstream_script_payload(interaction["interactions"])
+    wrong_response = next(
+        response
+        for response in invalid["response_scripts"]
+        if response["classification"] == "incorrect"
+    )
+    wrong_response["clauses"][0]["display_text"] = "再想一想"
+    wrong_response["clauses"][0]["spoken_text"] = "再想一想。"
+    fake = client(script=invalid, interaction=interaction)
+    fake.responses_by_role["script_teacher"].append(
+        downstream_script_payload(interaction["interactions"])
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    script_calls = [call for call in fake.calls if call.role == "script_teacher"]
+    assert len(script_calls) == 2
+    rewrite_prompt = script_calls[1].user
+    assert "response_semantic_anchor_missing" in rewrite_prompt
+    assert "misconception 原文" in rewrite_prompt
+    assert "incorrect_feedback_by_option 纠正动作原文" in rewrite_prompt
+    audited = [
+        call for call in result.audit.role_calls if call.role == "script_teacher"
+    ]
+    assert audited[0].failure_category == "teaching_script_failed"
+    assert audited[1].failure_category is None
+
+
+def test_script_response_control_mismatch_gets_one_targeted_rewrite():
+    interaction = {
+        "interactions": [downstream_planned_interaction()],
+        "transfer_item": downstream_transfer_payload(),
+    }
+    invalid = downstream_script_payload(interaction["interactions"])
+    wrong_response = next(
+        response
+        for response in invalid["response_scripts"]
+        if response["classification"] == "incorrect"
+    )
+    wrong_response["error_code"] = "invented-error"
+    fake = client(script=invalid, interaction=interaction)
+    fake.responses_by_role["script_teacher"].append(
+        downstream_script_payload(interaction["interactions"])
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    script_calls = [call for call in fake.calls if call.role == "script_teacher"]
+    assert len(script_calls) == 2
+    rewrite_prompt = script_calls[1].user
+    assert "response_error_code_invalid" in rewrite_prompt
+    assert "逐字复制该 option 的 error_code 与 remediation_depth" in rewrite_prompt
+    assert result.prepared_lesson.teaching_script is not None
+
+
+def test_script_private_response_answer_gets_one_targeted_rewrite():
+    planned = downstream_planned_interaction()
+    planned["options"][1]["canonical_answer"] = "内部答案"
+    interaction = {
+        "interactions": [planned],
+        "transfer_item": downstream_transfer_payload(),
+    }
+    invalid = downstream_script_payload(interaction["interactions"])
+    wrong_response = next(
+        response
+        for response in invalid["response_scripts"]
+        if response["option_id"] == "option-b"
+    )
+    wrong_response["clauses"][0]["spoken_text"] += "内部答案不能展示。"
+    fake = client(script=invalid, interaction=interaction)
+    fake.responses_by_role["script_teacher"].append(
+        downstream_script_payload(interaction["interactions"])
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    script_calls = [call for call in fake.calls if call.role == "script_teacher"]
+    assert len(script_calls) == 2
+    rewrite_prompt = script_calls[1].user
+    assert "response_private_answer_leakage" in rewrite_prompt
+    assert "请删除所有 response display_text/spoken_text 中的私有" in rewrite_prompt
+    assert result.prepared_lesson.teaching_script is not None
+
+
+def test_pipeline_removes_non_discriminating_board_annotation():
+    invalid = downstream_score_payload()
+    lifecycle = invalid["cues"][0]["end_actions"]
+    invalid["cues"][0]["start_actions"] = lifecycle[:-1] + [
         {
             "clause_id": "clause-open",
             "action": {
                 "surface": "board",
                 "type": "annotate",
-                "target": "only-board-object",
+                "target": "board-clause-open",
                 "annotation": "label",
                 "content": "m-n",
             },
         },
     ]
+    invalid["cues"][0]["end_actions"] = lifecycle[-1:]
     fake = client(performance=invalid)
+    fake.responses_by_role["classroom_director"].extend([invalid, invalid])
 
-    with pytest.raises(PreparationFailure) as captured:
-        asyncio.run(
-            LessonPreparationPipeline(fake).prepare(
-                problem(), route(), focus_targets()
-            )
+    prepared = asyncio.run(
+        LessonPreparationPipeline(fake).prepare(
+            problem(), route(), focus_targets()
         )
+    )
+    assert all(
+        bound.action.type != "annotate"
+        for cue in prepared.performance_score.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+    )
 
-    assert captured.value.category == "performance_score_failed"
-    assert captured.value.role == "classroom_director"
-    assert [call.role for call in fake.calls].count("classroom_director") == 1
 
-
-def test_highlighting_the_only_board_element_is_non_discriminating():
+def test_pipeline_removes_non_discriminating_board_highlight():
     invalid = downstream_score_payload()
-    invalid["board_objects"] = [
-        {"board_object_id": "only-board-object", "content": "m-n"}
-    ]
-    invalid["cues"][0]["start_actions"] = [
-        {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "board",
-                "type": "write",
-                "target": "only-board-object",
-                "content": "m-n",
-            },
-        },
+    lifecycle = invalid["cues"][0]["end_actions"]
+    invalid["cues"][0]["start_actions"] = lifecycle[:-1] + [
         {
             "clause_id": "clause-open",
             "action": {
                 "surface": "board",
                 "type": "emphasize",
-                "target": "only-board-object",
+                "target": "board-clause-open",
                 "emphasis_style": "highlight",
             },
         },
     ]
-    invalid["cues"][0]["end_actions"] = [
-        {
-            "clause_id": "clause-open",
-            "action": {
-                "surface": "board",
-                "type": "fade",
-                "target": "only-board-object",
-            },
-        }
-    ]
+    invalid["cues"][0]["end_actions"] = lifecycle[-1:]
 
-    with pytest.raises(PreparationFailure) as captured:
-        asyncio.run(
-            LessonPreparationPipeline(client(performance=invalid)).prepare(
-                problem(), route(), focus_targets()
-            )
+    fake = client(performance=invalid)
+    fake.responses_by_role["classroom_director"].extend([invalid, invalid])
+
+    prepared = asyncio.run(
+        LessonPreparationPipeline(fake).prepare(
+            problem(), route(), focus_targets()
         )
+    )
+    assert all(
+        bound.action.type != "emphasize"
+        for cue in prepared.performance_score.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+    )
 
-    assert captured.value.category == "performance_score_failed"
 
-
-def test_problem_highlight_must_be_bound_to_a_clause_discussing_the_target():
+def test_pipeline_drops_problem_highlight_not_discussed_by_bound_clause():
     script = downstream_script_payload()
     script["clauses"][1]["math_references"] = ["x^2-2mx+2n=0"]
     invalid = downstream_score_payload()
@@ -2067,14 +2231,19 @@ def test_problem_highlight_must_be_bound_to_a_clause_discussing_the_target():
         }
     ]
 
-    with pytest.raises(PreparationFailure) as captured:
-        asyncio.run(
-            LessonPreparationPipeline(
-                client(script=script, performance=invalid)
-            ).prepare(problem(), route(), focus_targets())
+    prepared = asyncio.run(
+        LessonPreparationPipeline(
+            client(script=script, performance=invalid)
+        ).prepare(problem(), route(), focus_targets())
+    )
+    assert all(
+        not (
+            bound.action.surface == "problem"
+            and bound.action.target == "problem-equation"
         )
-
-    assert captured.value.category == "performance_score_failed"
+        for cue in prepared.performance_score.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+    )
 
 
 def test_board_object_can_be_emphasized_and_faded_after_introduction():
@@ -2193,6 +2362,81 @@ def test_interaction_intent_failure_is_not_accepted_into_artifact_history():
         for call in audit.role_calls
         for artifact_type, version in call.input_artifact_versions.items()
     )
+
+
+def test_interaction_pause_reason_gets_one_exact_checkpoint_rewrite():
+    invalid = downstream_planned_interaction()
+    invalid["why_pause"] = "这里停下来检查一下。"
+    fake = client(
+        interaction={
+            "interactions": [invalid],
+            "transfer_item": downstream_transfer_payload(),
+        },
+        script=downstream_script_payload([downstream_planned_interaction()]),
+        performance=downstream_score_payload([downstream_planned_interaction()]),
+    )
+    fake.responses_by_role["interaction_designer"].append(
+        {
+            "interactions": [downstream_planned_interaction()],
+            "transfer_item": downstream_transfer_payload(),
+        }
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    interaction_calls = [
+        call for call in fake.calls if call.role == "interaction_designer"
+    ]
+    assert len(interaction_calls) == 2
+    rewrite_prompt = interaction_calls[1].user
+    assert "interaction_why_pause_invalid" in rewrite_prompt
+    assert "逐字包含所属步骤" in rewrite_prompt
+    assert "为什么要在当前步骤暂停" in rewrite_prompt
+    audited = [
+        call
+        for call in result.audit.role_calls
+        if call.role == "interaction_designer"
+    ]
+    assert audited[0].failure_category == "interaction_plan_failed"
+    assert audited[1].failure_category is None
+
+
+def test_interaction_without_checkpoint_gets_one_step_binding_rewrite():
+    invalid = downstream_planned_interaction()
+    invalid["episode_id"] = "episode-1"
+    invalid["teaching_step_id"] = "teaching-step-1"
+    invalid["resume_step_id"] = "teaching-step-1"
+    fake = client(
+        interaction={
+            "interactions": [invalid],
+            "transfer_item": downstream_transfer_payload(),
+        },
+        script=downstream_script_payload([downstream_planned_interaction()]),
+        performance=downstream_score_payload([downstream_planned_interaction()]),
+    )
+    fake.responses_by_role["interaction_designer"].append(
+        {
+            "interactions": [downstream_planned_interaction()],
+            "transfer_item": downstream_transfer_payload(),
+        }
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    calls = [call for call in fake.calls if call.role == "interaction_designer"]
+    assert len(calls) == 2
+    assert "interaction_checkpoint_missing" in calls[1].user
+    assert "checkpoint 非空的步骤" in calls[1].user
+    assert "没有 checkpoint 的步骤不得放互动" in calls[1].user
+    assert result.prepared_lesson.interaction_plan is not None
 
 
 def test_pipeline_does_not_use_legacy_concealed_targets_for_current_intent():
@@ -2343,7 +2587,34 @@ def test_pipeline_rebinds_board_writes_to_first_spoken_math_reference():
     assert accepted.overlay_transitions == []
 
 
-def test_overlay_history_does_not_hide_sole_base_object_emphasis():
+def test_pipeline_drops_problem_focus_before_bound_clause_mentions_target():
+    score = downstream_score_payload()
+    score["cues"][0]["lead_actions"] = [
+        {
+            "clause_id": "clause-open",
+            "action": {
+                "surface": "problem",
+                "type": "focus",
+                "target": "problem-root",
+            },
+        }
+    ]
+
+    run = asyncio.run(
+        LessonPreparationPipeline(client(performance=score)).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    accepted = run.prepared_lesson.performance_score
+    assert all(
+        bound.action.target != "problem-root"
+        for cue in accepted.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+    )
+
+
+def test_pipeline_rebuilds_invalid_overlay_emphasis_as_structured_board():
     score = downstream_score_payload()
     score["board_objects"] = [
         {"board_object_id": "base-target", "content": "m-n"},
@@ -2419,14 +2690,21 @@ def test_overlay_history_does_not_hide_sole_base_object_emphasis():
         }
     ]
 
-    with pytest.raises(PreparationFailure) as captured:
-        asyncio.run(
-            LessonPreparationPipeline(client(performance=score)).prepare(
-                problem(), route(), focus_targets()
-            )
-        )
+    fake = client(performance=score)
+    fake.responses_by_role["classroom_director"].extend([score, score])
 
-    assert captured.value.category == "performance_score_failed"
+    prepared = asyncio.run(
+        LessonPreparationPipeline(fake).prepare(
+            problem(), route(), focus_targets()
+        )
+    )
+    accepted = prepared.performance_score
+    assert accepted.overlay_transitions == []
+    assert all(
+        bound.action.type != "emphasize"
+        for cue in accepted.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+    )
 
 
 def test_prepare_return_annotation_remains_prepared_lesson():
@@ -2707,6 +2985,36 @@ def test_invalid_json_response_gets_a_bounded_structure_retry():
         "prompt_tokens": 10,
         "total_tokens": 10,
     }
+    retry_prompt = [
+        call.user
+        for call in fake.calls
+        if call.role == "reference_analyst"
+    ][1]
+    assert "结构错误类型：invalid_json" in retry_prompt
+    assert "完整且可解析的 JSON 对象" in retry_prompt
+
+
+def test_validation_retry_names_safe_schema_fields_without_echoing_values():
+    private_invalid_value = "PRIVATE INVALID VALUE MUST NOT ECHO"
+    invalid = trace_payload()
+    invalid["source_steps"][0]["operation_kind"] = private_invalid_value
+    fake = PreparationFakeClient(
+        {
+            "reference_analyst": [invalid, trace_payload()],
+            "teaching_designer": [trajectory_payload()],
+        }
+    )
+
+    run_early(LessonPreparationPipeline(fake))
+
+    retry_prompt = [
+        call.user
+        for call in fake.calls
+        if call.role == "reference_analyst"
+    ][1]
+    assert "source_steps.0.operation_kind" in retry_prompt
+    assert "literal_error" in retry_prompt
+    assert private_invalid_value not in retry_prompt
 
 
 def test_two_invalid_structures_can_recover_on_the_third_attempt():
@@ -2821,10 +3129,14 @@ def test_pipeline_binds_verified_route_anchor_to_its_source_step_id():
     ] == [step.source_step_id for step in result.solution_trace.source_steps]
 
 
-def test_deterministic_trajectory_failure_is_not_a_structure_retry():
+def test_deterministic_trajectory_source_failure_has_two_bounded_rewrites():
     invalid_trajectory = trajectory_payload()
     invalid_trajectory["episodes"][0]["source_step_ids"] = ["missing-step"]
     fake = client(trajectory=invalid_trajectory)
+    fake.responses_by_role["teaching_designer"][1:1] = [
+        invalid_trajectory,
+        invalid_trajectory,
+    ]
     pipeline = LessonPreparationPipeline(fake)
 
     with pytest.raises(PreparationFailure) as captured:
@@ -2837,9 +3149,52 @@ def test_deterministic_trajectory_failure_is_not_a_structure_retry():
     assert [call.role for call in fake.calls] == [
         "reference_analyst",
         "teaching_designer",
+        "teaching_designer",
+        "teaching_designer",
     ]
     assert captured.value.audit.versions == {"solution_trace": 1}
     assert captured.value.audit.role_calls[-1].failure_category == "reasoning_design_failed"
+
+
+def test_trajectory_source_failure_rewrite_can_recover_with_exact_ids():
+    invalid_trajectory = trajectory_payload()
+    invalid_trajectory["episodes"][0]["source_step_ids"] = ["missing-step"]
+    fake = client(trajectory=invalid_trajectory)
+    fake.responses_by_role["teaching_designer"].insert(1, trajectory_payload())
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_early(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    calls = [call for call in fake.calls if call.role == "teaching_designer"]
+    assert len(calls) == 2
+    assert "episode_source_missing" in calls[1].user
+    assert "只能逐字复制输入 SolutionTrace.source_steps" in calls[1].user
+    assert "按原顺序覆盖全部 source step" in calls[1].user
+    assert result.reasoning_trajectory is not None
+
+
+def test_trajectory_must_teach_content_failure_rewrites_before_script():
+    invalid_trajectory = trajectory_payload()
+    invalid_trajectory["episodes"][0]["must_teach"][0][
+        "student_display_evidence"
+    ] = "一段与教学内容无关的显示"
+    fake = client(trajectory=invalid_trajectory)
+    fake.responses_by_role["teaching_designer"].insert(1, trajectory_payload())
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_early(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    calls = [call for call in fake.calls if call.role == "teaching_designer"]
+    assert len(calls) == 2
+    assert "must_teach_content_anchor_missing" in calls[1].user
+    assert "student_display_evidence 必须完整保留" in calls[1].user
+    assert result.reasoning_trajectory is not None
 
 
 def test_deterministic_progression_failure_is_audited_after_model_call():
@@ -2911,6 +3266,34 @@ def test_progression_semantic_failure_gets_one_content_free_rewrite():
     )
     assert audited_progression_calls[1].output_artifact_version == 1
     assert audited_progression_calls[1].failure_category is None
+
+
+def test_progression_duplicate_evidence_gets_exact_assignment_rewrite():
+    invalid = teaching_progression_payload(
+        ["problem-root", "problem-root", "problem-equation"]
+    )
+    fake = client(progression=invalid)
+    fake.responses_by_role["teaching_designer"].append(
+        teaching_progression_payload()
+    )
+
+    result = asyncio.run(
+        LessonPreparationPipeline(fake).prepare_with_audit(
+            problem(), route(), focus_targets()
+        )
+    )
+
+    assert result.prepared_lesson.teaching_progression is not None
+    progression_calls = [
+        call for call in fake.calls if call.role == "teaching_designer"
+    ][1:]
+    assert len(progression_calls) == 2
+    rewrite_prompt = progression_calls[1].user
+    assert "progression_evidence_target_duplicate" in rewrite_prompt
+    assert "删除所有 evidence_target_ids 重复项" in rewrite_prompt
+    assert "分配给唯一一个负责步骤" in rewrite_prompt
+    assert "每个 ID 在整套推进中只出现一次" in rewrite_prompt
+    assert rewrite_prompt.count('"target_id":"problem-root"') == 1
 
 
 def test_progression_repair_semantic_failure_retains_trace_and_trajectory_only():
