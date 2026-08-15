@@ -1,11 +1,53 @@
+# Secrets and machine-local configuration
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# Python caches and local environments
 __pycache__/
+*.py[cod]
 .pytest_cache/
-.DS_Store
-*.pyc
-var/audio/
-var/*.sqlite3
-var/*.sqlite3-wal
-var/*.sqlite3-shm
-var/*.sqlite3-journal
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+
+# Node dependencies and build output
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+build/
+coverage/
+
+# Runtime data and generated artifacts
+/var/
+/data/
+/audio/
+/artifacts/
+/outputs/
+/evaluation-output/
+/evaluation-runs/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.db
+*.log
+*.tmp
+
+# Local tools and editor state
+/.superpowers/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
