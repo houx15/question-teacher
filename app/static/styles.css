@@ -1291,6 +1291,39 @@ button {
   margin-top: 0;
 }
 
+.structured-board__method-review {
+  position: relative;
+  padding: 14px 16px 15px;
+  margin: 8px 0 4px;
+  color: #314c45;
+  background:
+    linear-gradient(135deg, rgba(224, 240, 232, 0.96), rgba(247, 243, 218, 0.9));
+  border: 1px solid rgba(66, 129, 109, 0.24);
+  border-left: 4px solid #4f9b80;
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(52, 84, 72, 0.08);
+}
+
+.structured-board__method-review-title {
+  margin: 0 0 7px;
+  color: #24705a;
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.structured-board__method-review-content .lesson-step__line {
+  max-width: 100%;
+  margin: 0;
+  color: #314c45;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.structured-board__method-review-content .board-content {
+  width: auto;
+}
+
 .board-region {
   position: absolute;
   inset: 0;

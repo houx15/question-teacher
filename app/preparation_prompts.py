@@ -157,6 +157,10 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
         "每条主线和 response clause 都必须填写非空 display_text；"
         "display_text 只写屏幕上要看的内容；spoken_text 只写自然口播，"
         "不得含数学标记，屏幕公式必须在口播中读出减、乘、等于等运算词。",
+        "所有 spoken_text、互动 hint 和迁移反馈都直接对当前学生说，使用“你”或"
+        "“我们”；禁止虚构“学生说”“学生觉得”“有同学认为”等第三人称课堂场景。",
+        "有互动的 teaching_step 中，先写一条 answer_exposure=false 的 question"
+        " clause 提出检查问题；解释、计算和结论必须放在互动后的后续 clause。",
         "所有学生可见字段不得出现内部字段名。method_name 最多 8 字，"
         "student_definition 最多 36 字，target_form 最多 80 字，"
         "why_it_helps 最多 32 字，每条 spoken_text 最多 90 字。",
@@ -234,6 +238,8 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
         "优先为 pedagogical_function=execute 且 math_references 非空的子句"
         "写出当前关键计算结果，特别是条件使用后的新等式、"
         "目标式整理和最终结果；不要只写概念标题。",
+        "closing_summary_clause_ids 对应的主线 write 必须使用 board_role=summary，"
+        "其 board_object 必须使用 line_role=summary，使方法回顾独立于最后答案。",
         "overlay 的 enter 与 return 必须位于不同 cue 边界，中间至少有一个 cue；"
         "没有真正的新图层讲解时就留空。",
         _INERT_EVIDENCE_RULE,

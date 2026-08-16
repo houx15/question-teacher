@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.api import (
     _PUBLIC_GENERATION_STAGES,
+    public_lesson_payload,
     run_generation,
     safe_generation_error,
 )
@@ -2447,6 +2448,69 @@ def test_public_lesson_payload_redacts_answers_and_review_internals():
         },
     )
     assert evaluation.json() == {"classification": "correct"}
+
+
+def test_public_choice_order_is_stable_and_rotates_correct_positions():
+    base = runtime_lesson(
+        problem_input(),
+        lesson_id="lesson-balanced-choice-order",
+    )
+    beats = []
+    for index in range(4):
+        options = [
+            InteractionOption(
+                option_id="choice-%d-correct" % index,
+                label="正确思路",
+            ),
+            InteractionOption(
+                option_id="choice-%d-wrong-a" % index,
+                label="干扰思路一",
+            ),
+            InteractionOption(
+                option_id="choice-%d-wrong-b" % index,
+                label="干扰思路二",
+            ),
+        ]
+        beats.append(
+            RuntimeBeat(
+                beat_id="choice-beat-%d" % index,
+                purpose="检查当前理解",
+                narration="请选择下一步。",
+                board_actions=[],
+                layer="interaction",
+                interaction=Interaction(
+                    interaction_id="choice-%d" % index,
+                    kind="choice",
+                    prompt="选出合适的下一步。",
+                    expected_answer="choice-%d-correct" % index,
+                    options=options,
+                ),
+            )
+        )
+    lesson = RuntimeLesson.model_validate(
+        {**base.model_dump(mode="python"), "beats": beats}
+    )
+
+    first = public_lesson_payload(lesson)
+    second = public_lesson_payload(lesson)
+
+    assert first == second
+    correct_positions = []
+    for index, beat in enumerate(first["beats"]):
+        public_options = beat["interaction"]["options"]
+        correct_positions.append(
+            next(
+                position
+                for position, option in enumerate(public_options)
+                if option["option_id"] == "choice-%d-correct" % index
+            )
+        )
+        assert "expected_answer" not in beat["interaction"]
+    assert len(set(correct_positions)) > 1
+    assert all(
+        beat.interaction.options[0].option_id == "choice-%d-correct" % index
+        for index, beat in enumerate(lesson.beats)
+    )
 
 
 def test_public_grounded_transfer_redacts_review_evidence_and_feedback():

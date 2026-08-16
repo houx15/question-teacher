@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import hashlib
 import inspect
 from typing import Any, Optional
 
@@ -191,9 +192,37 @@ def public_lesson_payload(lesson: RuntimeLesson) -> dict:
         option.pop("canonical_answer", None)
         option.pop("feedback", None)
     payload.pop("validation_report", None)
+    choice_ordinal = 0
+    option_offset = hashlib.sha256(
+        lesson.lesson_id.encode("utf-8")
+    ).digest()[0]
     for beat in payload["beats"]:
         interaction = beat.get("interaction")
         if interaction is not None:
+            options = interaction.get("options", [])
+            expected_answer = interaction.get("expected_answer")
+            if options and expected_answer is not None:
+                correct = next(
+                    (
+                        option
+                        for option in options
+                        if option.get("option_id") == expected_answer
+                    ),
+                    None,
+                )
+                if correct is not None:
+                    incorrect = [
+                        option for option in options if option is not correct
+                    ]
+                    correct_index = (
+                        option_offset + choice_ordinal
+                    ) % len(options)
+                    interaction["options"] = [
+                        *incorrect[:correct_index],
+                        correct,
+                        *incorrect[correct_index:],
+                    ]
+                    choice_ordinal += 1
             interaction.pop("expected_answer", None)
             interaction.pop("explanation_after_correct", None)
             interaction.pop("correct_audio_url", None)

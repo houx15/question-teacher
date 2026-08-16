@@ -1366,6 +1366,72 @@ def test_teaching_script_rejects_episode_reordering_and_spoken_markup():
     assert_code("spoken_markup_invalid", lambda: validate_current_script(invalid, trajectory))
 
 
+@pytest.mark.parametrize(
+    "spoken_text",
+    (
+        "学生觉得这里应该先代入。",
+        "有同学说可以约掉 n。",
+        "有人认为结果已经出来了。",
+    ),
+)
+def test_teaching_script_rejects_invented_third_person_student_voice(
+    spoken_text,
+):
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["clauses"][0]["spoken_text"] = spoken_text
+
+    assert_code(
+        "spoken_teacher_voice_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+def test_teaching_script_rejects_third_person_voice_in_public_interaction_copy():
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    payload["interaction_scripts"][0]["hint"] = "有学生说应该先代入。"
+
+    assert_code(
+        "interaction_script_content_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+def test_current_interaction_step_requires_answer_hidden_question_anchor():
+    _, trajectory, script, *_ = models()
+    validate_current_script(script, trajectory)
+
+    payload = script.model_dump()
+    for clause in payload["clauses"]:
+        if clause["lesson_step_id"] == "teaching-step-2":
+            clause["pedagogical_function"] = "explain"
+    assert_code(
+        "interaction_pause_clause_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+    payload = script.model_dump()
+    for clause in payload["clauses"]:
+        if (
+            clause["lesson_step_id"] == "teaching-step-2"
+            and clause["pedagogical_function"] == "question"
+        ):
+            clause["answer_exposure"] = True
+    assert_code(
+        "interaction_pause_clause_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
 def test_current_teaching_script_requires_step_and_display_on_every_clause():
     _, trajectory, script, *_ = models()
     validate_current_script(script, trajectory)

@@ -76,6 +76,20 @@ _ARTIFACT_HISTORY_ROLES = {
     "simulation_report": "student_simulator",
 }
 MAX_REPAIR_CYCLES = 8
+_THIRD_PERSON_STUDENT_VOICE = re.compile(
+    r"(?:有(?:些|的)?|某(?:个|些)?|一位)?(?:学生|同学)(?:们)?"
+    r"[^\u3002！？!?\uff0c,]{0,12}(?:说|觉得|认为|回答|选择|写成|算成|提醒|总结)"
+)
+_THIRD_PERSON_GENERIC_VOICE = re.compile(
+    r"有人[^\u3002！？!?\uff0c,]{0,12}(?:说|觉得|认为|回答|提醒|总结)"
+)
+
+
+def _contains_third_person_student_voice(value: str) -> bool:
+    return bool(
+        _THIRD_PERSON_STUDENT_VOICE.search(value)
+        or _THIRD_PERSON_GENERIC_VOICE.search(value)
+    )
 
 
 def build_structured_performance_score(
@@ -86,6 +100,7 @@ def build_structured_performance_score(
     _require_exact(progression, TeachingProgression, "progression")
     _require_exact(script, TeachingScript, "script")
     steps = {item.step_id: item for item in progression.steps}
+    closing_summary_ids = set(script.closing_summary_clause_ids)
     clauses_by_step: Dict[str, List[object]] = {}
     for clause in script.clauses:
         if clause.lesson_step_id is None:
@@ -141,11 +156,12 @@ def build_structured_performance_score(
         for reference_index, reference in enumerate(authored_board_content):
             board_index += 1
             board_id = "board-main-%03d" % board_index
-            line_role = (
-                "knowledge_anchor"
-                if clause is step_clauses[0] and reference_index == 0
-                else "working"
-            )
+            if clause.clause_id in closing_summary_ids:
+                line_role = "summary"
+            elif clause is step_clauses[0] and reference_index == 0:
+                line_role = "knowledge_anchor"
+            else:
+                line_role = "working"
             board_objects.append(
                 {
                     "board_object_id": board_id,
@@ -687,6 +703,31 @@ def validate_teaching_script(
                     "Script clause has an invalid must-teach reference.",
                 )
             covered.add(reference)
+    clauses_by_step = {
+        step.step_id: [
+            clause
+            for clause in script.clauses
+            if clause.lesson_step_id == step.step_id
+        ]
+        for step in progression.steps
+    }
+    for interaction in interaction_plan.interactions:
+        step_clauses = clauses_by_step.get(interaction.teaching_step_id or "", [])
+        pause_clause = next(
+            (
+                clause
+                for clause in step_clauses
+                if clause.pedagogical_function == "question"
+                and not clause.answer_exposure
+            ),
+            None,
+        )
+        if pause_clause is None:
+            _fail(
+                "interaction_pause_clause_invalid",
+                interaction.interaction_id,
+                "Current interactions require an answer-hidden question clause before explanation.",
+            )
     for step in progression.steps:
         if step.step_id not in covered_steps:
             _fail(
@@ -818,6 +859,11 @@ def _validate_authored_student_interactions(
                     or contains_math_markup(public.hint)
                 )
             )
+            or _contains_third_person_student_voice(public.prompt)
+            or (
+                public.hint is not None
+                and _contains_third_person_student_voice(public.hint)
+            )
         ):
             _fail(
                 "interaction_script_content_invalid",
@@ -884,7 +930,9 @@ def _validate_authored_student_interactions(
         *(item.feedback for item in transfer.options),
     ]
     if any(
-        contains_math_markup(item) or contains_internal_control_syntax(item)
+        contains_math_markup(item)
+        or contains_internal_control_syntax(item)
+        or _contains_third_person_student_voice(item)
         for item in transfer_spoken_values
     ):
         _fail(
@@ -902,6 +950,12 @@ def _validate_authored_clause_language(clause: object) -> None:
             "spoken_markup_invalid",
             clause.clause_id,
             "Spoken text contains math or internal visual markup.",
+        )
+    if _contains_third_person_student_voice(clause.spoken_text):
+        _fail(
+            "spoken_teacher_voice_invalid",
+            clause.clause_id,
+            "Spoken text must address the learner directly without inventing students.",
         )
     if clause.display_text is None:
         _fail(
@@ -1398,6 +1452,7 @@ def normalize_performance_control_metadata(
         _require_exact(progression, TeachingProgression, "progression")
     payload = score.model_dump(mode="python")
     if progression is not None:
+        closing_summary_ids = set(script.closing_summary_clause_ids)
         clauses = {
             clause.clause_id: (None, clause)
             for clause in script.clauses
@@ -1461,6 +1516,13 @@ def normalize_performance_control_metadata(
                         continue
                     if action["type"] == "write":
                         board_object = board_objects.get(action["target"])
+                        if (
+                            response is None
+                            and clause.clause_id in closing_summary_ids
+                            and board_object is not None
+                        ):
+                            action["board_role"] = "summary"
+                            board_object["line_role"] = "summary"
                         normalized_content = normalize_cross_artifact_math_identity(
                             action.get("content") or ""
                         )

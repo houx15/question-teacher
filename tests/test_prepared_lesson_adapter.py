@@ -544,7 +544,7 @@ def test_authoritative_adapter_factory_rejects_swapped_support_binding():
         )
 
 
-def test_runtime_interaction_occurs_after_current_teaching_step():
+def test_runtime_interaction_occurs_after_step_question_before_explanation():
     prepared = approved_prepared()
     lesson = LessonCompiler(lesson_id_factory=lambda: "boundary-order").compile(
         source_problem(),
@@ -558,11 +558,11 @@ def test_runtime_interaction_occurs_after_current_teaching_step():
         if beat.interaction is not None:
             events.append("interaction:%s" % beat.interaction.interaction_id)
 
-    after = events.index("cue-clause-2")
+    question = events.index("cue-clause-2")
     interaction = events.index("interaction:interaction-1")
     resume = events.index("cue-clause-2-resume")
-    assert after < resume < interaction
-    assert resume == interaction - 1
+    assert question < interaction < resume
+    assert interaction == question + 1
 
 
 def test_structured_interaction_derives_boundary_without_legacy_clause_ids():
@@ -606,8 +606,8 @@ def test_structured_interaction_ignores_stale_legacy_clause_boundary():
         if beat.interaction is not None:
             events.append("interaction:%s" % beat.interaction.interaction_id)
 
-    assert events.index("cue-clause-2-resume") < events.index(
-        "interaction:interaction-1"
+    assert events.index("interaction:interaction-1") < events.index(
+        "cue-clause-2-resume"
     )
 
 
@@ -654,17 +654,16 @@ def test_body_interaction_episode_is_not_merged_with_preceding_free_episode():
     interaction_moment = draft.moments[interaction_index]
     assert [cue.cue_id for cue in interaction_moment.sync_cues] == [
         "cue-clause-3",
-        "cue-clause-3-resume",
     ]
     assert draft.moments[interaction_index - 1].sync_cues[-1].cue_id == (
         "cue-clause-2-resume"
     )
     assert draft.moments[interaction_index + 1].sync_cues[0].cue_id == (
-        "cue-clause-4"
+        "cue-clause-3-resume"
     )
 
 
-def test_step_end_interaction_uses_the_authored_boundary_layer():
+def test_early_interaction_uses_the_question_clause_layer():
     prepared = PreparedLesson.model_validate(
         body_interaction_payload(with_overlay=True)
     )
@@ -674,9 +673,9 @@ def test_step_end_interaction_uses_the_authored_boundary_layer():
     interaction_moment = next(
         moment for moment in draft.moments if moment.interaction is not None
     )
-    assert interaction_moment.layer == "base"
+    assert interaction_moment.layer == "comparison"
     assert [cue.cue_id for cue in interaction_moment.sync_cues] == [
-        "cue-clause-3-resume",
+        "cue-clause-3",
     ]
 
 

@@ -511,13 +511,20 @@ def _runtime_sections(prepared: PreparedLesson) -> tuple:
     for item in prepared.interaction_plan.interactions:
         boundary_clause_id = None
         if item.teaching_step_id is not None:
-            matching_clause_ids = [
-                clause.clause_id
+            matching_clauses = [
+                clause
                 for clause in script.clauses
                 if clause.lesson_step_id == item.teaching_step_id
             ]
-            if matching_clause_ids:
-                boundary_clause_id = matching_clause_ids[-1]
+            question_clauses = [
+                clause
+                for clause in matching_clauses
+                if clause.pedagogical_function == "question"
+            ]
+            if question_clauses:
+                boundary_clause_id = question_clauses[0].clause_id
+            elif matching_clauses:
+                boundary_clause_id = matching_clauses[0].clause_id
         else:
             boundary_clause_id = item.after_clause_id
         if boundary_clause_id is None:

@@ -1423,8 +1423,8 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260815-1"' in html
-    assert 'href="/static/styles.css?v=20260814-1"' in html
+    assert 'src="/static/lesson.js?v=20260816-1"' in html
+    assert 'href="/static/styles.css?v=20260816-1"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -1432,14 +1432,14 @@ def test_lesson_page_has_fullscreen_classroom_regions():
 def test_versioned_lesson_module_remains_cacheable():
     client = page_client()
     html_response = client.get("/lesson/example")
-    response = client.get("/static/lesson.js?v=20260815-1")
+    response = client.get("/static/lesson.js?v=20260816-1")
     runtime_response = client.get(
         "/static/runtime-core.mjs?v=20260815-1"
     )
     board_response = client.get(
         "/static/structured-board.mjs?v=20260815-1"
     )
-    styles_response = client.get("/static/styles.css?v=20260814-1")
+    styles_response = client.get("/static/styles.css?v=20260816-1")
 
     assert html_response.headers["cache-control"] == "no-cache"
     assert response.status_code == 200
@@ -1550,12 +1550,16 @@ def test_lesson_runtime_renders_and_scrolls_the_continuous_structured_board():
     ).text
     assert "cuePlayer.playCueSequence(" in source
     assert "runSupportCueSequence(" not in source
+    assert 'section.className = "structured-board__method-review"' in source
+    assert 'section.setAttribute("aria-label", "方法回顾")' in source
+    assert 'line?.role !== "summary"' in source
+    assert "renderStructuredMethodReview(region, reviewLines)" in source
 
 
 def test_lesson_shell_uses_single_continuous_structured_board():
     client = page_client()
     html = client.get("/lesson/example").text
-    css = client.get("/static/styles.css?v=20260814-1").text
+    css = client.get("/static/styles.css?v=20260816-1").text
 
     assert 'id="structured-board"' in html
     assert 'tabindex="0"' in html
@@ -1567,6 +1571,9 @@ def test_lesson_shell_uses_single_continuous_structured_board():
     assert ".lesson-step__status-dot {" in css
     assert ".lesson-step__line {" in css
     assert ".lesson-step__support {" in css
+    assert ".structured-board__method-review {" in css
+    assert ".structured-board__method-review-title {" in css
+    assert ".structured-board__method-review-content .lesson-step__line {" in css
     assert ".structured-board:focus-visible {" in css
     assert "font-size: 16px;" in css
     assert "font-size: 22px;" in css
@@ -1580,11 +1587,11 @@ def test_lesson_shell_uses_single_continuous_structured_board():
 def test_structured_board_module_cache_chain_is_versioned():
     client = page_client()
     html = client.get("/lesson/example").text
-    lesson_js = client.get("/static/lesson.js?v=20260815-1").text
+    lesson_js = client.get("/static/lesson.js?v=20260816-1").text
     runtime_js = client.get("/static/runtime-core.mjs?v=20260815-1").text
 
-    assert "lesson.js?v=20260815-1" in html
-    assert "styles.css?v=20260814-1" in html
+    assert "lesson.js?v=20260816-1" in html
+    assert "styles.css?v=20260816-1" in html
     assert "runtime-core.mjs?v=20260815-1" in lesson_js
     assert "structured-board.mjs?v=20260815-1" in runtime_js
 

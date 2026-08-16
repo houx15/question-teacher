@@ -90,6 +90,7 @@ let supportFeedbackTarget = null;
 
 const boardRegistries = new WeakMap();
 const structuredBoardRegistries = new WeakMap();
+const structuredBoardReviewRegistries = new WeakMap();
 
 
 class PausableTimeline {
@@ -512,6 +513,40 @@ function renderStructuredStep(record, step) {
 }
 
 
+function reviewDisplayLine(line) {
+  const content = typeof line?.content === "string"
+    ? line.content.replace(/^\s*方法回顾\s*[：:]\s*/, "")
+    : line?.content;
+  return { ...line, content };
+}
+
+
+function renderStructuredMethodReview(region, lines) {
+  let record = structuredBoardReviewRegistries.get(region);
+  if (!lines.length) {
+    record?.section.remove();
+    structuredBoardReviewRegistries.delete(region);
+    return;
+  }
+  if (!record) {
+    const section = document.createElement("aside");
+    section.className = "structured-board__method-review";
+    section.setAttribute("aria-label", "方法回顾");
+    const heading = element("h2", "structured-board__method-review-title", "方法回顾");
+    const content = element("div", "structured-board__method-review-content");
+    section.append(heading, content);
+    record = { section, content, lines: new Map() };
+    structuredBoardReviewRegistries.set(region, record);
+  }
+  syncStructuredLines(
+    record.content,
+    lines.map(reviewDisplayLine),
+    record.lines,
+  );
+  region.append(record.section);
+}
+
+
 function renderStructuredBoard(structuredBoard, region) {
   let registry = structuredBoardRegistries.get(region);
   if (!registry) {
@@ -519,6 +554,7 @@ function renderStructuredBoard(structuredBoard, region) {
     structuredBoardRegistries.set(region, registry);
   }
   const visibleSteps = new Set();
+  const reviewLines = [];
   for (const [stepId, step] of structuredBoard.steps.entries()) {
     visibleSteps.add(stepId);
     let record = registry.get(stepId);
@@ -526,7 +562,12 @@ function renderStructuredBoard(structuredBoard, region) {
       record = createStructuredStep(stepId);
       registry.set(stepId, record);
     }
-    renderStructuredStep(record, step);
+    const mainLines = (step.lines || []).filter((line) => {
+      if (line?.role !== "summary") return true;
+      reviewLines.push(line);
+      return false;
+    });
+    renderStructuredStep(record, { ...step, lines: mainLines });
     region.append(record.section);
   }
   for (const [stepId, record] of registry.entries()) {
@@ -534,6 +575,7 @@ function renderStructuredBoard(structuredBoard, region) {
     record.section.remove();
     registry.delete(stepId);
   }
+  renderStructuredMethodReview(region, reviewLines);
 
   const requestedStepId = structuredBoard.requestedScrollStepId;
   if (requestedStepId) {
@@ -563,6 +605,7 @@ function clearBoardRegion(region) {
   region.replaceChildren();
   boardRegistries.set(region, new Map());
   structuredBoardRegistries.set(region, new Map());
+  structuredBoardReviewRegistries.delete(region);
 }
 
 

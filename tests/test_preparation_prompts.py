@@ -393,6 +393,10 @@ def test_script_teacher_requires_natural_adaptive_screen_and_spoken_language():
         "每条主线和 response clause",
         "唯一对应的 lesson_step_id",
         "不得遗漏、猜测或跨步骤绑定",
+        "直接对当前学生说",
+        "禁止虚构",
+        "先写一条 answer_exposure=false 的 question",
+        "解释、计算和结论必须放在互动后",
     ):
         assert phrase in system
 
@@ -642,6 +646,9 @@ def test_classroom_director_gets_exact_step_action_templates():
     assert "focus/emphasize 都不得带 content 或 board_role" in CLASSROOM_DIRECTOR_SYSTEM
     assert "不得带 step_label" in CLASSROOM_DIRECTOR_SYSTEM
     assert "problem 的 focus/emphasize 不得带" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "closing_summary_clause_ids" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "board_role=summary" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "line_role=summary" in CLASSROOM_DIRECTOR_SYSTEM
 
 
 def test_role_system_prompts_state_the_bounded_responsibilities():

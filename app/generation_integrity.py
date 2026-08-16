@@ -324,12 +324,20 @@ def _validate_current_runtime_semantics(
         boundary_clause_id = planned.after_clause_id
         if planned.teaching_step_id is not None:
             matching = [
-                clause.clause_id
+                clause
                 for clause in main_clauses
                 if clause.lesson_step_id == planned.teaching_step_id
             ]
             if matching:
-                boundary_clause_id = matching[-1]
+                question = next(
+                    (
+                        clause
+                        for clause in matching
+                        if clause.pedagogical_function == "question"
+                    ),
+                    matching[0],
+                )
+                boundary_clause_id = question.clause_id
         if (
             boundary_clause_id is None
             or provenance_by_clause[boundary_clause_id].runtime_cue_id
