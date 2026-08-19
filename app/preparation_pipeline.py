@@ -1,6 +1,7 @@
 """Deterministic orchestration for the private lesson-preparation chain."""
 
 import inspect
+import logging
 import re
 import time
 from contextvars import ContextVar
@@ -25,6 +26,7 @@ from app.llm_client import (
     ModelResponseError,
     ModelStructureError,
 )
+from app.math_content import normalize_answer_leak_text
 from app.preparation_models import (
     ArtifactRevision,
     InteractionPlan,
@@ -66,6 +68,7 @@ from app.preparation_validation import (
     build_structured_performance_score,
     blocking_signature,
     normalize_performance_control_metadata,
+    performance_score_has_compact_board,
     validate_interaction_plan,
     validate_performance_score,
     validate_reasoning_trajectory,
@@ -90,6 +93,7 @@ from app.teaching_progression_validation import (
 StageCallback = Callable[[str], Union[None, Awaitable[None]]]
 _ModelType = TypeVar("_ModelType", bound=BaseModel)
 _SAFE_STRUCTURE_TOKEN = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+_LOGGER = logging.getLogger(__name__)
 
 
 def _schema_property_names(model_type: Type[BaseModel]) -> set[str]:
@@ -249,6 +253,65 @@ def _normalize_review_control_metadata(
     return LessonReviewDecision.model_validate(payload)
 
 
+def _deterministic_review_from_simulation(
+    report: SimulationReport,
+) -> LessonReviewDecision:
+    """Fail closed from typed simulation evidence when reviewer is unavailable."""
+    failed = next(
+        (
+            item
+            for item in report.episode_results
+            if not all(
+                ability is not False
+                for ability in (
+                    item.can_identify_attention_target,
+                    item.can_explain_decision,
+                    item.can_execute_action,
+                    item.can_use_result_to_continue,
+                    item.can_align_display_and_spoken_math,
+                    item.can_recover_with_adaptive_support,
+                    item.can_locate_current_step,
+                )
+            )
+        ),
+        None,
+    )
+    if failed is None and not report.blocking_findings:
+        return LessonReviewDecision.model_validate(
+            {
+                "status": "approved",
+                "findings": [],
+                "retained_artifacts": [],
+                "approval_summary": "确定性审核：所有初学者硬门槛通过。",
+            }
+        )
+    artifact_id = (
+        failed.episode_id if failed is not None else "simulation_report"
+    )
+    return LessonReviewDecision.model_validate(
+        {
+            "status": "revision_required",
+            "findings": [
+                {
+                    "finding_id": "finding-simulation-gate",
+                    "severity": "material",
+                    "artifact_type": "simulation_report",
+                    "artifact_id": artifact_id,
+                    "criterion": "learner_follows_why",
+                    "evidence": "%s 存在未通过的初学者硬门槛。" % artifact_id,
+                    "responsible_role": "student_simulator",
+                    "requested_change": "重新核对该 episode 的所有结构化学习能力。",
+                    "invalidated_downstream_artifacts": [],
+                }
+            ],
+            "retained_artifacts": list(
+                ARTIFACT_DEPENDENCY_ORDER[:-1]
+            ),
+            "approval_summary": "确定性审核：学生模拟硬门槛未全部通过。",
+        }
+    )
+
+
 def _normalize_script_section_metadata(
     script: TeachingScript,
     trajectory: ReasoningTrajectory,
@@ -312,6 +375,165 @@ def _normalize_script_section_metadata(
     return TeachingScript.model_validate(payload)
 
 
+def _normalize_script_required_evidence(
+    script: TeachingScript,
+    trajectory: ReasoningTrajectory,
+    interaction_plan: InteractionPlan,
+) -> TeachingScript:
+    """Deterministically bind server-owned evidence without rewriting prose."""
+    payload = script.model_dump(mode="python")
+    changed = False
+    must_teach = {
+        item.must_teach_id: item
+        for episode in trajectory.episodes
+        for item in episode.must_teach
+    }
+    all_clauses = list(payload["clauses"])
+    all_clauses.extend(
+        clause
+        for response in payload["response_scripts"]
+        for clause in response["clauses"]
+    )
+    for clause in all_clauses:
+        if clause["display_text"] is None:
+            clause["display_text"] = clause["spoken_text"]
+            changed = True
+    for clause in payload["clauses"]:
+        items = [
+            must_teach[item_id]
+            for item_id in clause["must_teach_refs"]
+            if item_id in must_teach
+        ]
+        display_evidence = [
+            item.student_display_evidence
+            for item in items
+            if item.student_display_evidence is not None
+            and normalize_answer_leak_text(item.student_display_evidence)
+            not in normalize_answer_leak_text(clause["display_text"] or "")
+        ]
+        spoken_evidence = [
+            item.student_spoken_evidence
+            for item in items
+            if item.student_spoken_evidence is not None
+            and normalize_answer_leak_text(item.student_spoken_evidence)
+            not in normalize_answer_leak_text(clause["spoken_text"])
+        ]
+        if display_evidence:
+            prefix = "；".join(display_evidence)
+            combined = "%s。%s" % (prefix, clause["display_text"] or "")
+            clause["display_text"] = combined[:500]
+            changed = True
+        if spoken_evidence:
+            prefix = " ".join(spoken_evidence)
+            combined = "%s %s" % (prefix, clause["spoken_text"])
+            clause["spoken_text"] = (
+                combined if len(combined) <= 90 else prefix
+            )
+            changed = True
+
+    interactions = {
+        item.interaction_id: item for item in interaction_plan.interactions
+    }
+    for authored in payload["interaction_scripts"]:
+        private = interactions.get(authored["interaction_id"])
+        if private is None:
+            continue
+        option_order = {
+            item.option_id: index
+            for index, item in enumerate(private.options)
+        }
+        if set(option_order) != {
+            item["option_id"] for item in authored["options"]
+        }:
+            continue
+        ordered = sorted(
+            authored["options"],
+            key=lambda item: option_order[item["option_id"]],
+        )
+        if ordered != authored["options"]:
+            authored["options"] = ordered
+            changed = True
+    for response in payload["response_scripts"]:
+        if response["classification"] != "incorrect":
+            continue
+        interaction = interactions.get(response["interaction_id"])
+        if interaction is None:
+            continue
+        option = next(
+            (
+                item
+                for item in interaction.options
+                if item.option_id == response["option_id"]
+            ),
+            None,
+        )
+        correction = interaction.incorrect_feedback_by_option.get(
+            response["option_id"]
+        )
+        if option is None or option.misconception is None or not correction:
+            continue
+        first_clause = response["clauses"][0]
+        evidence = "误区：%s；改法：%s。" % (
+            option.misconception,
+            correction,
+        )
+        display = first_clause["display_text"] or ""
+        normalized_display = normalize_answer_leak_text(display)
+        normalized_misconception = normalize_answer_leak_text(
+            option.misconception
+        )
+        normalized_correction = normalize_answer_leak_text(correction)
+        if (
+            normalized_misconception not in normalized_display
+            or normalized_correction not in normalized_display
+        ):
+            combined = evidence + display
+            first_clause["display_text"] = (
+                combined if len(combined) <= 500 else evidence[:500]
+            )
+            changed = True
+        spoken = first_clause["spoken_text"]
+        normalized_spoken = normalize_answer_leak_text(spoken)
+        if (
+            normalized_misconception not in normalized_spoken
+            or normalized_correction not in normalized_spoken
+        ):
+            combined = evidence + spoken
+            if len(combined) <= 90:
+                first_clause["spoken_text"] = combined
+                changed = True
+    if not changed:
+        return script
+    return TeachingScript.model_validate(payload)
+
+
+def _distribute_interaction_correct_positions(
+    plan: InteractionPlan,
+) -> InteractionPlan:
+    """Rotate private choices so consecutive questions do not all answer A."""
+    payload = plan.model_dump(mode="python")
+    changed = False
+    for interaction_index, interaction in enumerate(payload["interactions"]):
+        options = list(interaction["options"])
+        if len(options) < 2:
+            continue
+        correct_index = next(
+            index
+            for index, item in enumerate(options)
+            if item["option_id"] == interaction["correct_option_id"]
+        )
+        desired_index = (interaction_index + 1) % len(options)
+        if correct_index == desired_index:
+            continue
+        correct = options.pop(correct_index)
+        options.insert(desired_index, correct)
+        interaction["options"] = options
+        changed = True
+    if not changed:
+        return plan
+    return InteractionPlan.model_validate(payload)
+
+
 def earliest_responsible_role(
     findings: List[ReviewFinding],
 ) -> ResponsibleRole:
@@ -334,11 +556,18 @@ def earliest_repair_artifact(findings: List[ReviewFinding]) -> str:
 
 
 class PreparationFailure(RuntimeError):
-    def __init__(self, category: str, role: str, detail: str) -> None:
+    def __init__(
+        self,
+        category: str,
+        role: str,
+        detail: str,
+        code: Optional[str] = None,
+    ) -> None:
         super().__init__(detail)
         self.category = category
         self.role = role
         self.detail = detail
+        self.code = code
         self.audit: Optional["PreparationAuditSnapshot"] = None
 
     def _attach_audit(self, audit: "PreparationAuditSnapshot") -> None:
@@ -503,6 +732,9 @@ class PreparedLessonRun:
 
 class LessonPreparationPipeline:
     MAX_STRUCTURE_ATTEMPTS = 3
+    SCRIPT_STRUCTURE_ATTEMPTS = 4
+    DIRECTOR_STRUCTURE_ATTEMPTS = 4
+    REASONING_SEMANTIC_ATTEMPTS = 4
     MAX_REPAIR_CYCLES = 8
 
     def __init__(
@@ -848,7 +1080,7 @@ class LessonPreparationPipeline:
             repair,
         )
         validation_error: Optional[PreparationValidationError] = None
-        for semantic_attempt in range(3):
+        for semantic_attempt in range(self.REASONING_SEMANTIC_ATTEMPTS):
             attempt_prompt = base_prompt
             if semantic_attempt and validation_error is not None:
                 correction_guidance = (
@@ -888,18 +1120,22 @@ class LessonPreparationPipeline:
                 break
             except PreparationValidationError as error:
                 validation_error = error
+                _LOGGER.warning(
+                    "reasoning trajectory validation failed: "
+                    "code=%s repair=%s attempt=%s",
+                    error.code,
+                    repair is not None,
+                    semantic_attempt + 1,
+                )
                 self._mark_last_call_failed(
                     state,
                     "teaching_designer",
                     "reasoning_design_failed",
                 )
-                if error.code not in {
-                    "episode_source_missing",
-                    "trace_step_uncovered",
-                    "must_teach_evidence_missing",
-                    "must_teach_content_anchor_missing",
-                    "must_teach_evidence_alignment_invalid",
-                } or semantic_attempt == 2:
+                if (
+                    semantic_attempt + 1
+                    == self.REASONING_SEMANTIC_ATTEMPTS
+                ):
                     raise PreparationFailure(
                         category="reasoning_design_failed",
                         role="teaching_designer",
@@ -937,7 +1173,7 @@ class LessonPreparationPipeline:
             repair,
         )
         validation_error: Optional[TeachingProgressionValidationError] = None
-        for semantic_attempt in range(2):
+        for semantic_attempt in range(3):
             attempt_prompt = base_prompt
             if semantic_attempt and validation_error is not None:
                 correction_guidance = "请逐字段对照系统规则修正该对象。"
@@ -1067,6 +1303,23 @@ class LessonPreparationPipeline:
                         "并逐字复制该 option 的 error_code 与 remediation_depth，"
                         "不得翻译、改名或自造。"
                     )
+                elif validation_error.code in {
+                    "interaction_script_coverage_invalid",
+                    "interaction_script_content_invalid",
+                    "transfer_script_missing",
+                    "transfer_script_coverage_invalid",
+                    "transfer_script_content_invalid",
+                    "choice_formula_invalid",
+                    "interaction_answer_leakage",
+                }:
+                    correction_guidance = (
+                        "请按输入 InteractionPlan 的 interaction_id 与 option_id "
+                        "完整重建 interaction_scripts：ID 精确全覆盖且不增不漏；"
+                        "prompt、hint 和 label 由 TeachingScript 使用直接面向学生的"
+                        "简体中文重新表述，不复制私有草稿，不透露 correct_option_id "
+                        "或 canonical_answer。transfer_script 同样只保留输入 option_id "
+                        "集合并重新撰写安全公开文本。"
+                    )
                 elif validation_error.code == "response_private_answer_leakage":
                     correction_guidance = (
                         "请删除所有 response display_text/spoken_text 中的私有 "
@@ -1096,6 +1349,11 @@ class LessonPreparationPipeline:
                 state.reasoning_trajectory,
                 state.teaching_progression,
             )
+            script = _normalize_script_required_evidence(
+                script,
+                state.reasoning_trajectory,
+                state.interaction_plan,
+            )
             try:
                 validate_teaching_script(
                     script,
@@ -1106,6 +1364,11 @@ class LessonPreparationPipeline:
                 break
             except PreparationValidationError as error:
                 validation_error = error
+                _LOGGER.warning(
+                    "teaching script validation failed: code=%s attempt=%s",
+                    error.code,
+                    semantic_attempt + 1,
+                )
                 self._mark_last_call_failed(
                     state,
                     "script_teacher",
@@ -1120,11 +1383,19 @@ class LessonPreparationPipeline:
                     "response_depth_invalid",
                     "response_error_code_invalid",
                     "response_private_answer_leakage",
+                    "interaction_script_coverage_invalid",
+                    "interaction_script_content_invalid",
+                    "transfer_script_missing",
+                    "transfer_script_coverage_invalid",
+                    "transfer_script_content_invalid",
+                    "choice_formula_invalid",
+                    "interaction_answer_leakage",
                 } or semantic_attempt == 2:
                     raise PreparationFailure(
                         category="teaching_script_failed",
                         role="script_teacher",
                         detail="讲稿未通过确定性校验。",
+                        code=error.code,
                     ) from None
         self._accept_artifact(
             state,
@@ -1156,7 +1427,7 @@ class LessonPreparationPipeline:
             repair,
         )
         validation_error: Optional[PreparationValidationError] = None
-        for semantic_attempt in range(2):
+        for semantic_attempt in range(3):
             attempt_prompt = base_prompt
             if semantic_attempt and validation_error is not None:
                 correction_guidance = (
@@ -1170,6 +1441,17 @@ class LessonPreparationPipeline:
                         "teaching_step_id 必须逐字引用一个 checkpoint 非空的步骤，"
                         "episode_id 必须属于该同一步；没有 checkpoint 的步骤不得"
                         "放互动。why_pause 再逐字包含该 checkpoint.diagnostic_goal。"
+                    )
+                elif (
+                    validation_error.code
+                    == "interaction_diagnosis_answer_leakage"
+                ):
+                    correction_guidance = (
+                        "请重写每个错误项的 misconception 与 "
+                        "incorrect_feedback_by_option：只说错在哪个概念或"
+                        "计算动作，以及应回到哪个已知条件检查；"
+                        "不得包含任何 option.canonical_answer 或未揭示的"
+                        "新式子。"
                     )
                 attempt_prompt += (
                     "\n上一次互动意图未通过确定性校验。"
@@ -1188,6 +1470,7 @@ class LessonPreparationPipeline:
                 attempt_prompt,
                 InteractionPlan,
             )
+            plan = _distribute_interaction_correct_positions(plan)
             try:
                 validate_interaction_plan(plan, state.teaching_progression)
                 break
@@ -1201,7 +1484,8 @@ class LessonPreparationPipeline:
                 if error.code not in {
                     "interaction_why_pause_invalid",
                     "interaction_checkpoint_missing",
-                } or semantic_attempt:
+                    "interaction_diagnosis_answer_leakage",
+                } or semantic_attempt == 2:
                     raise PreparationFailure(
                         category="interaction_plan_failed",
                         role="interaction_designer",
@@ -1309,12 +1593,51 @@ class LessonPreparationPipeline:
                     + correction_guidance
                     + "不要复述上一次输出。"
                 )
-            score = await self._complete_model(
-                "classroom_director",
-                CLASSROOM_DIRECTOR_SYSTEM,
-                attempt_prompt,
-                PerformanceScore,
-            )
+            try:
+                score = await self._complete_model(
+                    "classroom_director",
+                    CLASSROOM_DIRECTOR_SYSTEM,
+                    attempt_prompt,
+                    PerformanceScore,
+                )
+            except PreparationFailure as error:
+                if error.category not in {
+                    "provider_error",
+                    "invalid_structure",
+                } or repair is not None:
+                    raise
+                score = build_structured_performance_score(
+                    state.teaching_progression,
+                    state.teaching_script,
+                )
+                try:
+                    validate_performance_score(
+                        score,
+                        problem_focus_targets,
+                        state.teaching_progression,
+                        state.teaching_script,
+                        state.interaction_plan,
+                    )
+                except PreparationValidationError as fallback_error:
+                    _LOGGER.warning(
+                        "deterministic board fallback failed: code=%s artifact=%s",
+                        fallback_error.code,
+                        fallback_error.artifact_id,
+                    )
+                    raise PreparationFailure(
+                        category="performance_score_failed",
+                        role="classroom_director",
+                        detail="板书与高亮编排未通过确定性校验。",
+                    ) from None
+                self._accept_artifact(
+                    state,
+                    artifact_type="performance_score",
+                    responsible_role="classroom_director",
+                    artifact=score,
+                    finding_ids=finding_ids,
+                    allow_failed_fallback=True,
+                )
+                return score
             try:
                 validate_performance_score(
                     score,
@@ -1323,6 +1646,22 @@ class LessonPreparationPipeline:
                     state.teaching_script,
                     state.interaction_plan,
                 )
+                if not performance_score_has_compact_board(
+                    score,
+                    state.teaching_progression,
+                    state.teaching_script,
+                ):
+                    score = build_structured_performance_score(
+                        state.teaching_progression,
+                        state.teaching_script,
+                    )
+                    validate_performance_score(
+                        score,
+                        problem_focus_targets,
+                        state.teaching_progression,
+                        state.teaching_script,
+                        state.interaction_plan,
+                    )
                 break
             except PreparationValidationError as initial_error:
                 validation_error = initial_error
@@ -1347,7 +1686,7 @@ class LessonPreparationPipeline:
                         break
                     except PreparationValidationError as normalized_error:
                         validation_error = normalized_error
-                if validation_error.code in retryable_codes:
+                if repair is None:
                     try:
                         deterministic_score = build_structured_performance_score(
                             state.teaching_progression,
@@ -1363,6 +1702,11 @@ class LessonPreparationPipeline:
                         score = deterministic_score
                         break
                     except PreparationValidationError as fallback_error:
+                        _LOGGER.warning(
+                            "deterministic board validation failed: code=%s artifact=%s",
+                            fallback_error.code,
+                            fallback_error.artifact_id,
+                        )
                         validation_error = fallback_error
                 if semantic_attempt < 2:
                     self._mark_last_call_failed(
@@ -1461,57 +1805,128 @@ class LessonPreparationPipeline:
             )
         ):
             raise RuntimeError("all prepared artifacts must exist before review")
-        decision = await self._complete_model(
+        base_prompt = self._build_prompt(
+            state,
             "lesson_reviewer",
-            LESSON_REVIEWER_SYSTEM,
-            self._build_prompt(
-                state,
-                "lesson_reviewer",
-                lesson_review_prompt,
-                {
-                    "solution_trace": state.solution_trace,
-                    "reasoning_trajectory": state.reasoning_trajectory,
-                    "teaching_progression": state.teaching_progression,
-                    "interaction_plan": state.interaction_plan,
-                    "teaching_script": state.teaching_script,
-                    "performance_score": state.performance_score,
-                },
-                state.simulation_report,
-                reviewer_context_id,
-            ),
-            LessonReviewDecision,
+            lesson_review_prompt,
+            {
+                "solution_trace": state.solution_trace,
+                "reasoning_trajectory": state.reasoning_trajectory,
+                "teaching_progression": state.teaching_progression,
+                "interaction_plan": state.interaction_plan,
+                "teaching_script": state.teaching_script,
+                "performance_score": state.performance_score,
+            },
+            state.simulation_report,
+            reviewer_context_id,
         )
-        decision = _normalize_review_control_metadata(decision)
-        try:
-            self._reference_safety(state).ensure_safe(
-                decision,
-                downstream_of_sanitized_trace=True,
-            )
-        except ReferenceContentSafetyError:
-            self._raise_reference_content_leak(state, "lesson_reviewer")
-        try:
-            validate_review_decision(
-                decision,
-                state.solution_trace,
-                state.reasoning_trajectory,
-                state.teaching_script,
-                state.interaction_plan,
-                state.performance_score,
-                state.simulation_report,
-                progression=state.teaching_progression,
-            )
-        except PreparationValidationError:
-            self._mark_last_call_failed(
-                state,
-                "lesson_reviewer",
-                "review_not_converged",
-            )
+        validation_error: Optional[PreparationValidationError] = None
+        for semantic_attempt in range(3):
+            attempt_prompt = base_prompt
+            if semantic_attempt and validation_error is not None:
+                correction_guidance = (
+                    "finding 必须引用存在的 artifact_id，并让 status、"
+                    "severity、retained_artifacts 与 findings 相互一致。"
+                )
+                if (
+                    validation_error.code
+                    == "review_non_compensable_gate_invalid"
+                ):
+                    correction_guidance = (
+                        "SimulationReport 中至少一个不可补偿能力为 false "
+                        "或 blocking_findings 非空，因此绝对不得 approved。"
+                        "请 status=revision_required，至少输出一条 material "
+                        "finding：artifact_type=simulation_report，artifact_id 精确"
+                        "复制失败的 episode_id，responsible_role=student_simulator，"
+                        "invalidated_downstream_artifacts=[]，retained_artifacts 按输入"
+                        "依赖顺序保留 simulation_report 之前全部六项产物。"
+                    )
+                attempt_prompt += (
+                    "\n上一次课程审核未通过确定性校验。"
+                    "请完整重写 LessonReviewDecision，不要局部补丁。"
+                    "稳定错误码："
+                    + validation_error.code
+                    + "；对象："
+                    + validation_error.artifact_id
+                    + "。"
+                    + correction_guidance
+                )
+            try:
+                decision = await self._complete_model(
+                    "lesson_reviewer",
+                    LESSON_REVIEWER_SYSTEM,
+                    attempt_prompt,
+                    LessonReviewDecision,
+                )
+            except PreparationFailure:
+                # A deterministic decision is safe only when a typed reviewer
+                # response contradicts the already validated simulation gate.
+                # Provider and structure failures remain audited failures; they
+                # must not be silently upgraded into an approval.
+                raise
+            decision = _normalize_review_control_metadata(decision)
+            try:
+                self._reference_safety(state).ensure_safe(
+                    decision,
+                    downstream_of_sanitized_trace=True,
+                )
+            except ReferenceContentSafetyError:
+                self._raise_reference_content_leak(state, "lesson_reviewer")
+            try:
+                validate_review_decision(
+                    decision,
+                    state.solution_trace,
+                    state.reasoning_trajectory,
+                    state.teaching_script,
+                    state.interaction_plan,
+                    state.performance_score,
+                    state.simulation_report,
+                    progression=state.teaching_progression,
+                )
+                break
+            except PreparationValidationError as error:
+                validation_error = error
+                _LOGGER.warning(
+                    "lesson review validation failed: code=%s attempt=%s",
+                    error.code,
+                    semantic_attempt + 1,
+                )
+                self._mark_last_call_failed(
+                    state,
+                    "lesson_reviewer",
+                    "review_not_converged",
+                )
+                if error.code == "review_non_compensable_gate_invalid":
+                    decision = _deterministic_review_from_simulation(
+                        state.simulation_report
+                    )
+                    validate_review_decision(
+                        decision,
+                        state.solution_trace,
+                        state.reasoning_trajectory,
+                        state.teaching_script,
+                        state.interaction_plan,
+                        state.performance_score,
+                        state.simulation_report,
+                        progression=state.teaching_progression,
+                    )
+                    break
+        else:
             self._raise_not_converged()
         self._set_last_call_finding_ids(
             state,
             "lesson_reviewer",
             [item.finding_id for item in decision.findings],
         )
+        for finding in decision.findings:
+            _LOGGER.info(
+                "lesson review finding: artifact=%s role=%s criterion=%s "
+                "severity=%s",
+                finding.artifact_type,
+                finding.responsible_role,
+                finding.criterion,
+                finding.severity,
+            )
         state.review = decision
         return decision
 
@@ -1742,7 +2157,14 @@ class LessonPreparationPipeline:
         retry_count = 0
         token_usage: Optional[Dict[str, int]] = {}
         structure_guidance = ""
-        for attempt in range(self.MAX_STRUCTURE_ATTEMPTS):
+        structure_attempts = (
+            self.SCRIPT_STRUCTURE_ATTEMPTS
+            if role == "script_teacher"
+            else self.DIRECTOR_STRUCTURE_ATTEMPTS
+            if role == "classroom_director"
+            else self.MAX_STRUCTURE_ATTEMPTS
+        )
+        for attempt in range(structure_attempts):
             attempt_prompt = prompt
             if attempt:
                 attempt_prompt = (
@@ -1790,7 +2212,7 @@ class LessonPreparationPipeline:
                     token_usage,
                     error.token_usage,
                 )
-                if attempt + 1 < self.MAX_STRUCTURE_ATTEMPTS:
+                if attempt + 1 < structure_attempts:
                     retry_count += 1
                     continue
                 self._append_call_record(
@@ -1811,7 +2233,7 @@ class LessonPreparationPipeline:
                     model_type,
                     error,
                 )
-                if attempt + 1 < self.MAX_STRUCTURE_ATTEMPTS:
+                if attempt + 1 < structure_attempts:
                     retry_count += 1
                     continue
                 self._append_call_record(
@@ -1860,6 +2282,7 @@ class LessonPreparationPipeline:
         responsible_role: str,
         artifact: BaseModel,
         finding_ids: Optional[List[str]] = None,
+        allow_failed_fallback: bool = False,
     ) -> None:
         if artifact_type not in {
             "solution_trace",
@@ -1874,8 +2297,15 @@ class LessonPreparationPipeline:
         if not state.role_calls:
             raise RuntimeError("accepted artifact has no model call record")
         record = state.role_calls[-1]
-        if record.role != responsible_role or record.failure_category is not None:
+        if record.role != responsible_role or (
+            record.failure_category is not None and not allow_failed_fallback
+        ):
             raise RuntimeError("model call record does not match accepted artifact")
+        if allow_failed_fallback and record.failure_category not in {
+            "provider_error",
+            "invalid_structure",
+        }:
+            raise RuntimeError("fallback requires a failed provider call")
         try:
             self._reference_safety(state).ensure_safe(
                 artifact,

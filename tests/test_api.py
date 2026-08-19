@@ -3226,6 +3226,8 @@ def test_parameter_root_deterministic_pipeline_persistence_and_interactions(
         "reveal_step_header",
         "scroll_to_step",
         "write",
+        "emphasize",
+        "fade",
         "complete_step",
         "open_supporting_explanation",
         "close_supporting_explanation",
@@ -3239,6 +3241,11 @@ def test_parameter_root_deterministic_pipeline_persistence_and_interactions(
             *cue.end_actions,
         )
         if action.teaching_step_id is not None
+    )
+    assert any(
+        action.type == "emphasize"
+        for cue in authored_cues
+        for action in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
     )
 
     app = create_app(
@@ -3289,11 +3296,9 @@ def test_parameter_root_deterministic_pipeline_persistence_and_interactions(
         assert wrong.json()["classification"] == "incorrect"
         correct_support = correct.json()["support_cues"]
         wrong_support = wrong.json()["support_cues"]
-        assert len(correct_support) == 1
+        assert correct_support == []
+        assert wrong_support
         assert any("4n^2" in cue["display_text"] for cue in wrong_support)
-        assert sum(len(cue["spoken_text"]) for cue in correct_support) < sum(
-            len(cue["spoken_text"]) for cue in wrong_support
-        )
         assert substitution.advance_after_response is True
         assert square.advance_after_response is True
 

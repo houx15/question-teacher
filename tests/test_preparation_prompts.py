@@ -415,6 +415,18 @@ def test_interaction_designer_requires_exact_checkpoint_pause_reason():
     assert "不得只写泛化" in system
 
 
+def test_long_lessons_require_early_varied_diagnostic_checkpoints():
+    assert (
+        "四步及以上的讲解必须在结论揭示前设置两个 checkpoint"
+        in TEACHING_PROGRESSION_SYSTEM
+    )
+    assert "先问再讲" in INTERACTION_DESIGNER_SYSTEM
+    assert (
+        "正确选项在 options 列表中不得都处于同一位置"
+        in INTERACTION_DESIGNER_SYSTEM
+    )
+
+
 def interaction_plan():
     return InteractionPlan.model_validate(
         {
@@ -641,7 +653,10 @@ def test_classroom_director_gets_exact_step_action_templates():
     assert "动作字段只能放在 action 内" in CLASSROOM_DIRECTOR_SYSTEM
     assert "target=teaching_step_id" in CLASSROOM_DIRECTOR_SYSTEM
     assert "teaching_step_id 与 target 完全相同" in CLASSROOM_DIRECTOR_SYSTEM
-    assert "board_role 只能是 knowledge_anchor、working" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "board_role 只能是 method、condition" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "knowledge_anchor、working、result、summary" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "每个步骤至少编排一次有意义的 board emphasize" in CLASSROOM_DIRECTOR_SYSTEM
+    assert "条件优先 underline" in CLASSROOM_DIRECTOR_SYSTEM
     assert "不得使用 main" in CLASSROOM_DIRECTOR_SYSTEM
     assert "focus/emphasize 都不得带 content 或 board_role" in CLASSROOM_DIRECTOR_SYSTEM
     assert "不得带 step_label" in CLASSROOM_DIRECTOR_SYSTEM
@@ -682,8 +697,8 @@ def test_role_system_prompts_state_the_bounded_responsibilities():
             (
                 "诊断概念或执行",
                 "恰好一个正确选项",
-                    "所有学生可见文本必须使用简体中文",
-                    "零个互动",
+                "所有学生可见文本必须使用简体中文",
+                    "先问再讲",
                     "只输出结构化诊断意图",
                     "resume_policy 必须是 continue",
                     "remediation_depth",

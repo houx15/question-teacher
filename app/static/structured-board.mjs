@@ -1,7 +1,10 @@
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const LINE_ROLES = new Set([
+  "method",
+  "condition",
   "knowledge_anchor",
   "working",
+  "result",
   "summary",
   "error_tip",
   "support",

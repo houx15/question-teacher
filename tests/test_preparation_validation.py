@@ -19,6 +19,8 @@ from app.preparation_models import (
 from app.preparation_validation import (
     PreparationValidationError,
     blocking_signature,
+    build_structured_performance_score,
+    performance_score_has_compact_board,
     validate_interaction_plan,
     validate_performance_score,
     validate_prepared_lesson,
@@ -1034,6 +1036,66 @@ def test_structured_performance_covers_main_and_response_lifecycles():
         TeachingProgression.model_validate(payload["teaching_progression"]),
         TeachingScript.model_validate(payload["teaching_script"]),
         InteractionPlan.model_validate(payload["interaction_plan"]),
+    )
+
+
+def test_deterministic_board_defers_setup_lines_until_step_question():
+    progression = TeachingProgression.model_validate(progression_payload())
+    script_data = script_payload()
+    script_data["clauses"][1]["pedagogical_function"] = "explain"
+    script_data["clauses"][2].update(
+        {
+            "pedagogical_function": "question",
+            "display_text": "根代入方程后，应先得到什么关系？",
+            "spoken_text": "根代入方程后，应先得到什么关系？",
+        }
+    )
+    script = TeachingScript.model_validate(script_data)
+    plan = InteractionPlan.model_validate(interaction_plan_payload())
+
+    score = build_structured_performance_score(progression, script)
+    validate_performance_score(score, [], progression, script, plan)
+
+    activation_cue = next(
+        cue for cue in score.cues
+        if cue.clause_ids == ["clause-2-resume"]
+    )
+    action_types = [item.action.type for item in activation_cue.start_actions]
+    assert action_types[:3] == [
+        "reveal_step_header",
+        "scroll_to_step",
+        "write",
+    ]
+
+
+def test_compact_board_requires_a_declared_nonzero_condition_line():
+    progression_data = progression_payload()
+    progression_data["steps"][1]["board_summary"].insert(
+        0, "n≠0 ⇒ 可以同除 n"
+    )
+    progression = TeachingProgression.model_validate(progression_data)
+    script = TeachingScript.model_validate(script_payload())
+    score = build_structured_performance_score(progression, script)
+
+    assert performance_score_has_compact_board(score, progression, script)
+
+    condition_id = next(
+        item.board_object_id
+        for item in score.board_objects
+        if item.line_role == "condition"
+    )
+    incomplete = score.model_copy(
+        update={
+            "board_objects": [
+                item
+                for item in score.board_objects
+                if item.board_object_id != condition_id
+            ]
+        }
+    )
+
+    assert not performance_score_has_compact_board(
+        incomplete, progression, script
     )
 
 
@@ -2164,6 +2226,19 @@ def test_current_interaction_plan_requires_a_declared_checkpoint():
         lambda: validate_interaction_plan(
             InteractionPlan.model_validate(interaction_plan_payload()),
             TeachingProgression.model_validate(progression),
+        ),
+    )
+
+
+def test_current_interaction_diagnosis_cannot_repeat_private_canonical_answer():
+    payload = interaction_plan_payload()
+    wrong = payload["interactions"][0]["options"][1]
+    wrong["misconception"] = "错误地得到 %s" % wrong["canonical_answer"]
+    assert_code(
+        "interaction_diagnosis_answer_leakage",
+        lambda: validate_interaction_plan(
+            InteractionPlan.model_validate(payload),
+            TeachingProgression.model_validate(progression_payload()),
         ),
     )
 

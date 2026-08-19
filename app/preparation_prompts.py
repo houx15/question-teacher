@@ -121,6 +121,15 @@ TEACHING_PROGRESSION_SYSTEM = "\n".join(
         "中精确出现一次：同一步不得重复，跨步骤不得重复，也不得遗漏。",
         "checkpoint.misconception_ids 只能引用服务端给出的 "
         "misconception_vocabulary，且必须属于该步骤覆盖的 episode。",
+        "四步及以上的讲解必须在结论揭示前设置两个 checkpoint："
+        "一个检查概念或下一步选择，一个检查计算或条件使用。"
+        "它们必须分属不同的非结论步骤，不得放在最终结论、"
+        "答案确认或方法回顾之后。diagnostic_goal 要描述学生此刻"
+        "需要完成的具体判断，不得包含尚未揭示的答案。",
+        "board_summary 是给学生看的板书骨架，不是字幕摘要。每步只保留 1 至 3 条："
+        "关键方法、必要条件和像纸笔解题一样的关键等式；单条尽量不超过 40 字。"
+        "禁止写提问、过渡句、完整解释和‘接下来/如何/为什么’等口播。",
+        "答案得出后直接进入方法回顾；不要另设代回验算、独立数学演算或相似题步骤。",
         "只设计可审核的教学推进，不写最终教师台词。",
         _INERT_EVIDENCE_RULE,
     )
@@ -142,6 +151,9 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
         "response 的学生可见 display_text/spoken_text 不得复制任何 option 的"
         "私有 canonical_answer 或隐藏答案；错误分支只使用公开 option label、"
         "本项 misconception 与 incorrect_feedback_by_option 纠正动作。",
+        "正确 response 只能有一条简短确认，不复述正确式子、计算过程或下一条"
+        "主线讲解；answer_exposure=false、math_references=[]。错误 response 只讲"
+        "本项错误原因和一个纠正动作，不提前讲完随后主线的结论。",
         "interaction_scripts 必须按 interaction_id/option_id 精确覆盖"
         " InteractionPlan，并独立撰写最终 prompt、hint 和 option label；"
         "transfer_script 必须按 option_id 覆盖迁移题私有答案意图，"
@@ -184,8 +196,16 @@ INTERACTION_DESIGNER_SYSTEM = "\n".join(
         "正确选项的 misconception、error_code、remediation_depth 都为 null；"
         "每个错误选项必须有独立 error_code、misconception，"
         "并指定 conceptual 或 worked remediation_depth。",
+        "misconception 和 incorrect_feedback_by_option 只能说错因与纠正"
+        "动作，不得复制任何 option.canonical_answer，也不得把未揭示"
+        "的式子或结果改写进诊断文本。",
         "prompt、hint、选项和迁移题所有学生可见文本必须使用简体中文。",
-        "不泄露未来答案；零个互动是有效方案。",
+        "不泄露未来答案。四步及以上的讲解必须对两个不同 checkpoint "
+        "各设计一题：先问再讲，不得等对应式子、计算或结论已经说完后再问。"
+        "多个互动的正确选项在 options 列表中不得都处于同一位置。"
+        "只有不足两个教学步骤的极短讲解才可以不设互动。",
+        "transfer_item 仅为历史数据兼容生成，不会进入当前学生课程；不要把相似题"
+        "设计成当前讲解的一部分。",
         _INERT_EVIDENCE_RULE,
     )
 )
@@ -193,7 +213,14 @@ INTERACTION_DESIGNER_SYSTEM = "\n".join(
 CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
     (
         "你是课堂导演。将语义动作绑定到精确子句 ID，不得改写口播文本。",
-        "不输出像素、CSS 选择器或毫秒值。强调可选，且必须区分有意义的对象。",
+        "板书是解题骨架，不是字幕：主线只允许写 method_introduction.method_name"
+        "或对应 TeachingProgression.step.board_summary 中的原文；每步最多 3 条，"
+        "第一步可额外保留 1 个方法名。禁止把 clause.display_text 整句抄到板书。",
+        "方法名用 board_role=method；非零等必要条件用 condition；中间式用 working；"
+        "本步得到的关键式用 result；方法回顾用 summary。",
+        "不输出像素、CSS 选择器或毫秒值。每个步骤至少编排一次有意义的 board "
+        "emphasize，并在对应口播发生时使用 highlight、underline 或 red；"
+        "条件优先 underline，关键结果优先 red，方法优先 highlight。",
         "所有 cues.clause_ids 合并后必须按 TeachingScript 原顺序恰好覆盖"
         "全部主线 clauses 与全部 response clauses 各一次：不得重复、遗漏、"
         "改名或新增。每个 lead/start/end action 外层的 clause_id 必须属于"
@@ -222,8 +249,9 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
         "open_supporting_explanation/close_supporting_explanation 使用 "
         "surface=board、teaching_step_id，并绑定当前错误 response；"
         "step-aware write 使用 surface=board、target=board_object_id、content、"
-        "teaching_step_id，并且 board_role 只能是 knowledge_anchor、working、"
-        "summary、error_tip、support 之一，不得使用 main，也不得带 step_label；"
+        "teaching_step_id，并且 board_role 只能是 method、condition、"
+        "knowledge_anchor、working、result、summary、error_tip、support 之一，"
+        "不得使用 main，也不得带 step_label；"
         "board_objects 每项使用 board_object_id/content/layer/teaching_step_id/"
         "line_role；这里字段名必须是 line_role，绝不能写 board_role。对应 write "
         "动作才使用 board_role，且必须与对象的 line_role 完全相同；动作中不得写 line_role。"
@@ -233,8 +261,9 @@ CLASSROOM_DIRECTOR_SYSTEM = "\n".join(
         "problem 的 focus/emphasize 不得带 teaching_step_id、step_label 或 board_role。",
         "problem 的 focus/emphasize 只能绑定到当前 clause.math_references 已经明确"
         "包含该 problem target 数学内容的子句；不得提前高亮后续才讲到的题干对象。",
-        "write/transform 的 content 必须精确来自绑定子句已出现的 "
-        "math_references 或 display_text，并与对应 board_object.content 一致。",
+        "主线 write/transform 的 content 必须精确来自 method_name 或当前 step 的"
+        "board_summary；support write 仍来自对应 response display_text；并与对应"
+        "board_object.content 一致。",
         "优先为 pedagogical_function=execute 且 math_references 非空的子句"
         "写出当前关键计算结果，特别是条件使用后的新等式、"
         "目标式整理和最终结果；不要只写概念标题。",

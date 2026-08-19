@@ -1268,6 +1268,34 @@ button {
   max-width: 100%;
 }
 
+.lesson-step__line[data-board-role="method"] {
+  width: max-content;
+  padding: 3px 10px;
+  color: #245547;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  background: #dceee8;
+  border-radius: 999px;
+}
+
+.lesson-step__line[data-board-role="condition"] {
+  padding-left: 10px;
+  color: #70500f;
+  border-left: 3px solid #e4a83f;
+}
+
+.lesson-step__line[data-board-role="result"] {
+  color: #9a3f35;
+  font-weight: 720;
+}
+
+.lesson-step__line[data-board-role="result"] .katex-display,
+.lesson-step__line[data-board-role="result"] > .board-content > .katex {
+  font-size: 1.35em;
+}
+
 .structured-board .lesson-step__line .katex-display {
   margin: 0.2em 0;
   text-align: left;

@@ -101,7 +101,7 @@ def test_live_smoke_asserts_method_first_choice_contract_without_answers():
     assert summary == {
         "method_first": True,
         "interaction_kinds": ["choice", "choice"],
-        "diagnostic_choice_count": 2,
+        "diagnostic_choice_count": 1,
         "option_feedback_audio_ready": True,
         "formula_labels_ready": True,
         "audio_ready": True,
@@ -235,12 +235,15 @@ def test_live_smoke_accepts_grounded_parameter_root_flag_and_exact_fixture():
 def _grounded_smoke_contract_lesson():
     choice = SimpleNamespace(
         kind="choice",
+        interaction_id="diagnostic-root",
+        expected_answer="option-a",
         options=[
             SimpleNamespace(
                 option_id=f"option-{value}",
                 label=value,
                 feedback="诊断反馈。",
                 feedback_audio_url=f"/audio/option-{value}.mp3",
+                support_cues=[],
             )
             for value in ("a", "b", "c")
         ],
@@ -461,17 +464,18 @@ def test_grounded_parameter_root_contract_rejects_empty_choice_options():
         smoke_live.assert_grounded_parameter_root_contract(lesson)
 
 
-def test_grounded_parameter_root_contract_requires_final_transfer_choice():
+def test_grounded_parameter_root_contract_rejects_unsynchronized_extra_beat():
     lesson = _grounded_smoke_contract_lesson()
     lesson.beats.append(
         SimpleNamespace(
             interaction=None,
             board_actions=[],
             audio_url="/audio/after-transfer.mp3",
+            sync_cues=[],
         )
     )
 
-    with pytest.raises(smoke_live.SmokeContractError, match="近迁移"):
+    with pytest.raises(smoke_live.SmokeContractError, match="同步 Cue"):
         smoke_live.assert_grounded_parameter_root_contract(lesson)
 
 
@@ -1099,12 +1103,15 @@ def test_live_smoke_uses_automatic_temporary_audio_directory():
 def _smoke_contract_lesson():
     choice = SimpleNamespace(
         kind="choice",
+        interaction_id="diagnostic-choice",
+        expected_answer="option-1",
         options=[
             SimpleNamespace(
                 option_id=f"option-{value}",
                 label=rf"\(x={value}\)",
                 feedback="诊断反馈。",
                 feedback_audio_url=f"/audio/option-{value}.mp3",
+                support_cues=[],
             )
             for value in ("1", "2", "3")
         ],
@@ -1117,6 +1124,21 @@ def _smoke_contract_lesson():
         )
         for value in ("1", "2", "3")
     ]
+    transfer_choice = SimpleNamespace(
+        kind="choice",
+        interaction_id="near-transfer",
+        expected_answer="option-1",
+        options=[
+            SimpleNamespace(
+                option_id=option.option_id,
+                label=option.label,
+                feedback="迁移反馈。",
+                feedback_audio_url="/audio/transfer-%s.mp3" % option.option_id,
+                support_cues=[],
+            )
+            for option in transfer_options
+        ],
+    )
     return SimpleNamespace(
         beats=[
             SimpleNamespace(
@@ -1154,7 +1176,7 @@ def _smoke_contract_lesson():
                 layer="interaction",
                 narration="现在迁移。",
                 board_actions=[],
-                interaction=choice,
+                interaction=transfer_choice,
                 audio_url="/audio/transfer.mp3",
             ),
         ],
@@ -1423,8 +1445,8 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260816-1"' in html
-    assert 'href="/static/styles.css?v=20260816-1"' in html
+    assert 'src="/static/lesson.js?v=20260819-2"' in html
+    assert 'href="/static/styles.css?v=20260819-1"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
 
@@ -1432,23 +1454,23 @@ def test_lesson_page_has_fullscreen_classroom_regions():
 def test_versioned_lesson_module_remains_cacheable():
     client = page_client()
     html_response = client.get("/lesson/example")
-    response = client.get("/static/lesson.js?v=20260816-1")
+    response = client.get("/static/lesson.js?v=20260819-2")
     runtime_response = client.get(
-        "/static/runtime-core.mjs?v=20260815-1"
+        "/static/runtime-core.mjs?v=20260819-2"
     )
     board_response = client.get(
-        "/static/structured-board.mjs?v=20260815-1"
+        "/static/structured-board.mjs?v=20260819-2"
     )
-    styles_response = client.get("/static/styles.css?v=20260816-1")
+    styles_response = client.get("/static/styles.css?v=20260819-1")
 
     assert html_response.headers["cache-control"] == "no-cache"
     assert response.status_code == 200
     assert (
-        '} from "./runtime-core.mjs?v=20260815-1";'
+        '} from "./runtime-core.mjs?v=20260819-2";'
         in response.text
     )
     assert (
-        '} from "./structured-board.mjs?v=20260815-1";'
+        '} from "./structured-board.mjs?v=20260819-2";'
         in runtime_response.text
     )
     for asset_response in (
@@ -1494,7 +1516,7 @@ def test_lesson_runtime_renders_math_and_tracks_unrendered_board_sources():
 def test_lesson_runtime_uses_cue_timeline_and_preserves_legacy_playback():
     source = page_client().get("/static/lesson.js").text
 
-    assert '} from "./runtime-core.mjs?v=20260815-1";' in source
+    assert '} from "./runtime-core.mjs?v=20260819-2";' in source
     assert 'import { CuePlayer } from "./cue-player.mjs?v=20260814-1";' in source
     assert "applySyncVisualAction" in source
     assert "let cuePlayer = null;" in source
@@ -1587,13 +1609,13 @@ def test_lesson_shell_uses_single_continuous_structured_board():
 def test_structured_board_module_cache_chain_is_versioned():
     client = page_client()
     html = client.get("/lesson/example").text
-    lesson_js = client.get("/static/lesson.js?v=20260816-1").text
-    runtime_js = client.get("/static/runtime-core.mjs?v=20260815-1").text
+    lesson_js = client.get("/static/lesson.js?v=20260819-2").text
+    runtime_js = client.get("/static/runtime-core.mjs?v=20260819-2").text
 
-    assert "lesson.js?v=20260816-1" in html
-    assert "styles.css?v=20260816-1" in html
-    assert "runtime-core.mjs?v=20260815-1" in lesson_js
-    assert "structured-board.mjs?v=20260815-1" in runtime_js
+    assert "lesson.js?v=20260819-2" in html
+    assert "styles.css?v=20260819-1" in html
+    assert "runtime-core.mjs?v=20260819-2" in lesson_js
+    assert "structured-board.mjs?v=20260819-2" in runtime_js
 
 
 def test_choice_submission_passes_selected_option_without_exposing_answer_key():
@@ -1612,7 +1634,7 @@ def test_choice_buttons_use_nonempty_plain_text_accessible_names():
     source = page_client().get("/static/lesson.js").text
 
     assert "mathTextToPlainText" in source
-    assert '"./math-text.mjs?v=20260807-2";' in source
+    assert '"./math-text.mjs?v=20260819-2";' in source
     assert "for (const [optionIndex, option] of" in source
     assert "const accessibleLabel = mathTextToPlainText(option.label);" in source
     assert 'button.setAttribute(' in source
@@ -1632,7 +1654,7 @@ def test_synchronized_emphasis_uses_fixed_classes_and_no_inner_html():
     assert ".innerHTML" not in math_source
     assert (
         'import { emphasisClassName } '
-        'from "./runtime-core.mjs?v=20260807-2";'
+        'from "./runtime-core.mjs?v=20260819-2";'
         in math_source
     )
     assert "emphasisClassName(value.emphasis?.style)" in lesson_source

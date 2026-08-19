@@ -92,11 +92,129 @@ def _contains_third_person_student_voice(value: str) -> bool:
     )
 
 
+_BOARD_QUESTION_TEXT = re.compile(r"(?:[？?]|如何|怎样|为什么|接下来|想一想|试一试)")
+_BOARD_CHECK_TEXT = re.compile(r"(?:代回|验算|验证|检验|检查)")
+_BOARD_CONDITION_TEXT = re.compile(r"(?:≠|\\ne\b|不等于|非零)")
+
+
+def _fallback_step_board_line(step: object) -> str:
+    """Choose one bounded statement when every proposed summary was filtered."""
+    sources = [
+        *step.board_summary,
+        step.math_action,
+        step.knowledge_anchor,
+        step.reveal,
+        step.directory_label,
+    ]
+    for raw in sources:
+        value = " ".join(raw.split()).strip("；;。？? ")
+        if value and len(value) <= 80 and not _BOARD_QUESTION_TEXT.search(value):
+            return value
+    return " ".join(step.directory_label.split())[:80]
+
+
+def _compact_step_board_lines(step: object, method_name: str, first: bool) -> list:
+    """Select a chalkboard-sized method/condition/equation skeleton."""
+    candidates = []
+    seen = set()
+    for raw in step.board_summary:
+        value = " ".join(raw.split()).strip("；;。 ")
+        normalized = normalize_cross_artifact_math_identity(value)
+        if (
+            not value
+            or len(value) > 80
+            or _BOARD_QUESTION_TEXT.search(value)
+            or normalized in seen
+        ):
+            continue
+        seen.add(normalized)
+        candidates.append(value)
+
+    selected = []
+    if first:
+        selected.append((method_name, "method"))
+
+    if step.phase == "check":
+        result_candidates = [
+            item for item in candidates
+            if not _BOARD_CHECK_TEXT.search(item)
+            and ("结论" in item or "答案" in item or "=" in item)
+        ]
+        if result_candidates:
+            selected.append((result_candidates[-1], "result"))
+        elif candidates:
+            selected.append((candidates[-1], "result"))
+        else:
+            selected.append((_fallback_step_board_line(step), "result"))
+        return selected
+
+    condition = next(
+        (item for item in candidates if _BOARD_CONDITION_TEXT.search(item)),
+        None,
+    )
+    if condition is not None:
+        selected.append((condition, "condition"))
+
+    non_condition = [item for item in candidates if item != condition]
+    if non_condition:
+        first_line = non_condition[0]
+        last_line = non_condition[-1]
+        if first_line != last_line and len(selected) < (4 if first else 3):
+            selected.append((first_line, "working"))
+        if len(selected) < (4 if first else 3):
+            selected.append((last_line, "result"))
+
+    if not selected and candidates:
+        selected.append((candidates[-1], "result"))
+    if not selected:
+        selected.append((_fallback_step_board_line(step), "working"))
+    return selected
+
+
+def _board_line_clause(content: str, step_clauses: list) -> object:
+    normalized = normalize_cross_artifact_math_identity(content)
+    for clause in step_clauses:
+        visible = normalize_cross_artifact_math_identity(
+            clause.display_text or ""
+        )
+        if (
+            normalized
+            and visible
+            and (
+                contains_normalized_cross_artifact_math_identity(
+                    visible, normalized
+                )
+                or contains_normalized_cross_artifact_math_identity(
+                    normalized, visible
+                )
+            )
+        ):
+            return clause
+    return next(
+        (clause for clause in step_clauses if clause.must_teach_refs),
+        step_clauses[-1],
+    )
+
+
+def _method_review_line(
+    progression: TeachingProgression,
+    method_name: str,
+) -> str:
+    labels = [
+        step.directory_label
+        for step in progression.steps
+        if step.phase != "check"
+        and not _BOARD_CHECK_TEXT.search(step.directory_label)
+    ]
+    route = " → ".join(labels[:4])
+    return "%s：%s" % (method_name, route) if route else method_name
+
+
 def build_structured_performance_score(
     progression: TeachingProgression,
     script: TeachingScript,
 ) -> PerformanceScore:
-    """Build the reliable tablet board lifecycle from authored lesson semantics."""
+    """Build a compact tablet board and cue-bound emphasis choreography."""
     _require_exact(progression, TeachingProgression, "progression")
     _require_exact(script, TeachingScript, "script")
     steps = {item.step_id: item for item in progression.steps}
@@ -110,6 +228,70 @@ def build_structured_performance_score(
                 "Structured clauses require a teaching step.",
             )
         clauses_by_step.setdefault(clause.lesson_step_id, []).append(clause)
+
+    lines_by_clause: Dict[str, list] = {
+        clause.clause_id: [] for clause in script.clauses
+    }
+    activation_clause_by_step: Dict[str, str] = {}
+    for step_id, step_clauses in clauses_by_step.items():
+        activation = next(
+            (
+                clause
+                for clause in step_clauses
+                if clause.pedagogical_function == "question"
+            ),
+            step_clauses[0],
+        )
+        activation_clause_by_step[step_id] = activation.clause_id
+    for step_index, step in enumerate(progression.steps):
+        step_clauses = clauses_by_step.get(step.step_id, [])
+        if not step_clauses:
+            continue
+        for content, role in _compact_step_board_lines(
+            step,
+            script.method_introduction.method_name,
+            step_index == 0,
+        ):
+            owner = _board_line_clause(content, step_clauses)
+            lines_by_clause[owner.clause_id].append((content, role))
+
+    # A model may phrase a brief setup before the step-opening question.  The
+    # board lifecycle still starts at that question: defer any earlier line to
+    # the activation clause so reveal -> scroll -> write remains truthful.
+    script_position = {
+        clause.clause_id: index for index, clause in enumerate(script.clauses)
+    }
+    for step_id, activation_clause_id in activation_clause_by_step.items():
+        activation_position = script_position[activation_clause_id]
+        deferred = []
+        for clause in clauses_by_step[step_id]:
+            if script_position[clause.clause_id] >= activation_position:
+                continue
+            deferred.extend(lines_by_clause[clause.clause_id])
+            lines_by_clause[clause.clause_id] = []
+        if deferred:
+            lines_by_clause[activation_clause_id] = [
+                *deferred,
+                *lines_by_clause[activation_clause_id],
+            ]
+
+    summary_clause_id = next(
+        (
+            clause.clause_id
+            for clause in script.clauses
+            if clause.clause_id in closing_summary_ids
+        ),
+        None,
+    )
+    if summary_clause_id is not None:
+        lines_by_clause[summary_clause_id].append(
+            (
+                _method_review_line(
+                    progression, script.method_introduction.method_name
+                ),
+                "summary",
+            )
+        )
 
     board_objects = []
     cues = []
@@ -126,7 +308,7 @@ def build_structured_performance_score(
         step_clauses = clauses_by_step[step_id]
         start_actions = []
         end_actions = []
-        if clause is step_clauses[0]:
+        if clause.clause_id == activation_clause_by_step[step_id]:
             start_actions.extend(
                 [
                     {
@@ -150,22 +332,13 @@ def build_structured_performance_score(
                     },
                 ]
             )
-        authored_board_content = list(clause.math_references)
-        if not authored_board_content and clause.display_text is not None:
-            authored_board_content.append(clause.display_text)
-        for reference_index, reference in enumerate(authored_board_content):
+        for content, line_role in lines_by_clause[clause.clause_id]:
             board_index += 1
             board_id = "board-main-%03d" % board_index
-            if clause.clause_id in closing_summary_ids:
-                line_role = "summary"
-            elif clause is step_clauses[0] and reference_index == 0:
-                line_role = "knowledge_anchor"
-            else:
-                line_role = "working"
             board_objects.append(
                 {
                     "board_object_id": board_id,
-                    "content": reference,
+                    "content": content,
                     "teaching_step_id": step_id,
                     "line_role": line_role,
                 }
@@ -177,12 +350,44 @@ def build_structured_performance_score(
                         "surface": "board",
                         "type": "write",
                         "target": board_id,
-                        "content": reference,
+                        "content": content,
                         "teaching_step_id": step_id,
                         "board_role": line_role,
                     },
                 }
             )
+            style = {
+                "method": "highlight",
+                "condition": "underline",
+                "result": "red",
+                "summary": "highlight",
+            }.get(line_role, "underline")
+            persistence = "trace" if line_role != "working" else "transient"
+            start_actions.append(
+                {
+                    "clause_id": clause.clause_id,
+                    "action": {
+                        "surface": "board",
+                        "type": "emphasize",
+                        "target": board_id,
+                        "emphasis_style": style,
+                        "persistence": persistence,
+                        "teaching_step_id": step_id,
+                    },
+                }
+            )
+            if persistence == "transient":
+                end_actions.append(
+                    {
+                        "clause_id": clause.clause_id,
+                        "action": {
+                            "surface": "board",
+                            "type": "fade",
+                            "target": board_id,
+                            "teaching_step_id": step_id,
+                        },
+                    }
+                )
         if clause is step_clauses[-1]:
             end_actions.append(
                 {
@@ -291,6 +496,86 @@ def build_structured_performance_score(
             "overlay_transitions": [],
         }
     )
+
+
+def performance_score_has_compact_board(
+    score: PerformanceScore,
+    progression: TeachingProgression,
+    script: TeachingScript,
+) -> bool:
+    """Return whether a new score already follows the compact board contract."""
+    _require_exact(score, PerformanceScore, "score")
+    _require_exact(progression, TeachingProgression, "progression")
+    _require_exact(script, TeachingScript, "script")
+    allowed_by_step = {
+        step.step_id: {
+            normalize_cross_artifact_math_identity(content)
+            for content in step.board_summary
+        }
+        for step in progression.steps
+    }
+    condition_steps = {
+        step.step_id
+        for step in progression.steps
+        if any(_BOARD_CONDITION_TEXT.search(content) for content in step.board_summary)
+    }
+    first_step_id = progression.steps[0].step_id
+    method_name = normalize_cross_artifact_math_identity(
+        script.method_introduction.method_name
+    )
+    method_review = normalize_cross_artifact_math_identity(
+        _method_review_line(
+            progression, script.method_introduction.method_name
+        )
+    )
+    main_by_step: Dict[str, List[object]] = {}
+    main_targets = set()
+    for item in score.board_objects:
+        if item.line_role == "support":
+            continue
+        content = normalize_cross_artifact_math_identity(item.content)
+        valid = (
+            item.teaching_step_id == first_step_id
+            and item.line_role == "method"
+            and content == method_name
+        ) or (
+            item.line_role == "summary" and content == method_review
+        ) or (
+            item.line_role in {"condition", "working", "result"}
+            and content in allowed_by_step.get(item.teaching_step_id or "", set())
+        )
+        if (
+            not valid
+            or len(item.content) > 80
+            or _BOARD_QUESTION_TEXT.search(item.content)
+            or (
+                item.line_role == "condition"
+                and not _BOARD_CONDITION_TEXT.search(item.content)
+            )
+        ):
+            return False
+        main_targets.add(item.board_object_id)
+        if item.line_role != "summary":
+            main_by_step.setdefault(item.teaching_step_id or "", []).append(
+                item
+            )
+    for step_index, step in enumerate(progression.steps):
+        items = main_by_step.get(step.step_id, [])
+        if not items or len(items) > (4 if step_index == 0 else 3):
+            return False
+        if step.step_id in condition_steps and not any(
+            item.line_role == "condition" for item in items
+        ):
+            return False
+    emphasized_steps = {
+        bound.action.teaching_step_id
+        for cue in score.cues
+        for bound in (*cue.lead_actions, *cue.start_actions, *cue.end_actions)
+        if bound.action.type == "emphasize"
+        and bound.action.surface == "board"
+        and bound.action.target in main_targets
+    }
+    return set(allowed_by_step) <= emphasized_steps
 
 
 class PreparationValidationError(ValueError):
@@ -1863,6 +2148,24 @@ def validate_interaction_plan(
                 interaction.interaction_id,
                 "Every incorrect option requires misconception, error code, and remediation depth.",
             )
+        diagnosis_text = " ".join(
+            [
+                *(item.misconception or "" for item in wrong_options),
+                *interaction.incorrect_feedback_by_option.values(),
+            ]
+        )
+        if any(
+            not _canonical_is_public(option)
+            and _contains_private_canonical_answer(
+                diagnosis_text, option.canonical_answer
+            )
+            for option in interaction.options
+        ):
+            _fail(
+                "interaction_diagnosis_answer_leakage",
+                interaction.interaction_id,
+                "Private misconception and remediation intent cannot contain canonical option answers.",
+            )
         error_codes = [item.error_code for item in wrong_options]
         if len(error_codes) != len(set(error_codes)):
             _fail(
@@ -2273,6 +2576,7 @@ def _validate_legacy_performance_score(
     problem_targets: ProblemTargets,
     script: TeachingScript,
     plan: InteractionPlan,
+    progression: Optional[TeachingProgression] = None,
 ) -> None:
     _require_exact(score, PerformanceScore, "score")
     _validate_problem_targets(problem_targets)
@@ -2383,6 +2687,41 @@ def _validate_legacy_performance_score(
     except VisualActionValidationError as error:
         _fail(error.code, "performance_score", error.detail)
 
+    structured_references_by_clause: Dict[str, List[str]] = {}
+    if progression is not None:
+        clauses_by_step: Dict[str, List[object]] = {}
+        for clause in script.clauses:
+            clauses_by_step.setdefault(clause.lesson_step_id or "", []).append(
+                clause
+            )
+        for step_index, step in enumerate(progression.steps):
+            step_clauses = clauses_by_step.get(step.step_id, [])
+            for content, _role in _compact_step_board_lines(
+                step,
+                script.method_introduction.method_name,
+                step_index == 0,
+            ):
+                owner = _board_line_clause(content, step_clauses)
+                structured_references_by_clause.setdefault(
+                    owner.clause_id, []
+                ).append(content)
+        summary_clause_id = next(
+            (
+                clause.clause_id
+                for clause in script.clauses
+                if clause.clause_id in set(script.closing_summary_clause_ids)
+            ),
+            None,
+        )
+        if summary_clause_id is not None:
+            structured_references_by_clause.setdefault(
+                summary_clause_id, []
+            ).append(
+                _method_review_line(
+                    progression, script.method_introduction.method_name
+                )
+            )
+
     references_by_position = []
     first_reference_position = {}
     for position, clause in enumerate(script.clauses):
@@ -2390,6 +2729,7 @@ def _validate_legacy_performance_score(
             normalize_cross_artifact_math_identity(item)
             for item in (
                 *clause.math_references,
+                *structured_references_by_clause.get(clause.clause_id, []),
                 *(
                     (clause.display_text,)
                     if clause.display_text is not None
@@ -2494,6 +2834,7 @@ def _validate_legacy_performance_score(
                 and action.surface == "board"
                 and len(visible_content) == 1
                 and action.target in visible_content
+                and action.teaching_step_id is None
             ):
                 _fail(
                     "non_discriminating_emphasis",
@@ -2886,6 +3227,7 @@ def validate_performance_score(
         problem_targets,
         current_script,
         current_plan,
+        current_progression,
     )
     _validate_structured_performance_score(
         score,

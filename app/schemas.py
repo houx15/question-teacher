@@ -175,8 +175,11 @@ LessonLayer = Literal[
     "interaction",
 ]
 BoardLineRole = Literal[
+    "method",
+    "condition",
     "knowledge_anchor",
     "working",
+    "result",
     "summary",
     "error_tip",
     "support",

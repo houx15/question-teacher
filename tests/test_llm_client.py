@@ -176,6 +176,35 @@ def test_complete_model_falls_back_to_json_object_when_schema_is_unsupported():
     assert request_bodies[1]["response_format"] == {"type": "json_object"}
 
 
+def test_complete_model_uses_json_object_directly_for_deepseek():
+    request_bodies = []
+
+    def handler(request):
+        request_bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"answer":7,"ok":true}'}}
+                ]
+            },
+        )
+
+    client = OpenAICompatibleClient(
+        configured_settings(openai_base_url="https://api.deepseek.com"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = asyncio.run(
+        client.complete_model("system", "user", StructuredProbe)
+    )
+    asyncio.run(client.close())
+
+    assert result == {"answer": 7, "ok": True}
+    assert len(request_bodies) == 1
+    assert request_bodies[0]["response_format"] == {"type": "json_object"}
+
+
 @pytest.mark.parametrize(
     "content",
     [

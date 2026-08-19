@@ -201,12 +201,33 @@ def _validate_current_runtime_semantics(
         for response in script.response_scripts
         for clause in response.clauses
     ]
+    correct_response_bindings = {
+        (interaction.interaction_id, interaction.correct_option_id)
+        for interaction in prepared.interaction_plan.interactions
+    }
+    voiced_response_pairs = [
+        (response, clause)
+        for response, clause in response_pairs
+        if (response.interaction_id, response.option_id)
+        not in correct_response_bindings
+    ]
     provenance = record.cue_provenance
-    expected_clause_ids = [
+    expected_main_clause_ids = [
         *[clause.clause_id for clause in main_clauses],
+    ]
+    expected_clause_ids = [
+        *expected_main_clause_ids,
+        *[clause.clause_id for _response, clause in voiced_response_pairs],
+    ]
+    legacy_expected_clause_ids = [
+        *expected_main_clause_ids,
         *[clause.clause_id for _response, clause in response_pairs],
     ]
-    if [item.clause_id for item in provenance] != expected_clause_ids:
+    actual_clause_ids = tuple(item.clause_id for item in provenance)
+    if actual_clause_ids not in {
+        tuple(expected_clause_ids),
+        tuple(legacy_expected_clause_ids),
+    }:
         raise ValueError("cue provenance clause order changed")
 
     performance_by_clause = _performance_cues_by_clause(prepared)
@@ -366,10 +387,23 @@ def _validate_current_runtime_semantics(
             raise ValueError("compiled interaction semantics changed")
         for option in runtime.options:
             response = expected_responses.get(option.option_id)
-            if response is None or [
+            response_clause_ids = (
+                [clause.clause_id for clause in response.clauses]
+                if response is not None
+                else None
+            )
+            actual_clause_ids = [
                 cue.cue_id for cue in option.support_cues
-            ] != [clause.clause_id for clause in response.clauses]:
+            ]
+            allowed_clause_ids = (
+                [[], response_clause_ids]
+                if option.option_id == planned.correct_option_id
+                else [response_clause_ids]
+            )
+            if response is None or actual_clause_ids not in allowed_clause_ids:
                 raise ValueError("compiled support cue binding changed")
+            if not option.support_cues:
+                continue
             for support_cue, clause in zip(
                 option.support_cues, response.clauses
             ):

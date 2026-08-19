@@ -271,45 +271,61 @@ def assert_common_lesson_contract(
         "生成课程未保持选择式互动。",
     )
 
-    choices = interactions
+    transfer_interaction = next(
+        (
+            item
+            for item in interactions
+            if getattr(item, "interaction_id", None) == "near-transfer"
+        ),
+        None,
+    )
+    choices = [
+        item
+        for item in interactions
+        if getattr(item, "interaction_id", None) != "near-transfer"
+    ]
+    _require_contract(bool(choices), "生成课程没有讲解中的诊断互动。")
     for choice in choices:
         _require_contract(
             len(choice.options) in {3, 4},
             "生成选择互动的选项数量不符合 smoke 合同。",
         )
         for option in choice.options:
+            if option.option_id == choice.expected_answer:
+                _require_contract(
+                    not getattr(option, "support_cues", []),
+                    "正确选项不应重复播放主线讲解。",
+                )
+                continue
+            support_cues = getattr(option, "support_cues", [])
             _require_contract(
-                bool(option.feedback),
-                "生成选择互动缺少诊断反馈。",
+                bool(getattr(option, "feedback", None)) or bool(support_cues),
+                "生成选择互动缺少错误诊断反馈。",
             )
             _require_contract(
-                bool(option.feedback_audio_url),
-                "生成选择互动缺少诊断反馈语音。",
+                bool(getattr(option, "feedback_audio_url", None))
+                or all(bool(cue.audio_url) for cue in support_cues),
+                "生成选择互动缺少错误诊断反馈语音。",
             )
 
-    final_interaction = beats[-1].interaction
-    _require_contract(
-        final_interaction is not None
-        and final_interaction.kind == "choice",
-        "生成课程未以选择式近迁移互动结束。",
-    )
-    transfer_options = lesson.transfer_item.options
-    _require_contract(
-        len(final_interaction.options) == len(transfer_options),
-        "近迁移选项数量与内部课程记录不一致。",
-    )
-    for transfer_option, runtime_option in zip(
-        transfer_options,
-        final_interaction.options,
-    ):
+    if transfer_interaction is not None:
+        transfer_options = lesson.transfer_item.options
         _require_contract(
-            transfer_option.option_id == runtime_option.option_id,
-            "近迁移选项顺序或标识与内部课程记录不一致。",
+            len(transfer_interaction.options) == len(transfer_options),
+            "近迁移选项数量与内部课程记录不一致。",
         )
-        _require_contract(
-            runtime_option.label == transfer_option.label,
-            "近迁移选项显示标签与内部课程记录不一致。",
-        )
+        for transfer_option, runtime_option in zip(
+            transfer_options,
+            transfer_interaction.options,
+        ):
+            _require_contract(
+                transfer_option.option_id == runtime_option.option_id,
+                "近迁移选项顺序或标识与内部课程记录不一致。",
+            )
+            _require_contract(
+                runtime_option.label == transfer_option.label,
+                "近迁移选项显示标签与内部课程记录不一致。",
+            )
 
     audio_ready = all(
         all(bool(cue.audio_url) for cue in beat.sync_cues)
@@ -361,11 +377,20 @@ def assert_generated_lesson_contract(
     )
 
     engine = math_engine or MathEngine()
-    final_options = beats[-1].interaction.options
-    for transfer_option, runtime_option in zip(
-        lesson.transfer_item.options,
-        final_options,
-    ):
+    transfer_interaction = next(
+        (
+            beat.interaction
+            for beat in beats
+            if beat.interaction is not None
+            and getattr(beat.interaction, "interaction_id", None)
+            == "near-transfer"
+        ),
+        None,
+    )
+    runtime_transfer_options = (
+        transfer_interaction.options if transfer_interaction is not None else []
+    )
+    for index, transfer_option in enumerate(lesson.transfer_item.options):
         try:
             expected_label = engine.format_answer_label(
                 transfer_option.canonical_answer
@@ -376,7 +401,10 @@ def assert_generated_lesson_contract(
             ) from None
         _require_contract(
             transfer_option.label == expected_label
-            and runtime_option.label == expected_label,
+            and (
+                not runtime_transfer_options
+                or runtime_transfer_options[index].label == expected_label
+            ),
             "近迁移选项标签与内部答案不一致。",
         )
 

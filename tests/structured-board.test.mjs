@@ -60,6 +60,26 @@ test("step grows from questioning to active to completed", () => {
 });
 
 
+test("method condition and result roles survive the structured reducer", () => {
+  let state = applyStructuredBoardAction(
+    emptyStructuredBoard(),
+    action("reveal_step_header", { step_label: "第一步" }),
+  );
+  for (const [index, role] of ["method", "condition", "result"].entries()) {
+    state = applyStructuredBoardAction(state, action("write", {
+      target: `board-role-${index}`,
+      content: `受控板书 ${role}`,
+      board_role: role,
+    }));
+  }
+
+  assert.deepEqual(
+    state.steps.get("teaching-step-001").lines.map((line) => line.role),
+    ["method", "condition", "result"],
+  );
+});
+
+
 test("revealing the next step completes the previously active step", () => {
   let state = applyStructuredBoardAction(
     emptyStructuredBoard(),

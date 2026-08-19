@@ -1213,21 +1213,6 @@ def _inject_audio_before_tts(lesson):
     return lesson.model_copy(update={"beats": beats})
 
 
-def _mutate_fixed_transfer_cue(lesson):
-    beats = list(lesson.beats)
-    beat = beats[-1]
-    cue = beat.sync_cues[0]
-    assert cue.cue_id == "runtime-transfer-intro-cue"
-    beats[-1] = beat.model_copy(
-        update={
-            "sync_cues": [
-                cue.model_copy(update={"spoken_text": "编译器注入的过渡语"})
-            ]
-        }
-    )
-    return lesson.model_copy(update={"beats": beats})
-
-
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -1245,13 +1230,13 @@ def _mutate_fixed_transfer_cue(lesson):
         ),
         _move_authored_cue_to_another_beat,
         _inject_audio_before_tts,
-        _mutate_fixed_transfer_cue,
     ],
 )
 def test_post_compile_integrity_rejects_any_runtime_semantic_mutation(
     mutation,
 ):
-    score = downstream_score_payload()
+    interaction = downstream_planned_interaction()
+    score = downstream_score_payload([interaction])
     score["board_objects"].append(
         {
             "board_object_id": "target-relation",
@@ -1273,7 +1258,10 @@ def test_post_compile_integrity_rejects_any_runtime_semantic_mutation(
             },
         }
     )
-    client = _approved_preparation_client(performance=score)
+    client = _approved_preparation_client(
+        performance=score,
+        interactions=[interaction],
+    )
     service = LessonGenerationService(
         client,
         MathEngine(),

@@ -2,6 +2,7 @@ from typing import Callable, Dict, List, Optional
 from uuid import uuid4
 
 from app.lesson_ids import is_valid_lesson_id
+from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import (
     BoardAction,
@@ -74,6 +75,19 @@ def _runtime_beat(
         sync_cues=sync_cues,
         interaction=interaction,
     )
+
+
+def _without_correct_support(
+    interaction: Optional[Interaction],
+) -> Optional[Interaction]:
+    """Keep correct feedback brief by reserving support audio for diagnosed errors."""
+    if interaction is None or interaction.kind != "choice":
+        return interaction
+    payload = interaction.model_dump(mode="python")
+    for option in payload["options"]:
+        if option["option_id"] == interaction.expected_answer:
+            option["support_cues"] = []
+    return Interaction.model_validate(payload)
 
 
 def _authored_section_beats(
@@ -242,12 +256,16 @@ class LessonCompiler:
             )
 
         transfer_item = draft.transfer_item
-        if transfer_item.options and any(
-            option.label is None for option in transfer_item.options
+        include_transfer_practice = (
+            validation_report.get("pedagogy_rubric_version")
+            != PEDAGOGY_RUBRIC_VERSION
+        )
+        if (
+            include_transfer_practice
+            and transfer_item.options
+            and any(option.label is None for option in transfer_item.options)
         ):
-            raise LessonCompileError(
-                "近迁移选项缺少已规范化的显示标签。"
-            )
+            raise LessonCompileError("近迁移选项缺少已规范化的显示标签。")
         transfer_interaction = (
             Interaction(
                 interaction_id=NEAR_TRANSFER_INTERACTION_ID,
@@ -316,21 +334,32 @@ class LessonCompiler:
                 layers_by_cue=draft.fixed_section_layers_by_cue,
             )
         )
-        beats.append(
-            _runtime_beat(
-                purpose="完成近迁移",
-                sync_cues=[
-                    RuntimeSyncCue(
-                        cue_id=FIXED_RUNTIME_CUE_IDS["transfer_intro"],
-                        spoken_text=(
-                            "现在换一道表面不同、结构相同的题。"
-                        ),
-                    )
-                ],
-                layer="interaction",
-                interaction=transfer_interaction,
+        if include_transfer_practice:
+            beats.append(
+                _runtime_beat(
+                    purpose="完成近迁移",
+                    sync_cues=[
+                        RuntimeSyncCue(
+                            cue_id=FIXED_RUNTIME_CUE_IDS["transfer_intro"],
+                            spoken_text="现在换一道表面不同、结构相同的题。",
+                        )
+                    ],
+                    layer="interaction",
+                    interaction=transfer_interaction,
+                )
             )
-        )
+
+        if not include_transfer_practice:
+            beats = [
+                beat.model_copy(
+                    update={
+                        "interaction": _without_correct_support(
+                            beat.interaction
+                        )
+                    }
+                )
+                for beat in beats
+            ]
 
         numbered_beats = []
         for index, beat in enumerate(beats, start=1):

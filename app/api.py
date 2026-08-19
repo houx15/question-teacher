@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 import hashlib
 import inspect
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -34,6 +35,7 @@ from app.store import MemoryStore
 
 
 _AUDIO_CLEANUP_TIMEOUT_SECONDS = 0.1
+_LOGGER = logging.getLogger(__name__)
 
 
 class InteractionSubmission(BaseModel):
@@ -402,6 +404,18 @@ async def run_generation(
             exc,
             failure_phase,
             current_stage_ordinal,
+        )
+        _LOGGER.warning(
+            "lesson generation stopped: job_id=%s phase=%s "
+            "exception_type=%s mapped_category=%s source_category=%s "
+            "role=%s code=%s",
+            job_id,
+            failure_phase,
+            type(exc).__name__,
+            category,
+            getattr(exc, "category", None),
+            getattr(exc, "role", None),
+            getattr(exc, "code", None),
         )
         if category is not None:
             store.record_job_diagnostic(job_id, category)

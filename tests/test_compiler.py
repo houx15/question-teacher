@@ -8,6 +8,7 @@ import app.compiler as compiler_module
 import app.prepared_lesson_adapter as prepared_adapter
 import app.schemas as schemas_module
 from app.compiler import LessonCompileError, LessonCompiler
+from app.pedagogy_rubric import PEDAGOGY_RUBRIC_VERSION
 from app.problem_focus import compile_problem_focus_targets
 from app.schemas import LessonDraft, NarrativeSyncCue, ProblemInput
 from tests.test_generation import problem, valid_draft
@@ -44,6 +45,58 @@ def test_compiler_creates_ordered_beats_with_stable_navigation():
         "beat-006",
         None,
     ]
+
+
+def test_current_rubric_ends_after_summary_without_near_transfer():
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(valid_draft()),
+        {
+            "review_status": "approved",
+            "pedagogy_rubric_version": PEDAGOGY_RUBRIC_VERSION,
+        },
+    )
+
+    assert all(
+        beat.interaction is None
+        or beat.interaction.interaction_id != "near-transfer"
+        for beat in lesson.beats
+    )
+    assert lesson.beats[-1].purpose == "压缩方法"
+
+
+def test_current_rubric_keeps_wrong_support_but_skips_correct_repetition():
+    payload = valid_draft()
+    interaction = payload["moments"][0]["interaction"]
+    for option in interaction["options"]:
+        option["support_cues"] = [
+            {
+                "cue_id": "support-%s" % option["option_id"],
+                "display_text": "诊断提示",
+                "spoken_text": "先检查乘积和相加结果。",
+            }
+        ]
+    lesson = LessonCompiler().compile(
+        problem(),
+        LessonDraft.model_validate(payload),
+        {
+            "review_status": "approved",
+            "pedagogy_rubric_version": PEDAGOGY_RUBRIC_VERSION,
+        },
+    )
+
+    runtime = next(
+        beat.interaction
+        for beat in lesson.beats
+        if beat.interaction is not None
+    )
+    by_id = {option.option_id: option for option in runtime.options}
+    assert by_id[runtime.expected_answer].support_cues == []
+    assert all(
+        option.support_cues
+        for option_id, option in by_id.items()
+        if option_id != runtime.expected_answer
+    )
 
 
 def test_compiler_opening_is_voice_only_and_preserves_the_problem():

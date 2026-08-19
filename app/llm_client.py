@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from copy import deepcopy
@@ -46,6 +47,8 @@ class ModelCompletion:
 
 
 class OpenAICompatibleClient:
+    _PROVIDER_ATTEMPTS = 2
+    _PROVIDER_RETRY_DELAY_SECONDS = 0.5
     _FENCED_CONTENT = re.compile(
         r"\A```[ \t]*(?:json)?[ \t]*(?:\r?\n)?(?P<content>.*?)(?:\r?\n)?[ \t]*```\Z",
         flags=re.IGNORECASE | re.DOTALL,
@@ -61,6 +64,19 @@ class OpenAICompatibleClient:
             timeout=settings.openai_timeout_seconds,
             transport=transport,
         )
+
+    @property
+    def _supports_native_json_schema(self) -> bool:
+        return "api.deepseek.com" not in (
+            self._settings.openai_base_url or ""
+        ).lower()
+
+    @property
+    def _provider_attempts(self) -> int:
+        # DeepSeek's long structured completions can legitimately consume the
+        # full request window. Repeating the same timed-out request doubles the
+        # wait without improving the already-completed preparation stages.
+        return 1 if not self._supports_native_json_schema else self._PROVIDER_ATTEMPTS
 
     @staticmethod
     def parse_json_content(content: str) -> Dict[str, Any]:
@@ -196,6 +212,18 @@ class OpenAICompatibleClient:
     ) -> ModelCompletion:
         """Prefer provider-native schema decoding, with compatible fallback."""
         self._validate_configuration()
+        response_format: Dict[str, Any]
+        if self._supports_native_json_schema:
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": model_type.__name__,
+                    "strict": True,
+                    "schema": model_type.model_json_schema(),
+                },
+            }
+        else:
+            response_format = {"type": "json_object"}
         payload = {
             "model": self._settings.openai_model,
             "messages": [
@@ -203,17 +231,13 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.2,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": model_type.__name__,
-                    "strict": True,
-                    "schema": model_type.model_json_schema(),
-                },
-            },
+            "response_format": response_format,
         }
         response = await self._post(payload)
-        if response.status_code in (400, 422):
+        if (
+            self._supports_native_json_schema
+            and response.status_code in (400, 422)
+        ):
             fallback_payload = dict(payload)
             fallback_payload["response_format"] = {"type": "json_object"}
             response = await self._post(fallback_payload)
@@ -275,14 +299,31 @@ class OpenAICompatibleClient:
             )
 
     async def _post(self, payload: Dict[str, Any]) -> httpx.Response:
-        try:
-            return await self._client.post(
-                self._settings.chat_completions_url,
-                headers={
-                    "Authorization": f"Bearer {self._settings.openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-        except httpx.HTTPError:
-            raise ModelResponseError("Model request failed.") from None
+        provider_attempts = self._provider_attempts
+        for attempt in range(provider_attempts):
+            try:
+                response = await asyncio.wait_for(
+                    self._client.post(
+                        self._settings.chat_completions_url,
+                        headers={
+                            "Authorization": (
+                                f"Bearer {self._settings.openai_api_key}"
+                            ),
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    ),
+                    timeout=self._settings.openai_timeout_seconds,
+                )
+            except (asyncio.TimeoutError, httpx.HTTPError):
+                if attempt + 1 == provider_attempts:
+                    raise ModelResponseError(
+                        "Model request failed."
+                    ) from None
+            else:
+                if response.status_code != 429 and response.status_code < 500:
+                    return response
+                if attempt + 1 == provider_attempts:
+                    return response
+            await asyncio.sleep(self._PROVIDER_RETRY_DELAY_SECONDS)
+        raise AssertionError("unreachable provider retry state")
