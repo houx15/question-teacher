@@ -473,24 +473,28 @@ def _normalize_script_required_evidence(
         if option is None or option.misconception is None or not correction:
             continue
         first_clause = response["clauses"][0]
+        misconception_summary = re.split(
+            r"[。；;]", option.misconception, maxsplit=1
+        )[0].strip()
+        correction_summary = re.split(
+            r"[。；;]", correction, maxsplit=1
+        )[0].strip()
         evidence = "误区：%s；改法：%s。" % (
-            option.misconception,
-            correction,
+            misconception_summary,
+            correction_summary,
         )
         display = first_clause["display_text"] or ""
         normalized_display = normalize_answer_leak_text(display)
+        normalized_evidence = normalize_answer_leak_text(evidence)
         normalized_misconception = normalize_answer_leak_text(
             option.misconception
         )
         normalized_correction = normalize_answer_leak_text(correction)
-        if (
-            normalized_misconception not in normalized_display
-            or normalized_correction not in normalized_display
-        ):
-            combined = evidence + display
-            first_clause["display_text"] = (
-                combined if len(combined) <= 500 else evidence[:500]
-            )
+        if normalized_display != normalized_evidence:
+            # The popup is a compact diagnosis.  Do not prepend it to the
+            # model's longer explanation: that duplicates the same teaching
+            # inside the popup and again in the resumed main narration.
+            first_clause["display_text"] = evidence[:500]
             changed = True
         spoken = first_clause["spoken_text"]
         normalized_spoken = normalize_answer_leak_text(spoken)
@@ -1293,6 +1297,7 @@ class LessonPreparationPipeline:
                     )
                 elif validation_error.code in {
                     "response_classification_invalid",
+                    "response_clause_count_invalid",
                     "response_depth_invalid",
                     "response_error_code_invalid",
                 }:
@@ -1301,7 +1306,7 @@ class LessonPreparationPipeline:
                         "正确项必须 classification=correct、depth=brief、"
                         "error_code=null；错误项必须 classification=incorrect，"
                         "并逐字复制该 option 的 error_code 与 remediation_depth，"
-                        "不得翻译、改名或自造。"
+                        "不得翻译、改名或自造。每个 response 恰好一条 clause。"
                     )
                 elif validation_error.code in {
                     "interaction_script_coverage_invalid",
@@ -1380,6 +1385,7 @@ class LessonPreparationPipeline:
                     "response_semantic_anchor_missing",
                     "response_remediation_insufficient",
                     "response_classification_invalid",
+                    "response_clause_count_invalid",
                     "response_depth_invalid",
                     "response_error_code_invalid",
                     "response_private_answer_leakage",

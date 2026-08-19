@@ -492,20 +492,10 @@ function renderStructuredStep(record, step) {
 
   syncStructuredLines(record.main, step.lines, record.lines);
 
-  if (step.support) {
-    if (!record.support) {
-      record.support = document.createElement("aside");
-      record.support.className = "lesson-step__support";
-      record.support.setAttribute("aria-live", "polite");
-      record.support.setAttribute("aria-label", "当前步骤的辅助讲解");
-      section.append(record.support);
-    }
-    syncStructuredLines(
-      record.support,
-      step.support.lines,
-      record.supportLines,
-    );
-  } else if (record.support) {
+  // Adaptive support is already visible in the open interaction card. Keep
+  // its structured state for sequencing and audit, but do not mirror the same
+  // explanation onto the main board as a second block of text.
+  if (record.support) {
     record.support.remove();
     record.support = null;
     record.supportLines = new Map();
@@ -714,6 +704,24 @@ function applyCueActions(actions) {
 }
 
 
+function compactSupportDisplayText(value) {
+  if (typeof value !== "string" || !value.startsWith("误区：")) return value;
+  const correctionMarker = "；改法：";
+  const correctionIndex = value.lastIndexOf(correctionMarker);
+  if (correctionIndex < 0) return value;
+  const misconception = value
+    .slice("误区：".length, correctionIndex)
+    .split(/[；;]/, 1)[0]
+    .trim();
+  const correction = value
+    .slice(correctionIndex + correctionMarker.length)
+    .replace(/[。；;\s]+$/, "")
+    .trim();
+  if (!misconception || !correction) return value;
+  return `误区：${misconception}；改法：${correction}。`;
+}
+
+
 cuePlayer = new CuePlayer({
   applyActions: applyCueActions,
   fallbackDuration: (cue) => fallbackDurationForNarration(
@@ -722,9 +730,13 @@ cuePlayer = new CuePlayer({
   onCueText: (displayText) => {
     runtime.markAudioStarted();
     dom.shell.classList.add("is-speaking");
-    renderMathText(dom.narration, displayText);
     if (supportFeedbackTarget) {
-      renderMathText(supportFeedbackTarget, displayText);
+      renderMathText(
+        supportFeedbackTarget,
+        compactSupportDisplayText(displayText),
+      );
+    } else {
+      renderMathText(dom.narration, displayText);
     }
     updateControls();
   },

@@ -2474,6 +2474,42 @@ def test_correct_choice_positions_rotate_and_public_order_follows_private_plan()
         ]
 
 
+def test_response_evidence_normalizer_replaces_verbose_popup_instead_of_prepending():
+    planned = downstream_planned_interaction()
+    planned["options"][1]["misconception"] = (
+        "没有推进；随后又重复解释正确步骤"
+    )
+    plan = InteractionPlan.model_validate(
+        {
+            "interactions": [planned],
+            "transfer_item": downstream_transfer_payload(),
+        }
+    )
+    script_payload = downstream_script_payload([planned])
+    response = next(
+        item
+        for item in script_payload["response_scripts"]
+        if item["option_id"] == "option-b"
+    )
+    response["clauses"][0]["display_text"] = (
+        "这是一段很长的弹窗解释，随后主线还会再次讲同一数学步骤。"
+    )
+
+    normalized = preparation_pipeline._normalize_script_required_evidence(
+        TeachingScript.model_validate(script_payload),
+        ReasoningTrajectory.model_validate(trajectory_payload()),
+        plan,
+    )
+    compact = next(
+        item
+        for item in normalized.response_scripts
+        if item.option_id == "option-b"
+    ).clauses[0].display_text
+
+    assert compact == "误区：没有推进；改法：还需要整理。"
+    assert "很长的弹窗解释" not in compact
+
+
 def test_interaction_without_checkpoint_gets_one_step_binding_rewrite():
     invalid = downstream_planned_interaction()
     invalid["episode_id"] = "episode-1"

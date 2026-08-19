@@ -1445,7 +1445,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
     ):
         assert f'id="{region_id}"' in html
     assert 'type="module"' in html
-    assert 'src="/static/lesson.js?v=20260819-2"' in html
+    assert 'src="/static/lesson.js?v=20260820-2"' in html
     assert 'href="/static/styles.css?v=20260819-1"' in html
     assert '<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">' in html
     assert 'class="sidebar"' not in html
@@ -1454,7 +1454,7 @@ def test_lesson_page_has_fullscreen_classroom_regions():
 def test_versioned_lesson_module_remains_cacheable():
     client = page_client()
     html_response = client.get("/lesson/example")
-    response = client.get("/static/lesson.js?v=20260819-2")
+    response = client.get("/static/lesson.js?v=20260820-2")
     runtime_response = client.get(
         "/static/runtime-core.mjs?v=20260819-2"
     )
@@ -1559,7 +1559,8 @@ def test_lesson_runtime_renders_and_scrolls_the_continuous_structured_board():
     assert 'bullet.className = "lesson-step__status-dot"' in source
     assert 'statusText.className = "lesson-step__status-text sr-only"' in source
     assert 'section.setAttribute("aria-current", "step")' in source
-    assert 'record.support.className = "lesson-step__support"' in source
+    assert 'record.support.className = "lesson-step__support"' not in source
+    assert "do not mirror the same" in source
     assert "syncStructuredLines(record.main, step.lines, record.lines)" in source
     assert "dom.structuredBoard.hidden = !hasStructuredBoard" in source
     assert "dom.legacyBoard.hidden = hasStructuredBoard" in source
@@ -1609,10 +1610,10 @@ def test_lesson_shell_uses_single_continuous_structured_board():
 def test_structured_board_module_cache_chain_is_versioned():
     client = page_client()
     html = client.get("/lesson/example").text
-    lesson_js = client.get("/static/lesson.js?v=20260819-2").text
+    lesson_js = client.get("/static/lesson.js?v=20260820-2").text
     runtime_js = client.get("/static/runtime-core.mjs?v=20260819-2").text
 
-    assert "lesson.js?v=20260819-2" in html
+    assert "lesson.js?v=20260820-2" in html
     assert "styles.css?v=20260819-1" in html
     assert "runtime-core.mjs?v=20260819-2" in lesson_js
     assert "structured-board.mjs?v=20260819-2" in runtime_js
@@ -1628,6 +1629,19 @@ def test_choice_submission_passes_selected_option_without_exposing_answer_key():
     assert "if (selectedOption?.feedback)" not in source
     assert "expected: interaction.expected_answer" not in source
     assert "interaction.expected_answer" not in source
+
+
+def test_support_explanation_uses_only_the_open_interaction_surface():
+    source = page_client().get("/static/lesson.js").text
+    branch = source[source.index("onCueText: (displayText) => {") :]
+    branch = branch[: branch.index("updateControls();")]
+
+    assert branch.index("if (supportFeedbackTarget)") < branch.index("} else {")
+    assert branch.index("supportFeedbackTarget,") < branch.index(
+        "renderMathText(dom.narration"
+    )
+    assert "compactSupportDisplayText(displayText)" in branch
+    assert 'const correctionMarker = "；改法："' in source
 
 
 def test_choice_buttons_use_nonempty_plain_text_accessible_names():

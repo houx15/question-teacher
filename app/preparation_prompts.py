@@ -126,8 +126,8 @@ TEACHING_PROGRESSION_SYSTEM = "\n".join(
         "它们必须分属不同的非结论步骤，不得放在最终结论、"
         "答案确认或方法回顾之后。diagnostic_goal 要描述学生此刻"
         "需要完成的具体判断，不得包含尚未揭示的答案。",
-        "board_summary 是给学生看的板书骨架，不是字幕摘要。每步只保留 1 至 3 条："
-        "关键方法、必要条件和像纸笔解题一样的关键等式；单条尽量不超过 40 字。"
+        "board_summary 是给学生看的板书骨架，不是字幕摘要。每步只保留 1 至 2 条："
+        "一条必要条件（如果有）和一条像纸笔解题一样的关键等式；单条尽量不超过 32 字。"
         "禁止写提问、过渡句、完整解释和‘接下来/如何/为什么’等口播。",
         "答案得出后直接进入方法回顾；不要另设代回验算、独立数学演算或相似题步骤。",
         "只设计可审核的教学推进，不写最终教师台词。",
@@ -153,7 +153,8 @@ SCRIPT_TEACHER_SYSTEM = "\n".join(
         "本项 misconception 与 incorrect_feedback_by_option 纠正动作。",
         "正确 response 只能有一条简短确认，不复述正确式子、计算过程或下一条"
         "主线讲解；answer_exposure=false、math_references=[]。错误 response 只讲"
-        "本项错误原因和一个纠正动作，不提前讲完随后主线的结论。",
+        "本项错误原因和一个纠正动作，不提前讲完随后主线的结论。"
+        "每个 response 恰好一条 clause；弹窗只做诊断和短补充，不重复主线讲稿。",
         "interaction_scripts 必须按 interaction_id/option_id 精确覆盖"
         " InteractionPlan，并独立撰写最终 prompt、hint 和 option label；"
         "transfer_script 必须按 option_id 覆盖迁移题私有答案意图，"

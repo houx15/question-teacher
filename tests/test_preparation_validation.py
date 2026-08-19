@@ -1068,8 +1068,48 @@ def test_deterministic_board_defers_setup_lines_until_step_question():
     ]
 
 
+def test_deterministic_board_keeps_only_method_and_copyworthy_step_equation():
+    progression_data = progression_payload()
+    progression_data["steps"][0]["board_summary"] = [
+        "根：x=2n 代入",
+        "(2n)^2-2m(2n)+2n=0",
+    ]
+    script_data = script_payload()
+    script_data["method_introduction"]["method_name"] = "代入求根法"
+
+    score = build_structured_performance_score(
+        progression := TeachingProgression.model_validate(progression_data),
+        script := TeachingScript.model_validate(script_data),
+    )
+    first_step = [
+        (item.line_role, item.content)
+        for item in score.board_objects
+        if item.teaching_step_id == "teaching-step-1"
+        and item.line_role != "summary"
+    ]
+
+    assert first_step == [
+        ("method", "代入法"),
+        ("result", "(2n)^2-2m(2n)+2n=0"),
+    ]
+    assert performance_score_has_compact_board(score, progression, script)
+
+    extra = score.board_objects[1].model_copy(
+        update={
+            "board_object_id": "board-extra-subtitle",
+            "content": "根：x=2n 代入",
+            "line_role": "working",
+        }
+    )
+    verbose = score.model_copy(
+        update={"board_objects": [*score.board_objects, extra]}
+    )
+    assert not performance_score_has_compact_board(verbose, progression, script)
+
+
 def test_compact_board_requires_a_declared_nonzero_condition_line():
     progression_data = progression_payload()
+    progression_data["steps"][1]["phase"] = "check"
     progression_data["steps"][1]["board_summary"].insert(
         0, "n≠0 ⇒ 可以同除 n"
     )
@@ -1566,6 +1606,21 @@ def test_response_scripts_cover_each_interaction_option_exactly_once():
     payload["response_scripts"][1]["interaction_id"] = "interaction-missing"
     assert_code(
         "response_script_binding_invalid",
+        lambda: validate_current_script(
+            TeachingScript.model_validate(payload), trajectory
+        ),
+    )
+
+
+def test_current_popup_response_is_one_compact_diagnostic_clause():
+    _, trajectory, script, *_ = models()
+    payload = script.model_dump()
+    duplicate = copy.deepcopy(payload["response_scripts"][1]["clauses"][0])
+    duplicate["clause_id"] = "response-clause-option-b-extra"
+    payload["response_scripts"][1]["clauses"].append(duplicate)
+
+    assert_code(
+        "response_clause_count_invalid",
         lambda: validate_current_script(
             TeachingScript.model_validate(payload), trajectory
         ),

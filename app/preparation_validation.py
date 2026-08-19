@@ -97,6 +97,14 @@ _BOARD_CHECK_TEXT = re.compile(r"(?:代回|验算|验证|检验|检查)")
 _BOARD_CONDITION_TEXT = re.compile(r"(?:≠|\\ne\b|不等于|非零)")
 
 
+def _compact_method_name(value: str) -> str:
+    """Return the chalkboard label, not the explanatory method title."""
+    compact = "".join(value.split())
+    if "代入" in compact and compact.endswith("法"):
+        return "代入法"
+    return compact
+
+
 def _fallback_step_board_line(step: object) -> str:
     """Choose one bounded statement when every proposed summary was filtered."""
     sources = [
@@ -132,11 +140,18 @@ def _compact_step_board_lines(step: object, method_name: str, first: bool) -> li
 
     selected = []
     if first:
-        selected.append((method_name, "method"))
+        selected.append((_compact_method_name(method_name), "method"))
 
+    condition = next(
+        (item for item in candidates if _BOARD_CONDITION_TEXT.search(item)),
+        None,
+    )
     if step.phase == "check":
+        if condition is not None:
+            selected.append((condition, "condition"))
         result_candidates = [
             item for item in candidates
+            if item != condition
             if not _BOARD_CHECK_TEXT.search(item)
             and ("结论" in item or "答案" in item or "=" in item)
         ]
@@ -148,21 +163,14 @@ def _compact_step_board_lines(step: object, method_name: str, first: bool) -> li
             selected.append((_fallback_step_board_line(step), "result"))
         return selected
 
-    condition = next(
-        (item for item in candidates if _BOARD_CONDITION_TEXT.search(item)),
-        None,
-    )
     if condition is not None:
         selected.append((condition, "condition"))
 
     non_condition = [item for item in candidates if item != condition]
     if non_condition:
-        first_line = non_condition[0]
-        last_line = non_condition[-1]
-        if first_line != last_line and len(selected) < (4 if first else 3):
-            selected.append((first_line, "working"))
-        if len(selected) < (4 if first else 3):
-            selected.append((last_line, "result"))
+        # The step header carries the structure and narration carries the
+        # explanation.  Keep only the equation a learner would actually copy.
+        selected.append((non_condition[-1], "result"))
 
     if not selected and candidates:
         selected.append((candidates[-1], "result"))
@@ -207,7 +215,8 @@ def _method_review_line(
         and not _BOARD_CHECK_TEXT.search(step.directory_label)
     ]
     route = " → ".join(labels[:4])
-    return "%s：%s" % (method_name, route) if route else method_name
+    compact_method = _compact_method_name(method_name)
+    return "%s：%s" % (compact_method, route) if route else compact_method
 
 
 def build_structured_performance_score(
@@ -521,15 +530,39 @@ def performance_score_has_compact_board(
     }
     first_step_id = progression.steps[0].step_id
     method_name = normalize_cross_artifact_math_identity(
-        script.method_introduction.method_name
+        _compact_method_name(script.method_introduction.method_name)
     )
     method_review = normalize_cross_artifact_math_identity(
         _method_review_line(
             progression, script.method_introduction.method_name
         )
     )
+    expected_main = [
+        (
+            step.step_id,
+            role,
+            normalize_cross_artifact_math_identity(content),
+        )
+        for step_index, step in enumerate(progression.steps)
+        for content, role in _compact_step_board_lines(
+            step,
+            script.method_introduction.method_name,
+            step_index == 0,
+        )
+    ]
+    closing_ids = set(script.closing_summary_clause_ids)
+    summary_clause = next(
+        (item for item in script.clauses if item.clause_id in closing_ids),
+        None,
+    )
+    if summary_clause is None or summary_clause.lesson_step_id is None:
+        return False
+    expected_main.append(
+        (summary_clause.lesson_step_id, "summary", method_review)
+    )
     main_by_step: Dict[str, List[object]] = {}
     main_targets = set()
+    actual_main = []
     for item in score.board_objects:
         if item.line_role == "support":
             continue
@@ -554,6 +587,9 @@ def performance_score_has_compact_board(
             )
         ):
             return False
+        actual_main.append(
+            (item.teaching_step_id or "", item.line_role, content)
+        )
         main_targets.add(item.board_object_id)
         if item.line_role != "summary":
             main_by_step.setdefault(item.teaching_step_id or "", []).append(
@@ -567,6 +603,8 @@ def performance_score_has_compact_board(
             item.line_role == "condition" for item in items
         ):
             return False
+    if sorted(actual_main) != sorted(expected_main):
+        return False
     emphasized_steps = {
         bound.action.teaching_step_id
         for cue in score.cues
@@ -1462,6 +1500,12 @@ def _validate_response_scripts(
             response = response_by_binding[
                 (interaction.interaction_id, option.option_id)
             ]
+            if len(response.clauses) != 1:
+                _fail(
+                    "response_clause_count_invalid",
+                    response.response_id,
+                    "Current popup responses require exactly one diagnostic clause.",
+                )
             is_correct = option.option_id == interaction.correct_option_id
             expected_classification = "correct" if is_correct else "incorrect"
             if response.classification != expected_classification:
